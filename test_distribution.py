@@ -77,7 +77,7 @@ class Portability(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)/"checkout with spaces '$dollar"
             root.mkdir()
-            (root/"app.py").write_text("import sys; print(sys.argv[1])")
+            (root/"device_monitor.py").write_text("import sys; print(sys.argv[1])")
             launcher = Path(tmp)/"launcher"
             launcher.write_text(runtime.launcher_script(root))
             launcher.chmod(0o755)

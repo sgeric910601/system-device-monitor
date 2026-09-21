@@ -65,13 +65,13 @@ def launcher_script(project):
 set -eu
 project=%s
 for attempt in {1..60}; do
-    if [ -f "$project/app.py" ]; then
+    if [ -f "$project/device_monitor.py" ]; then
         cache="${XDG_CACHE_HOME:-$HOME/.cache}/system-device-monitor"
         mkdir -p "$cache"
         if [[ " $* " == *" --version "* || " $* " == *" --smoke-test "* ]]; then
-            exec /usr/bin/python3 -B "$project/app.py" "$@"
+            exec /usr/bin/python3 -B "$project/device_monitor.py" "$@"
         fi
-        exec /usr/bin/python3 -B "$project/app.py" "$@" >>"$cache/app.log" 2>&1
+        exec /usr/bin/python3 -B "$project/device_monitor.py" "$@" >>"$cache/app.log" 2>&1
     fi
     sleep 1
 done

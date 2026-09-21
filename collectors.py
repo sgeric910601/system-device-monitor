@@ -11,6 +11,7 @@ import gi
 gi.require_version("GUdev", "1.0")
 from gi.repository import Gio, GLib, GUdev
 from runtime import ALIASES, load_json
+from logitech_battery import SolaarBattery, apply_battery
 from model import (Counters, CpuCounter, battery, normalize_usb, parse_apc,
                    number, STATES, disk_is_physical)
 
@@ -85,6 +86,7 @@ def storage_temperature(sensors):
 class Collectors:
     def __init__(self):
         self.aliases = load_json(ALIASES)
+        self.logitech_battery = SolaarBattery()
         self.cpu_info = cpu_info()
         self.cpu = CpuCounter()
         self.rates = Counters()
@@ -227,8 +229,14 @@ class Collectors:
                     cpu_temp=cpu_temp, cpu_temp_label=cpu_temp_label, fans=fans,
                     storage=storage, network_temperatures=network_temperatures, stamp=time.time())
 
+    def logitech(self):
+        return self.logitech_battery.refresh()
+
     def devices(self):
         devices, errors = [], []
+        logitech = getattr(self, "logitech_battery", None)
+        if logitech is not None:
+            logitech.observe()
         usb = {}
         for path in sorted(Path("/sys/bus/usb/devices").glob("*")):
             if not (path / "idVendor").exists() or ":" in path.name:
@@ -296,6 +304,8 @@ class Collectors:
                     status=STATES.get(d.get("State"), "已偵測"),
                     stamp=stamp, source="UPower", detail="USB 電源資料" if device_type == 3 else "接收器回報",
                     native=native))
+                if parent and logitech is not None and device_type != 3:
+                    apply_battery(devices[-1], logitech.sample(parent))
         except GLib.Error:
             errors.append("電池資料服務暫時無法取得")
         devices.extend(bluez.values())

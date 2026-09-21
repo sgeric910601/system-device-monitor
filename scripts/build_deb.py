@@ -54,6 +54,7 @@ def main():
             "Depends: python3 (>= 3.10), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, "
             "gir1.2-gudev-1.0, gir1.2-ayatanaappindicator3-0.1, librsvg2-common, util-linux\n"
             "Recommends: gnome-shell-extension-appindicator, upower, bluez\n"
+            "Suggests: solaar, piper, ratbagd\n"
             "Homepage: https://github.com/sgeric910601/system-device-monitor\n"
             "Description: Local system resources and peripheral battery dashboard\n"
             " GTK desktop dashboard and colored AppIndicators for CPU, memory,\n"

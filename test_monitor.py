@@ -4,7 +4,7 @@ import tempfile
 import subprocess
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from gi.repository import GLib
 import collectors
 from collectors import Collectors
@@ -68,6 +68,22 @@ class Devices(unittest.TestCase):
             result = self.collector.devices()
         self.assertEqual(len(result["devices"]), 1)
         self.assertEqual(result["devices"][0]["kind"], "UPS")
+
+    def test_logitech_numeric_battery_merges_into_existing_device(self):
+        source = self.collector.logitech_battery = Mock()
+        source.sample.return_value = dict(percent=50, next=30, stamp=456)
+        def bus(_bus, dest, path, iface, method, args=None):
+            if method == "GetManagedObjects": return ({},)
+            if method == "EnumerateDevices": return (["/mouse"],)
+            return (dict(NativePath="/sys/bus/usb/devices/1-1/hiddev0",
+                         Type=5, UpdateTime=123, BatteryLevel=6, Percentage=55,
+                         IsPresent=True, State=2, Model="Example mouse"),)
+        with patch("collectors.dbus", side_effect=bus):
+            devices = self.collector.devices()["devices"]
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["percent"], 50)
+        self.assertEqual(devices[0]["source"], "Solaar / HID++")
+        source.observe.assert_called_once()
 
     def test_bluetooth_disconnected_cached_battery_hidden(self):
         def bus(_bus, dest, path, iface, method, args=None):

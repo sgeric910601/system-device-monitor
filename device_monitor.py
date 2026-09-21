@@ -24,6 +24,7 @@ gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
 from collectors import Collectors
 from model import percent, size, age, number
+from logitech_battery import INTERVAL as LOGITECH_INTERVAL
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 COLORS = {"cpu": "#64a8ff", "gpu": "#bc91ff", "ram": "#55c98c", "network": "#46cbd2",
@@ -93,7 +94,7 @@ class Monitor(Gtk.Application):
         self.capture_enabled = capture
         self.smoke_failed = False
         self.window = None
-        self.pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="monitor")
+        self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="monitor")
         self.busy = set()
         self.closing = False
         self.data = {"system": {}, "slow": {}, "devices": {"devices": [], "errors": []}}
@@ -122,7 +123,8 @@ class Monitor(Gtk.Application):
         self.build_window()
         self.build_indicator()
         self.watch_devices()
-        for kind, interval in (("system", 2), ("slow", 5), ("devices", 5)):
+        for kind, interval in (("system", 2), ("slow", 5), ("devices", 5),
+                               ("logitech", LOGITECH_INTERVAL)):
             self.submit(kind)
             self.timers.append(GLib.timeout_add_seconds(interval, self.tick, kind))
         if not self.background:
@@ -176,6 +178,8 @@ class Monitor(Gtk.Application):
         try:
             self.data[kind] = future.result()
             self.errors.pop(kind, None)
+            if kind == "logitech":
+                self.submit("devices")
         except Exception as error:
             logging.error("Collector %s failed: %s", kind, type(error).__name__)
             self.errors[kind] = "資料暫時無法取得"
