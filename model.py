@@ -3,6 +3,9 @@ import math
 import time
 
 LEVELS = {3: "低電量", 4: "極低電量", 6: "正常", 7: "充足", 8: "已滿"}
+LEVEL_PREFIX = "電量等級："
+BATTERY_LOADING = "讀取中…"
+NO_BATTERY = "目前沒有設備回報電量"
 STATES = {0: "狀態未知", 1: "充電中", 2: "電池供電", 3: "電池已空",
           4: "已充滿", 5: "等待充電", 6: "等待放電"}
 
@@ -21,10 +24,24 @@ def size(value, rate=False):
 
 def battery(level, value, valid=True):
     if level in LEVELS:
-        return "電量等級：" + LEVELS[level], None
+        return LEVEL_PREFIX + LEVELS[level], None
     if valid and value is not None and math.isfinite(value) and 0 <= value <= 100:
         return percent(value), value
     return "電量未回報", None
+
+def reports_charge(device):
+    """A percentage or a level from battery(); '未回報' labels carry neither."""
+    return device["percent"] is not None or device["battery"].startswith(LEVEL_PREFIX)
+
+def battery_menu_rows(payload):
+    """Indicator menu lines for peripherals reporting a charge; the UPS has its own line."""
+    rows = [(d["id"], f"{d['name']} · {d['battery']}") for d in payload.get("devices", [])
+            if d["kind"] != "UPS" and reports_charge(d)]
+    if rows:
+        return rows
+    if payload.get("errors"):
+        return [(None, " · ".join(payload["errors"]))]
+    return [(None, NO_BATTERY if "stamp" in payload else BATTERY_LOADING)]
 
 def age(stamp):
     if not stamp:

@@ -8,7 +8,9 @@ from unittest.mock import patch, Mock
 from gi.repository import GLib
 import collectors
 from collectors import Collectors
-from model import CpuCounter, Counters, battery, normalize_usb, number, parse_apc
+import device_monitor
+from model import (CpuCounter, Counters, battery, battery_menu_rows, normalize_usb,
+                   number, parse_apc)
 
 class Calculations(unittest.TestCase):
     def test_cpu_guest_not_counted_twice_and_resume_resets(self):
@@ -37,6 +39,101 @@ class Calculations(unittest.TestCase):
         self.assertIsNone(number("nan"))
         self.assertEqual(number("17.0 Percent"), 17)
         self.assertEqual(parse_apc("STATUS : ONLINE\nBCHARGE : 17.0 Percent")["STATUS"], "ONLINE")
+
+def peripheral(key, kind, text, value):
+    return dict(id=key, name="Example " + key, kind=kind, battery=text, percent=value)
+
+class BatteryMenuRows(unittest.TestCase):
+    def test_only_peripherals_that_report_a_charge_are_listed(self):
+        devices = [peripheral("ups", "UPS", "100%", 100.0),
+                   peripheral("level", "無線周邊", "電量等級：正常", None),
+                   peripheral("coarse", "無線周邊", "約 30%（分段回報）", 30),
+                   peripheral("keyboard", "藍牙", "53%", 53),
+                   peripheral("speaker", "藍牙", "電量未回報", None),
+                   peripheral("receiver", "USB", "有電池 · 電量未回報", None),
+                   peripheral("adapter", "USB", "電量不適用／未回報", None)]
+        self.assertEqual(battery_menu_rows(dict(devices=devices, errors=[], stamp=1)), [
+            ("level", "Example level · 電量等級：正常"),
+            ("coarse", "Example coarse · 約 30%（分段回報）"),
+            ("keyboard", "Example keyboard · 53%")])
+
+    def test_placeholder_before_first_result(self):
+        self.assertEqual(battery_menu_rows({"devices": [], "errors": []}), [(None, "讀取中…")])
+
+    def test_collector_failure_is_not_shown_as_loading(self):
+        self.assertEqual(battery_menu_rows({"devices": [], "errors": ["設備資料暫時無法取得"]}),
+                         [(None, "設備資料暫時無法取得")])
+
+    def test_partial_failure_without_batteries_shows_errors(self):
+        payload = dict(devices=[peripheral("adapter", "USB", "電量不適用／未回報", None)],
+                       errors=["藍牙服務暫時無法取得", "電池資料服務暫時無法取得"], stamp=1)
+        self.assertEqual(battery_menu_rows(payload),
+                         [(None, "藍牙服務暫時無法取得 · 電池資料服務暫時無法取得")])
+
+    def test_no_battery_devices(self):
+        payload = dict(devices=[peripheral("ups", "UPS", "100%", 100.0)], errors=[], stamp=1)
+        self.assertEqual(battery_menu_rows(payload), [(None, "目前沒有設備回報電量")])
+
+class FakeItem:
+    def __init__(self, label):
+        self.label, self.sensitive, self.visible, self.destroyed = label, True, False, False
+        self.handlers = []
+    def get_label(self): return self.label
+    def set_label(self, label): self.label = label
+    def set_sensitive(self, value): self.sensitive = value
+    def show(self): self.visible = True
+    def connect(self, signal, callback, *args): self.handlers.append((signal, callback, args))
+    def destroy(self): self.destroyed = True
+
+class FakeMenu:
+    def __init__(self, children): self.children = list(children)
+    def get_children(self): return list(self.children)
+    def insert(self, item, position): self.children.insert(position, item)
+    def remove(self, item): self.children.remove(item)
+
+class BatteryMenuSync(unittest.TestCase):
+    """GTK-free: real widgets abort the process when no display is available."""
+    def setUp(self):
+        self.monitor = device_monitor.Monitor.__new__(device_monitor.Monitor)
+        self.monitor.battery_header = FakeItem("設備電量")
+        self.monitor.menu = FakeMenu([FakeItem("UPS"), self.monitor.battery_header, FakeItem("---")])
+        self.monitor.battery_items, self.monitor.battery_rows = [], None
+        self.monitor.battery_item = FakeItem
+        self.indent = device_monitor.MENU_INDENT
+
+    def labels(self):
+        return [item.get_label() for item in self.monitor.menu.get_children()]
+
+    def test_rows_are_inserted_below_header_and_open_devices_page(self):
+        self.monitor.sync_battery_items([("a", "A · 50%"), ("b", "B · 60%")])
+        self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "A · 50%",
+                                         self.indent + "B · 60%", "---"])
+        for item in self.monitor.battery_items:
+            self.assertTrue(item.visible and item.sensitive)
+            self.assertEqual(item.handlers, [("activate", self.monitor.open_page, ("devices",))])
+
+    def test_same_devices_update_labels_in_place(self):
+        self.monitor.sync_battery_items([("a", "A · 50%")])
+        first = self.monitor.battery_items[0]
+        self.monitor.sync_battery_items([("a", "A · 40%")])
+        self.assertIs(self.monitor.battery_items[0], first)
+        self.assertFalse(first.destroyed)
+        self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "A · 40%", "---"])
+
+    def test_changed_devices_rebuild_rows(self):
+        self.monitor.sync_battery_items([("a", "A · 50%"), ("b", "B · 60%")])
+        old = list(self.monitor.battery_items)
+        self.monitor.sync_battery_items([("b", "B · 60%"), ("c", "C · 70%")])
+        self.assertTrue(all(item.destroyed for item in old))
+        self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "B · 60%",
+                                         self.indent + "C · 70%", "---"])
+
+    def test_placeholder_row_is_not_clickable(self):
+        self.monitor.sync_battery_items([(None, "讀取中…")])
+        item = self.monitor.battery_items[0]
+        self.assertFalse(item.sensitive)
+        self.assertEqual(item.handlers, [])
+        self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "讀取中…", "---"])
 
 class Devices(unittest.TestCase):
     def setUp(self):

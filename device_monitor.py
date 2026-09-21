@@ -23,12 +23,13 @@ gi.require_version("GUdev", "1.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
 from collectors import Collectors
-from model import percent, size, age, number
+from model import percent, size, age, number, battery_menu_rows
 from logitech_battery import INTERVAL as LOGITECH_INTERVAL
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 COLORS = {"cpu": "#64a8ff", "gpu": "#bc91ff", "ram": "#55c98c", "network": "#46cbd2",
           "temperature": "#ffa467", "ups": "#e2c45b"}
+MENU_INDENT = "    "
 
 def label(text="", css=None, wrap=False):
     widget = Gtk.Label(label=text, xalign=0)
@@ -342,11 +343,15 @@ class Monitor(Gtk.Application):
         self.menu = Gtk.Menu()
         self.summary_items = {}
         for key, title in (("cpu","CPU"),("temperature","CPU 溫度"),("ram","記憶體"),("gpu","GPU"),
-                           ("network","網速"),("ups","UPS"),("devices","設備")):
+                           ("network","網速"),("ups","UPS")):
             item = Gtk.MenuItem(label=title + "：讀取中")
-            item.connect("activate", self.open_page, "devices" if key == "devices" else "overview")
+            item.connect("activate", self.open_page, "overview")
             self.menu.append(item)
             self.summary_items[key] = item
+        self.battery_header = Gtk.MenuItem(label="設備電量")
+        self.battery_header.connect("activate", self.open_page, "devices")
+        self.menu.append(self.battery_header)
+        self.battery_items, self.battery_rows = [], None
         self.menu.append(Gtk.SeparatorMenuItem())
         for title, page in (("開啟完整看板","overview"),("查看設備電量","devices"),("設定","settings")):
             item = Gtk.MenuItem(label=title)
@@ -520,10 +525,32 @@ class Monitor(Gtk.Application):
         ups = slow.get("ups") or {}
         self.summary_items["ups"].set_label("UPS " + percent(number(ups.get("BCHARGE"))) +
             " · 續航 " + value_text(number(ups.get("TIMELEFT")), " 分鐘"))
-        devices = self.data["devices"].get("devices", [])
-        batteries = [d["name"] + " " + d["battery"] for d in devices if d["kind"] != "USB" and d["kind"] != "UPS"]
-        self.summary_items["devices"].set_label("設備 " + str(len(devices)) +
-            (" · " + " / ".join(batteries) if batteries else ""))
+        self.sync_battery_items(battery_menu_rows(self.data["devices"]))
+
+    def battery_item(self, text):
+        return Gtk.MenuItem(label=text)
+
+    def sync_battery_items(self, rows):
+        """One line per device below the header; rebuilt only when the device set changes."""
+        if self.battery_rows is not None and [k for k, _ in rows] == [k for k, _ in self.battery_rows]:
+            for item, (_, text) in zip(self.battery_items, rows):
+                if item.get_label() != MENU_INDENT + text:
+                    item.set_label(MENU_INDENT + text)
+        else:
+            for item in self.battery_items:
+                self.menu.remove(item)
+                item.destroy()
+            start = self.menu.get_children().index(self.battery_header) + 1
+            self.battery_items = []
+            for offset, (key, text) in enumerate(rows):
+                item = self.battery_item(MENU_INDENT + text)
+                item.set_sensitive(key is not None)
+                if key is not None:
+                    item.connect("activate", self.open_page, "devices")
+                item.show()
+                self.menu.insert(item, start + offset)
+                self.battery_items.append(item)
+        self.battery_rows = rows
 
     def smoke_check(self):
         artifact = self.output_dir
