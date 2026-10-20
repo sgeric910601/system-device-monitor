@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from runtime import VERSION
+from sdm.paths import VERSION
 
 def main():
     parser = argparse.ArgumentParser()

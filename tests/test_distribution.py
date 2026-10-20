@@ -1,4 +1,4 @@
-"""Portable installation, privacy and sensor mapping regression tests."""
+"""可攜安裝、隱私檢查與感測器配對的回歸測試。"""
 import importlib.util
 import json
 import os
@@ -9,9 +9,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import collectors
-import runtime
-from model import normalize_usb
+from sdm import paths
+from sdm.core.devices import normalize_usb
+from sdm.core.settings import DEFAULTS
+from sdm.data import collectors
+from sdm.services import autostart
+
+ROOT = Path(__file__).resolve().parents[1]
 
 class Portability(unittest.TestCase):
     def test_generic_keyboard_is_not_assumed_to_be_a_specific_model(self):
@@ -26,7 +30,7 @@ class Portability(unittest.TestCase):
         records = []
         for socket, core in ((0,0),(0,0),(1,0),(1,0)):
             records.append(f"processor : {len(records)}\nmodel name : Example CPU\nphysical id : {socket}\ncore id : {core}")
-        with patch("collectors.read", return_value="\n\n".join(records)):
+        with patch("sdm.data.collectors.read", return_value="\n\n".join(records)):
             self.assertEqual(collectors.cpu_info(), dict(name="Example CPU", cores=2, threads=4))
 
     def test_cpu_temperature_is_not_taken_from_gpu(self):
@@ -53,8 +57,8 @@ class Portability(unittest.TestCase):
 
     def test_missing_system_bus_keeps_core_collectors_available(self):
         from gi.repository import GLib
-        with patch("collectors.Gio.bus_get_sync", side_effect=GLib.Error("unavailable")), \
-             patch("collectors.load_json", return_value={}):
+        with patch("sdm.data.collectors.Gio.bus_get_sync", side_effect=GLib.Error("unavailable")), \
+             patch("sdm.data.collectors.load_json", return_value={}):
             collector = collectors.Collectors()
         self.assertIsNone(collector.bus)
         with self.assertRaises(GLib.Error):
@@ -65,13 +69,13 @@ class Portability(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp)/"settings.json"
             auto = Path(tmp)/"autostart/app.desktop"
-            with patch.multiple(runtime, CONFIG=config, AUTOSTART=auto):
-                runtime.initialize_preferences()
+            with patch.multiple(paths, CONFIG=config, AUTOSTART=auto):
+                autostart.initialize_preferences()
                 self.assertTrue(auto.exists())
-                runtime.set_autostart(False)
-                runtime.initialize_preferences()
+                autostart.set_autostart(False)
+                autostart.initialize_preferences()
                 self.assertFalse(auto.exists())
-                self.assertEqual(json.loads(config.read_text()), runtime.DEFAULTS)
+                self.assertEqual(json.loads(config.read_text()), DEFAULTS)
 
     def test_launcher_handles_spaces_and_shell_metacharacters(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,9 +83,11 @@ class Portability(unittest.TestCase):
             root.mkdir()
             (root/"device_monitor.py").write_text("import sys; print(sys.argv[1])")
             launcher = Path(tmp)/"launcher"
-            launcher.write_text(runtime.launcher_script(root))
+            launcher.write_text(autostart.launcher_script(root))
             launcher.chmod(0o755)
-            result = subprocess.check_output([str(launcher), "--version"], text=True)
+            # 啟動器會建立快取目錄；指向暫存目錄，避免碰到真實的使用者快取。
+            env = {**os.environ, "XDG_CACHE_HOME": str(Path(tmp)/"cache")}
+            result = subprocess.check_output([str(launcher), "--version"], text=True, env=env)
             self.assertEqual(result.strip(), "--version")
 
     def test_desktop_exec_handles_spaces_and_metacharacters(self):
@@ -92,7 +98,7 @@ class Portability(unittest.TestCase):
             target.write_text("#!/usr/bin/python3\nfrom pathlib import Path\nPath("+repr(str(output))+").write_text('ok')\n")
             target.chmod(0o755)
             entry = Path(tmp)/"monitor.desktop"
-            entry.write_text(runtime.desktop_entry(launcher=target))
+            entry.write_text(autostart.desktop_entry(launcher=target))
             subprocess.run(["desktop-file-validate", str(entry)], check=True)
             app = Gio.DesktopAppInfo.new_from_filename(str(entry))
             self.assertIsNotNone(app)
@@ -103,9 +109,29 @@ class Portability(unittest.TestCase):
                 time.sleep(.02)
             self.assertEqual(output.read_text(), "ok")
 
+    def test_package_root_uses_system_launcher(self):
+        with patch.object(paths, "ROOT", Path("/usr/share/system-device-monitor")):
+            self.assertEqual(autostart.launcher_path(), Path("/usr/bin/system-device-monitor"))
+        with patch.object(paths, "ROOT", Path("/opt/checkout")):
+            self.assertEqual(autostart.launcher_path(),
+                             Path.home()/".local/bin/system-device-monitor")
+
+    def test_version_fast_path_does_not_load_gi(self):
+        # 以子程序執行進入點，確認 --version 不載入 gi（不需要圖形環境）。
+        code = ("import runpy, sys\n"
+                "sys.argv = ['device_monitor.py', '--version']\n"
+                "try:\n"
+                "    runpy.run_path(sys.argv[0], run_name='__main__')\n"
+                "except SystemExit as stop:\n"
+                "    print('exit', stop.code, 'gi' in sys.modules)\n")
+        output = subprocess.check_output([sys.executable, "-B", "-c", code], cwd=ROOT, text=True)
+        version = (ROOT/"VERSION").read_text().strip()
+        self.assertEqual(output.splitlines(),
+                         ["System Device Monitor " + version, "exit 0 False"])
+
 class Publication(unittest.TestCase):
     def test_private_data_detection_does_not_need_real_private_data(self):
-        path = Path(__file__).parent/"scripts/privacy_check.py"
+        path = ROOT/"scripts/privacy_check.py"
         spec = importlib.util.spec_from_file_location("privacy_check", path)
         privacy = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(privacy)

@@ -2,13 +2,13 @@ PYTHON := /usr/bin/python3
 
 .PHONY: test privacy deb source release-assets
 test:
-	$(PYTHON) -m unittest discover -v
+	$(PYTHON) -B -m unittest discover -s tests -t . -v
 privacy:
-	$(PYTHON) scripts/privacy_check.py
-	$(PYTHON) scripts/scan_secrets.py
+	$(PYTHON) -B scripts/privacy_check.py
+	$(PYTHON) -B scripts/scan_secrets.py
 deb:
-	$(PYTHON) scripts/build_deb.py
+	$(PYTHON) -B scripts/build_deb.py
 source:
-	$(PYTHON) scripts/release_assets.py --source-only
+	$(PYTHON) -B scripts/release_assets.py --source-only
 release-assets: deb
-	$(PYTHON) scripts/release_assets.py
+	$(PYTHON) -B scripts/release_assets.py

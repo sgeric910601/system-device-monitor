@@ -1,4 +1,4 @@
-import json
+"""計數器、電量、頂端列選單與裝置收集的回歸測試。"""
 from pathlib import Path
 import tempfile
 import subprocess
@@ -6,11 +6,11 @@ import time
 import unittest
 from unittest.mock import patch, Mock
 from gi.repository import GLib
-import collectors
-from collectors import Collectors
-import device_monitor
-from model import (CpuCounter, Counters, battery, battery_menu_rows, normalize_usb,
-                   number, parse_apc)
+from sdm.core.counters import CpuCounter, Counters
+from sdm.core.devices import battery, battery_menu_rows, normalize_usb, parse_apc
+from sdm.core.fmt import number
+from sdm.data.collectors import Collectors
+from sdm.ui import app as ui_app
 
 class Calculations(unittest.TestCase):
     def test_cpu_guest_not_counted_twice_and_resume_resets(self):
@@ -92,14 +92,14 @@ class FakeMenu:
     def remove(self, item): self.children.remove(item)
 
 class BatteryMenuSync(unittest.TestCase):
-    """GTK-free: real widgets abort the process when no display is available."""
+    """不使用真正的 GTK 元件：沒有顯示器時建立元件會讓程序中止。"""
     def setUp(self):
-        self.monitor = device_monitor.Monitor.__new__(device_monitor.Monitor)
+        self.monitor = ui_app.Monitor.__new__(ui_app.Monitor)
         self.monitor.battery_header = FakeItem("設備電量")
         self.monitor.menu = FakeMenu([FakeItem("UPS"), self.monitor.battery_header, FakeItem("---")])
         self.monitor.battery_items, self.monitor.battery_rows = [], None
         self.monitor.battery_item = FakeItem
-        self.indent = device_monitor.MENU_INDENT
+        self.indent = ui_app.MENU_INDENT
 
     def labels(self):
         return [item.get_label() for item in self.monitor.menu.get_children()]
@@ -150,7 +150,7 @@ class Devices(unittest.TestCase):
         def mapped(path):
             path = str(path)
             return self.root/path.lstrip("/") if path.startswith("/sys/") else Path(path)
-        self.mapping = patch("collectors.Path", side_effect=mapped)
+        self.mapping = patch("sdm.data.collectors.Path", side_effect=mapped)
         self.mapping.start()
         self.addCleanup(self.mapping.stop)
 
@@ -161,7 +161,7 @@ class Devices(unittest.TestCase):
             return (dict(NativePath="/sys/bus/usb/devices/1-1/hiddev0",
                          Type=3, UpdateTime=123, BatteryLevel=1, Percentage=17,
                          IsPresent=True, State=1, Model="APC UPS"),)
-        with patch("collectors.dbus", side_effect=bus):
+        with patch("sdm.data.collectors.dbus", side_effect=bus):
             result = self.collector.devices()
         self.assertEqual(len(result["devices"]), 1)
         self.assertEqual(result["devices"][0]["kind"], "UPS")
@@ -175,7 +175,7 @@ class Devices(unittest.TestCase):
             return (dict(NativePath="/sys/bus/usb/devices/1-1/hiddev0",
                          Type=5, UpdateTime=123, BatteryLevel=6, Percentage=55,
                          IsPresent=True, State=2, Model="Example mouse"),)
-        with patch("collectors.dbus", side_effect=bus):
+        with patch("sdm.data.collectors.dbus", side_effect=bus):
             devices = self.collector.devices()["devices"]
         self.assertEqual(len(devices), 1)
         self.assertEqual(devices[0]["percent"], 50)
@@ -190,12 +190,12 @@ class Devices(unittest.TestCase):
             if method == "EnumerateDevices": return (["/battery"],)
             return (dict(NativePath="/org/bluez/hci0/dev_test", Percentage=80,
                          UpdateTime=123, IsPresent=True, BatteryLevel=1),)
-        with patch("collectors.dbus", side_effect=bus):
+        with patch("sdm.data.collectors.dbus", side_effect=bus):
             result = self.collector.devices()
         self.assertFalse(any(d["kind"] == "藍牙" for d in result["devices"]))
 
     def test_usb_survives_bluetooth_service_failure(self):
-        with patch("collectors.dbus", side_effect=GLib.Error("service unavailable")):
+        with patch("sdm.data.collectors.dbus", side_effect=GLib.Error("service unavailable")):
             result = self.collector.devices()
         self.assertEqual(len(result["devices"]), 1)
         self.assertTrue(result["errors"])
@@ -207,7 +207,7 @@ class Devices(unittest.TestCase):
             if "nvidia-smi" in args[0]:
                 raise subprocess.TimeoutExpired(args, timeout)
             return "STATUS : ONLINE\nBCHARGE : 30 Percent\n"
-        with patch("collectors.command", side_effect=command):
+        with patch("sdm.data.collectors.command", side_effect=command):
             result = self.collector.slow()
         self.assertIsNone(result["gpu"])
         self.assertTrue(result["gpu_error"])
@@ -216,7 +216,7 @@ class Devices(unittest.TestCase):
     def test_usb_remove_disappears(self):
         def bus(_bus, dest, path, iface, method, args=None):
             return ({},) if method == "GetManagedObjects" else ([],)
-        with patch("collectors.dbus", side_effect=bus):
+        with patch("sdm.data.collectors.dbus", side_effect=bus):
             self.assertEqual(len(self.collector.devices()["devices"]), 1)
             (self.usb/"idVendor").unlink()
             self.assertEqual(len(self.collector.devices()["devices"]), 0)

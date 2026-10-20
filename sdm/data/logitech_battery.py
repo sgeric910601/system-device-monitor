@@ -1,4 +1,4 @@
-"""Optional Solaar CLI adapter; retain only battery data, never raw output."""
+"""選用的 Solaar CLI 轉接；只保留電量資料，絕不保存原始輸出。"""
 import os
 from pathlib import Path
 import re
@@ -12,7 +12,7 @@ MAX_AGE = 90
 
 
 def parse_solaar_show(text):
-    """Parse G304/G305 battery-status reports, whose percentages are coarse."""
+    """解析 G304／G305 的 BATTERY STATUS 回報；其百分比為分段值。"""
     devices, current = [], None
     for line in text.splitlines():
         if line and not line[0].isspace():
@@ -32,7 +32,7 @@ def parse_solaar_show(text):
             elif re.search(r"\bBATTERY STATUS\s+\{1000\}", line):
                 current["coarse"] = True
             elif line.startswith("     Battery:"):
-                # Only the final device summary, not a nested feature report.
+                # 只採用裝置最後的摘要行，不採用巢狀的功能回報。
                 current.pop("percent", None)
                 current.pop("next", None)
                 match = re.fullmatch(
@@ -47,7 +47,7 @@ def parse_solaar_show(text):
 
 
 def inventory():
-    """Identify the paired HID device, its physical receiver, and online state."""
+    """找出已配對的 HID 裝置、其實體接收器及上線狀態。"""
     result = {}
     for node in Path("/sys/class/hidraw").glob("hidraw*"):
         device = node / "device"

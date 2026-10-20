@@ -1,4 +1,4 @@
-"""Read-only data adapters. No device-control operations or SMTP access."""
+"""唯讀資料來源轉接；不做任何裝置控制，也不存取 SMTP。"""
 import csv
 import io
 import json
@@ -10,10 +10,13 @@ import time
 import gi
 gi.require_version("GUdev", "1.0")
 from gi.repository import Gio, GLib, GUdev
-from runtime import ALIASES, load_json
-from logitech_battery import SolaarBattery, apply_battery
-from model import (Counters, CpuCounter, battery, normalize_usb, parse_apc,
-                   number, STATES, disk_is_physical)
+from sdm import paths
+from sdm.core.counters import Counters, CpuCounter
+from sdm.core.devices import (battery, normalize_usb, parse_apc, STATES,
+                              disk_is_physical)
+from sdm.core.fmt import number
+from sdm.core.jsonfile import load_json
+from sdm.data.logitech_battery import SolaarBattery, apply_battery
 
 def read(path, default=""):
     try:
@@ -68,7 +71,7 @@ def cpu_temperature(temperatures):
     return None, "CPU 溫度感測器無法取得"
 
 def device_temperatures(temperatures, device_path):
-    """Match sysfs ancestry, never list position or a guessed disk name."""
+    """依 sysfs 祖先路徑配對，絕不依清單順序或猜測的磁碟名稱。"""
     target = Path(device_path).resolve()
     matches = []
     for sensor in temperatures:
@@ -85,7 +88,7 @@ def storage_temperature(sensors):
 
 class Collectors:
     def __init__(self):
-        self.aliases = load_json(ALIASES)
+        self.aliases = load_json(paths.ALIASES)
         self.logitech_battery = SolaarBattery()
         self.cpu_info = cpu_info()
         self.cpu = CpuCounter()
@@ -168,7 +171,7 @@ class Collectors:
                 "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,fan.speed,power.draw",
                 "--format=csv,noheader,nounits"], 3)
             rows = list(csv.reader(io.StringIO(output)))
-            row = rows[0]  # First NVIDIA GPU in driver enumeration order.
+            row = rows[0]  # 驅動列舉順序中的第一張 NVIDIA GPU。
             gpu = dict(name=row[0].strip(), usage=number(row[1]), used=number(row[2]),
                        total=number(row[3]), temp=number(row[4]), fan=number(row[5]), watts=number(row[6]))
         except (OSError, subprocess.SubprocessError, IndexError):
@@ -241,7 +244,7 @@ class Collectors:
         for path in sorted(Path("/sys/bus/usb/devices").glob("*")):
             if not (path / "idVendor").exists() or ":" in path.name:
                 continue
-            if read(path / "bDeviceClass") == "09":  # hubs, not end devices
+            if read(path / "bDeviceClass") == "09":  # 集線器不是終端裝置
                 continue
             vendor, product = read(path/"idVendor"), read(path/"idProduct")
             raw_name = read(path/"product")
@@ -271,7 +274,7 @@ class Collectors:
                     source="BlueZ", detail="藍牙電量最後觀測時間", native=path)
         except GLib.Error:
             errors.append("藍牙服務暫時無法取得")
-        # Bluetooth radios belong to connection infrastructure, not the peripheral list.
+        # 藍牙無線電屬於連線基礎設施，不列入周邊清單。
         try:
             paths = dbus(self.bus, "org.freedesktop.UPower", "/org/freedesktop/UPower",
                          "org.freedesktop.UPower", "EnumerateDevices")[0]
@@ -289,7 +292,7 @@ class Collectors:
                         item = bluez[native]
                         if item["percent"] is None:
                             item.update(battery=label, percent=value, stamp=stamp, source="UPower")
-                    continue  # Connected is authoritative, not a cached battery record.
+                    continue  # 以 Connected 為準，不採用快取的電量紀錄。
                 if not d.get("IsPresent", False) or device_type not in (2, 3, 5, 6):
                     continue
                 supply = Path("/sys/class/power_supply") / native

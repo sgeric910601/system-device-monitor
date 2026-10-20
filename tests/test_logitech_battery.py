@@ -1,9 +1,9 @@
-"""Synthetic battery fixtures: no captured device identities or raw logs."""
+"""人工建立的電量測試資料：不含實機擷取的裝置識別碼或原始日誌。"""
 from types import SimpleNamespace
 import subprocess
 import unittest
 from unittest.mock import patch
-from logitech_battery import SolaarBattery, apply_battery, parse_solaar_show
+from sdm.data.logitech_battery import SolaarBattery, apply_battery, parse_solaar_show
 
 REPORT = """Lightspeed Receiver
   Device path  : /dev/hidraw1
@@ -58,12 +58,12 @@ class Sampling(unittest.TestCase):
     def setUp(self):
         self.source = SolaarBattery()
         self.current = {PARENT: IDENTITY}
-        self.inv = patch("logitech_battery.inventory", side_effect=lambda: self.current.copy())
+        self.inv = patch("sdm.data.logitech_battery.inventory", side_effect=lambda: self.current.copy())
         self.inv.start()
         self.addCleanup(self.inv.stop)
 
     def refresh(self):
-        with patch("logitech_battery.subprocess.run", return_value=SimpleNamespace(stdout=REPORT)) as run:
+        with patch("sdm.data.logitech_battery.subprocess.run", return_value=SimpleNamespace(stdout=REPORT)) as run:
             self.assertTrue(self.source.refresh()["available"])
             self.assertEqual(run.call_args.kwargs["timeout"], 15)
 
@@ -78,9 +78,9 @@ class Sampling(unittest.TestCase):
     def test_expired_or_suspended_sample_is_unavailable(self):
         self.refresh()
         sample = self.source.sample(PARENT)
-        with patch("logitech_battery.time.monotonic", return_value=sample["monotonic"] + 91):
+        with patch("sdm.data.logitech_battery.time.monotonic", return_value=sample["monotonic"] + 91):
             self.assertIsNone(self.source.sample(PARENT))
-        with patch("logitech_battery.time.time", return_value=sample["stamp"] + 91):
+        with patch("sdm.data.logitech_battery.time.time", return_value=sample["stamp"] + 91):
             self.assertIsNone(self.source.sample(PARENT))
 
     def test_offline_then_online_does_not_restore_old_value(self):
@@ -107,7 +107,7 @@ class Sampling(unittest.TestCase):
                         subprocess.CalledProcessError(1, "solaar")):
             with self.subTest(failure=type(failure).__name__):
                 self.refresh()
-                with patch("logitech_battery.subprocess.run", side_effect=failure):
+                with patch("sdm.data.logitech_battery.subprocess.run", side_effect=failure):
                     self.assertFalse(self.source.refresh()["available"])
                 self.assertIsNone(self.source.sample(PARENT))
 
@@ -118,13 +118,13 @@ class Sampling(unittest.TestCase):
             self.current[PARENT] = IDENTITY
             self.source.observe()
             return SimpleNamespace(stdout=REPORT)
-        with patch("logitech_battery.subprocess.run", side_effect=run):
+        with patch("sdm.data.logitech_battery.subprocess.run", side_effect=run):
             self.assertFalse(self.source.refresh()["available"])
         self.assertIsNone(self.source.sample(PARENT))
 
     def test_no_active_device_skips_external_process(self):
         self.current.clear()
-        with patch("logitech_battery.subprocess.run") as run:
+        with patch("sdm.data.logitech_battery.subprocess.run") as run:
             self.assertFalse(self.source.refresh()["available"])
             run.assert_not_called()
 
