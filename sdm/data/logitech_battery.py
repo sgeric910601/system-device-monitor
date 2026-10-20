@@ -6,9 +6,7 @@ import subprocess
 import threading
 import time
 
-INTERVAL = 60
-TIMEOUT = 15
-MAX_AGE = 90
+from sdm.constants import Solaar
 
 
 def parse_solaar_show(text):
@@ -95,7 +93,7 @@ class SolaarBattery:
             output = subprocess.run(
                 ["/usr/bin/solaar", "show"], stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
-                timeout=TIMEOUT, check=True, env=env).stdout
+                timeout=Solaar.TIMEOUT, check=True, env=env).stdout
             parsed = parse_solaar_show(output)
         except (OSError, subprocess.SubprocessError):
             with self.lock:
@@ -116,8 +114,8 @@ class SolaarBattery:
     def sample(self, parent):
         with self.lock:
             record = self.records.get(parent)
-            if (record and 0 <= time.monotonic() - record["monotonic"] <= MAX_AGE
-                    and 0 <= time.time() - record["stamp"] <= MAX_AGE):
+            if (record and 0 <= time.monotonic() - record["monotonic"] <= Solaar.MAX_AGE
+                    and 0 <= time.time() - record["stamp"] <= Solaar.MAX_AGE):
                 return record.copy()
         return None
 

@@ -15,12 +15,12 @@ gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
 
 from sdm import paths
+from sdm.constants import Collect, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
 from sdm.core.fmt import percent, size, age, number, temperature, value_text
 from sdm.core.jsonfile import load_json
 from sdm.core.settings import DEFAULTS, save_settings
 from sdm.data.collectors import Collectors
-from sdm.data.logitech_battery import INTERVAL as LOGITECH_INTERVAL
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
@@ -44,12 +44,12 @@ class Monitor(Gtk.Application):
         self.smoke_failed = False
         self.smoke_report = None
         self.window = None
-        self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="monitor")
+        self.pool = ThreadPoolExecutor(max_workers=Collect.WORKERS, thread_name_prefix="monitor")
         self.busy = set()
         self.closing = False
         self.data = {"system": {}, "slow": {}, "devices": {"devices": [], "errors": []}}
         self.errors = {}
-        self.series = {key: deque(maxlen=151) for key in ("cpu", "gpu", "ram")}
+        self.series = {key: deque(maxlen=Ui.SERIES_MAXLEN) for key in ("cpu", "gpu", "ram")}
         self.settings = DEFAULTS.copy()
         stored = load_json(paths.CONFIG)
         self.settings.update({key: value for key, value in stored.items()
@@ -73,14 +73,15 @@ class Monitor(Gtk.Application):
         self.build_window()
         self.build_indicator()
         self.watch_devices()
-        for kind, interval in (("system", 2), ("slow", 5), ("devices", 5),
-                               ("logitech", LOGITECH_INTERVAL)):
+        for kind, interval in (("system", Collect.SYSTEM_INTERVAL), ("slow", Collect.SLOW_INTERVAL),
+                               ("devices", Collect.DEVICES_INTERVAL),
+                               ("logitech", Solaar.INTERVAL)):
             self.submit(kind)
             self.timers.append(GLib.timeout_add_seconds(interval, self.tick, kind))
         if not self.background:
             self.window.show_all()
         if self.smoke:
-            self.timers.append(GLib.timeout_add_seconds(14, self.smoke_check))
+            self.timers.append(GLib.timeout_add_seconds(Smoke.CHECK_DELAY_SECONDS, self.smoke_check))
 
     def watch_devices(self):
         self.udev = GUdev.Client.new(["usb", "power_supply"])
@@ -101,7 +102,7 @@ class Monitor(Gtk.Application):
 
     def device_event(self):
         if not self.event_timer and not self.closing:
-            self.event_timer = GLib.timeout_add(250, self.device_event_ready)
+            self.event_timer = GLib.timeout_add(Ui.EVENT_DEBOUNCE_MS, self.device_event_ready)
 
     def device_event_ready(self):
         self.event_timer = 0
@@ -153,7 +154,7 @@ class Monitor(Gtk.Application):
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.window = Gtk.ApplicationWindow(application=self)
         self.window.set_title("系統與裝置監看")
-        self.window.set_default_size(1040, 770)
+        self.window.set_default_size(Ui.WINDOW_WIDTH, Ui.WINDOW_HEIGHT)
         self.window.set_icon_name("utilities-system-monitor")
         self.window.connect("delete-event", self.hide_window)
         header = Gtk.HeaderBar(title="系統與裝置", subtitle="本機即時監看")
@@ -417,7 +418,7 @@ class Monitor(Gtk.Application):
                 description.pack_start(label(d["detail"], "muted", True), False, False, 0)
                 row.pack_start(description, True, True, 0)
                 power = box(spacing=4)
-                power.set_size_request(165, -1)
+                power.set_size_request(Ui.DEVICE_POWER_WIDTH, -1)
                 power.pack_start(label(d["battery"], "device-power", True), False, False, 0)
                 stamp_label = label(age(d["stamp"]) if d["stamp"] else d["kind"], "muted")
                 power.pack_start(stamp_label, False, False, 0)
@@ -490,8 +491,8 @@ class Monitor(Gtk.Application):
         self.window.present()
         self.stack.set_visible_child_name("overview")
         self.overview_scroll.get_vadjustment().set_value(0)
-        GLib.timeout_add(700, self.capture, "overview")
-        GLib.timeout_add(1400, self.smoke_devices)
+        GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.capture, "overview")
+        GLib.timeout_add(Smoke.DEVICES_DELAY_MS, self.smoke_devices)
         return False
 
     def capture(self, name):
@@ -512,8 +513,8 @@ class Monitor(Gtk.Application):
 
     def smoke_devices(self):
         self.stack.set_visible_child_name("devices")
-        GLib.timeout_add(700, self.capture, "devices")
-        GLib.timeout_add(1500, self.smoke_finish)
+        GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.capture, "devices")
+        GLib.timeout_add(Smoke.FINISH_DELAY_MS, self.smoke_finish)
         return False
 
     def smoke_finish(self):

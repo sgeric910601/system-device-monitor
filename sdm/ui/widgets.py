@@ -5,6 +5,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
+from sdm.constants import Ui
+
 
 def label(text="", css=None, wrap=False):
     widget = Gtk.Label(label=text, xalign=0)
@@ -28,7 +30,7 @@ class Graph(Gtk.DrawingArea):
     def __init__(self, series, color):
         super().__init__()
         self.series, self.color = series, color
-        self.set_size_request(200, 78)
+        self.set_size_request(Ui.GRAPH_WIDTH, Ui.GRAPH_HEIGHT)
         self.set_hexpand(True)
         self.connect("draw", self.draw)
 
@@ -50,9 +52,9 @@ class Graph(Gtk.DrawingArea):
             if value is None:
                 previous = None
                 continue
-            x = width * (1 - (end-stamp)/300)
+            x = width * (1 - (end-stamp)/Ui.GRAPH_WINDOW_SECONDS)
             y = height - max(0, min(100, value))/100*(height-8)-4
-            if previous is None or stamp - previous > 5:
+            if previous is None or stamp - previous > Ui.GRAPH_GAP_SECONDS:
                 cr.move_to(x, y)
             else:
                 cr.line_to(x, y)

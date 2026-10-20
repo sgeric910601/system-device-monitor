@@ -11,6 +11,7 @@ import gi
 gi.require_version("GUdev", "1.0")
 from gi.repository import Gio, GLib, GUdev
 from sdm import paths
+from sdm.constants import Collect
 from sdm.core.counters import Counters, CpuCounter
 from sdm.core.devices import (battery, normalize_usb, parse_apc, STATES,
                               disk_is_physical)
@@ -24,7 +25,7 @@ def read(path, default=""):
     except (OSError, UnicodeError):
         return default
 
-def command(args, timeout=3):
+def command(args, timeout=Collect.COMMAND_TIMEOUT):
     result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
                             env={**os.environ, "LC_ALL": "C"}, check=True)
     return result.stdout
@@ -33,7 +34,7 @@ def dbus(bus, destination, path, interface, method, args=None):
     if bus is None:
         raise GLib.Error("System bus unavailable")
     return bus.call_sync(destination, path, interface, method, args, None,
-                         Gio.DBusCallFlags.NONE, 1800, None).unpack()
+                         Gio.DBusCallFlags.NONE, Collect.DBUS_TIMEOUT_MS, None).unpack()
 
 def usb_parent(path):
     try:
@@ -169,7 +170,7 @@ class Collectors:
         try:
             output = command(["/usr/bin/nvidia-smi",
                 "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,fan.speed,power.draw",
-                "--format=csv,noheader,nounits"], 3)
+                "--format=csv,noheader,nounits"], Collect.NVIDIA_SMI_TIMEOUT)
             rows = list(csv.reader(io.StringIO(output)))
             row = rows[0]  # 驅動列舉順序中的第一張 NVIDIA GPU。
             gpu = dict(name=row[0].strip(), usage=number(row[1]), used=number(row[2]),
@@ -178,17 +179,17 @@ class Collectors:
             gpu_error = "GPU 資料暫時無法取得"
         ups = None
         try:
-            ups = parse_apc(command(["/sbin/apcaccess", "status"], 2))
+            ups = parse_apc(command(["/sbin/apcaccess", "status"], Collect.APCACCESS_TIMEOUT))
             ups = {key: ups[key] for key in ("STATUS", "BCHARGE", "TIMELEFT", "LOADPCT") if key in ups}
             if "COMMLOST" in ups.get("STATUS", ""):
                 ups = None
         except (OSError, subprocess.SubprocessError):
             pass
-        if time.monotonic() - self.last_disk_meta >= 30:
+        if time.monotonic() - self.last_disk_meta >= Collect.DISK_META_INTERVAL:
             self.last_disk_meta = time.monotonic()
             try:
                 root = json.loads(command(["/usr/bin/lsblk", "-J", "-b",
-                    "-o", "NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL"], 3))
+                    "-o", "NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL"], Collect.LSBLK_TIMEOUT))
                 disks = []
                 for device in root["blockdevices"]:
                     if device.get("type") != "disk" or not disk_is_physical(device["name"]):

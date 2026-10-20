@@ -2,6 +2,7 @@
   "runtime": [
     "device_monitor.py",
     "sdm/__init__.py",
+    "sdm/constants.py",
     "sdm/core/__init__.py",
     "sdm/core/counters.py",
     "sdm/core/devices.py",
@@ -50,6 +51,7 @@
     "scripts/release_assets.py",
     "scripts/scan_secrets.py",
     "sdm/__init__.py",
+    "sdm/constants.py",
     "sdm/core/__init__.py",
     "sdm/core/counters.py",
     "sdm/core/devices.py",
