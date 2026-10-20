@@ -4,7 +4,7 @@ import shlex
 
 from sdm import paths
 from sdm.constants import Launcher
-from sdm.core.settings import DEFAULTS, save_settings
+from sdm.core.settings import LEGACY_DEFAULTS, save_legacy
 
 PACKAGE_ROOT = Path("/usr/share/system-device-monitor")
 PACKAGE_LAUNCHER = Path("/usr/bin/system-device-monitor")
@@ -43,7 +43,7 @@ def initialize_preferences():
     if not paths.CONFIG.exists():
         if not paths.AUTOSTART.exists():
             set_autostart(True)
-        save_settings(paths.CONFIG, DEFAULTS)
+        save_legacy(paths.CONFIG, LEGACY_DEFAULTS)
 
 
 def launcher_script(project):

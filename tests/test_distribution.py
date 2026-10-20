@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from sdm import paths
 from sdm.core.devices import normalize_usb
-from sdm.core.settings import DEFAULTS
+from sdm.core.settings import LEGACY_DEFAULTS
 from sdm.data import collectors
 from sdm.services import autostart
 
@@ -75,7 +75,7 @@ class Portability(unittest.TestCase):
                 autostart.set_autostart(False)
                 autostart.initialize_preferences()
                 self.assertFalse(auto.exists())
-                self.assertEqual(json.loads(config.read_text()), DEFAULTS)
+                self.assertEqual(json.loads(config.read_text()), dict(LEGACY_DEFAULTS))
 
     def test_launcher_handles_spaces_and_shell_metacharacters(self):
         with tempfile.TemporaryDirectory() as tmp:

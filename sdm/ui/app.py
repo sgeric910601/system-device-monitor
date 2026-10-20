@@ -18,8 +18,7 @@ from sdm import paths
 from sdm.constants import Collect, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
 from sdm.core.fmt import percent, size, age, number, temperature, value_text
-from sdm.core.jsonfile import load_json
-from sdm.core.settings import DEFAULTS, save_settings
+from sdm.core.settings import LEGACY_KEYS, load_settings, save_legacy
 from sdm.data.collectors import Collectors
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.ui.theme import GRAPH_COLORS, css_data
@@ -50,10 +49,11 @@ class Monitor(Gtk.Application):
         self.data = {"system": {}, "slow": {}, "devices": {"devices": [], "errors": []}}
         self.errors = {}
         self.series = {key: deque(maxlen=Ui.SERIES_MAXLEN) for key in ("cpu", "gpu", "ram")}
-        self.settings = DEFAULTS.copy()
-        stored = load_json(paths.CONFIG)
-        self.settings.update({key: value for key, value in stored.items()
-                              if key in DEFAULTS and isinstance(value, bool)})
+        # 只讀取；首次啟動判斷必須在 initialize_preferences() 建立 settings.json 之前。
+        loaded = load_settings(paths.CONFIG, paths.PREFERENCES)
+        self.settings = dict(loaded.legacy)
+        self.preferences = loaded.preferences  # 新版設定：後續階段才使用
+        self.first_run = loaded.first_run
         self.timers, self.subscriptions = [], []
         self.cards = {}
         self.card_titles = {}
@@ -261,8 +261,8 @@ class Monitor(Gtk.Application):
         page.pack_start(label("CPU／記憶體／網速／磁碟讀寫：2 秒\nGPU／溫度／UPS：5 秒\n磁碟容量：30 秒\n設備插拔及連線事件會即時觸發更新。", "muted", True), False, False, 0)
 
     def toggle_setting(self, widget, key):
-        self.settings[key] = widget.get_active()
-        save_settings(paths.CONFIG, self.settings)
+        self.settings = {**self.settings, key: widget.get_active()}
+        save_legacy(paths.CONFIG, self.settings)
         self.render_indicator()
 
     def toggle_autostart(self, widget):
@@ -295,7 +295,7 @@ class Monitor(Gtk.Application):
         self.menu.show_all()
         self.indicator.set_menu(self.menu)
         self.indicators = {}
-        for index, key in enumerate(reversed(DEFAULTS)):
+        for index, key in enumerate(reversed(LEGACY_KEYS)):
             indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor-" + key,
                 str(paths.ROOT/"icons"/(key + ".svg")), AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES)
             indicator.set_ordering_index(100 + index)

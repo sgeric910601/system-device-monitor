@@ -14,7 +14,7 @@ PATTERNS = {
     "private key": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
 }
 EMAIL = re.compile(rb"[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-BLOCKED = {"settings.json", "device-aliases.json", "config.json", "credentials.json",
+BLOCKED = {"settings.json", "preferences.json", "device-aliases.json", "config.json", "credentials.json",
            "dependency-status", "smoke.json"}
 BLOCKED_SUFFIXES = {".png", ".jpg", ".jpeg", ".log", ".key", ".pem", ".p12", ".pfx", ".bak", ".pyc"}
 

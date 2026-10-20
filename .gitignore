@@ -13,6 +13,7 @@ dependency-status
 *.log
 *.bak
 settings.json
+preferences.json
 device-aliases.json
 credentials*
 secrets*

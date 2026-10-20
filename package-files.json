@@ -8,6 +8,7 @@
     "sdm/core/devices.py",
     "sdm/core/fmt.py",
     "sdm/core/jsonfile.py",
+    "sdm/core/preference_specs.py",
     "sdm/core/settings.py",
     "sdm/data/__init__.py",
     "sdm/data/collectors.py",
@@ -57,6 +58,7 @@
     "sdm/core/devices.py",
     "sdm/core/fmt.py",
     "sdm/core/jsonfile.py",
+    "sdm/core/preference_specs.py",
     "sdm/core/settings.py",
     "sdm/data/__init__.py",
     "sdm/data/collectors.py",
@@ -71,6 +73,7 @@
     "tests/__init__.py",
     "tests/test_distribution.py",
     "tests/test_logitech_battery.py",
-    "tests/test_monitor.py"
+    "tests/test_monitor.py",
+    "tests/test_settings.py"
   ]
 }
