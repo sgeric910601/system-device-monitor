@@ -18,19 +18,23 @@ from sdm import paths
 from sdm.constants import Collect, History, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
 from sdm.core.fmt import percent, size, age, temperature, value_text
-from sdm.core.settings import LEGACY_KEYS, load_settings, save_legacy
+from sdm.core.settings import (LEGACY_KEYS, PreferencesReadOnlyError, load_settings,
+                               save_legacy, save_preferences)
 from sdm.data.collectors import Collectors
 from sdm.data.ups import UpsReading
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.services.history_service import HistoryService
 from sdm.services.power_service import desktop_history_sample
 from sdm.ui.pages.power import PowerPage
+from sdm.ui.power_text import menu_line, tray_label
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 MENU_INDENT = "    "
-SMOKE_PAGES = ("power", "overview", "devices")   # 模擬測試依序顯示的頁面
+SMOKE_PAGES = ("power", "overview", "devices", "settings")   # 模擬測試依序顯示的頁面
+READ_ONLY_TIP = "設定檔目前無法寫入（可能由較新版本建立），此項目暫時無法變更"
+SAVE_FAILED_TIP = "無法儲存設定：這次執行期間仍會套用，重新啟動後恢復原本的選擇"
 
 
 class RunResult(NamedTuple):
@@ -290,6 +294,12 @@ class Monitor(Gtk.Application):
             check.set_active(self.settings[key])
             check.connect("toggled", self.toggle_setting, key)
             page.pack_start(check, False, False, 0)
+        self.power_check = Gtk.CheckButton(label="整機耗電")
+        self.power_check.set_active(self.preferences.tray_power)
+        self.power_check_handler = self.power_check.connect("toggled", self.toggle_power_tray)
+        if self.preferences.read_only:
+            self.lock_power_check(self.power_check)
+        page.pack_start(self.power_check, False, False, 0)
         page.pack_start(label("啟動與背景運作", "section"), False, False, 0)
         autostart = Gtk.CheckButton(label="登入 Ubuntu 桌面後自動啟動")
         autostart.set_active(paths.AUTOSTART.exists())
@@ -297,12 +307,36 @@ class Monitor(Gtk.Application):
         page.pack_start(autostart, False, False, 0)
         page.pack_start(label("關閉視窗後仍會在頂端列運作。需要停止時，使用頂端列選單中的「退出」。", "muted", True), False, False, 0)
         page.pack_start(label("資料更新", "section"), False, False, 0)
-        page.pack_start(label("CPU／記憶體／網速／磁碟讀寫：2 秒\nGPU／溫度／UPS：5 秒\n磁碟容量：30 秒\n設備插拔及連線事件會即時觸發更新。", "muted", True), False, False, 0)
+        page.pack_start(label("CPU／記憶體／網速／磁碟讀寫：2 秒\nGPU／溫度／UPS：5 秒\n磁碟容量：30 秒\n"
+                              "耗電歷史：每分鐘記錄一次，保留 7 天\n設備插拔及連線事件會即時觸發更新。",
+                              "muted", True), False, False, 0)
 
     def toggle_setting(self, widget, key):
         self.settings = {**self.settings, key: widget.get_active()}
         save_legacy(paths.CONFIG, self.settings)
         self.render_indicator()
+
+    def toggle_power_tray(self, widget):
+        """「整機耗電」寫入 preferences.json，不動舊版 settings.json。"""
+        updated = self.preferences.with_changes(tray_power=widget.get_active())
+        try:
+            save_preferences(paths.PREFERENCES, updated)
+        except PreferencesReadOnlyError:
+            self.lock_power_check(widget)
+            return
+        except OSError as error:
+            logging.warning("Cannot save preferences: %s", type(error).__name__)
+            widget.set_tooltip_text(SAVE_FAILED_TIP)
+        self.preferences = updated
+        self.render_indicator()
+
+    def lock_power_check(self, widget):
+        """設定唯讀：勾選框恢復目前的值並停用，滑鼠停留時說明原因。"""
+        widget.handler_block(self.power_check_handler)
+        widget.set_active(self.preferences.tray_power)
+        widget.handler_unblock(self.power_check_handler)
+        widget.set_sensitive(False)
+        widget.set_tooltip_text(READ_ONLY_TIP)
 
     def toggle_autostart(self, widget):
         set_autostart(widget.get_active())
@@ -311,36 +345,53 @@ class Monitor(Gtk.Application):
         self.indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor",
             "utilities-system-monitor-symbolic", AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES)
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
-        self.menu = Gtk.Menu()
+        self.menu = self.build_menu()
+        self.indicator.set_menu(self.menu)
+        self.build_split_indicators()
+        self.render_indicator()
+
+    def build_menu(self):
+        """第一行是耗電（開啟電源頁），其後為原有的摘要、設備電量與功能項目。"""
+        menu = Gtk.Menu()
+        self.power_item = Gtk.MenuItem(label=menu_line(None))
+        self.power_item.connect("activate", self.open_page, "power")
+        menu.append(self.power_item)
         self.summary_items = {}
         for key, title in (("cpu","CPU"),("temperature","CPU 溫度"),("ram","記憶體"),("gpu","GPU"),
                            ("network","網速"),("ups","UPS")):
             item = Gtk.MenuItem(label=title + "：讀取中")
             item.connect("activate", self.open_page, "overview")
-            self.menu.append(item)
+            menu.append(item)
             self.summary_items[key] = item
         self.battery_header = Gtk.MenuItem(label="設備電量")
         self.battery_header.connect("activate", self.open_page, "devices")
-        self.menu.append(self.battery_header)
+        menu.append(self.battery_header)
         self.battery_items, self.battery_rows = [], None
-        self.menu.append(Gtk.SeparatorMenuItem())
+        menu.append(Gtk.SeparatorMenuItem())
         for title, page in (("開啟完整看板","overview"),("查看設備電量","devices"),("設定","settings")):
             item = Gtk.MenuItem(label=title)
             item.connect("activate", self.open_page, page)
-            self.menu.append(item)
+            menu.append(item)
         item = Gtk.MenuItem(label="退出")
         item.connect("activate", lambda *_: self.stop())
-        self.menu.append(item)
-        self.menu.show_all()
-        self.indicator.set_menu(self.menu)
+        menu.append(item)
+        menu.show_all()
+        return menu
+
+    def build_split_indicators(self):
+        """分開顯示的頂端列指示器：舊有五項，加上最左邊的「耗電」。"""
+        category = AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES
         self.indicators = {}
         for index, key in enumerate(reversed(LEGACY_KEYS)):
             indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor-" + key,
-                str(paths.ROOT/"icons"/(key + ".svg")), AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES)
+                str(paths.ROOT/"icons"/(key + ".svg")), category)
             indicator.set_ordering_index(100 + index)
             indicator.set_menu(self.menu)
             self.indicators[key] = indicator
-        self.render_indicator()
+        self.power_indicator = AyatanaAppIndicator3.Indicator.new(
+            "system-device-monitor-power", str(paths.ROOT/"icons"/"power.svg"), category)
+        self.power_indicator.set_ordering_index(100 + len(LEGACY_KEYS))
+        self.power_indicator.set_menu(self.menu)
 
     def open_page(self, widget, page):
         self.stack.set_visible_child_name(page)
@@ -484,7 +535,8 @@ class Monitor(Gtk.Application):
             "temperature": temperature(slow.get("cpu_temp")),
         }
         self.indicator.set_label("", "")
-        self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE if any(self.settings.values())
+        any_split = any(self.settings.values()) or self.preferences.tray_power
+        self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE if any_split
                                   else AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
         for key, indicator in getattr(self, "indicators", {}).items():
             indicator.set_label(parts[key], "")
@@ -496,6 +548,17 @@ class Monitor(Gtk.Application):
         self.summary_items["ups"].set_label("UPS " + percent(ups.charge_pct) +
             " · 續航 " + value_text(ups.time_left_min, " 分鐘"))
         self.sync_battery_items(battery_menu_rows(self.data["devices"]))
+        self.render_power_tray(slow.get("power"))
+
+    def render_power_tray(self, power):
+        """「耗電」指示器顯示整機瓦數（取整數）；選單第一行加上 3 分鐘平均。"""
+        self.power_indicator.set_label(tray_label(power), "")
+        self.power_indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE
+                                        if self.preferences.tray_power
+                                        else AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
+        text = menu_line(power)
+        if self.power_item.get_label() != text:
+            self.power_item.set_label(text)
 
     def battery_item(self, text):
         return Gtk.MenuItem(label=text)
@@ -569,7 +632,8 @@ class Monitor(Gtk.Application):
         self.smoke_failed = bool(self.errors) or not bool(self.data["system"])
         report = dict(ok=not self.smoke_failed, collector_errors=sorted(self.errors),
                       system_ready=bool(self.data["system"]),
-                      indicator_count=len(getattr(self, "indicators", {})),
+                      indicator_count=len(getattr(self, "indicators", {})) +
+                      (1 if getattr(self, "power_indicator", None) else 0),
                       pages=list(getattr(self, "smoke_pages", [])))
         (self.output_dir/"smoke.json").write_text(json.dumps(report, indent=2) + "\n")
         self.smoke_report = report
@@ -588,7 +652,9 @@ class Monitor(Gtk.Application):
         for subscription in self.subscriptions:
             self.collector.bus.signal_unsubscribe(subscription)
         self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
-        for indicator in getattr(self, "indicators", {}).values():
+        split = list(getattr(self, "indicators", {}).values())
+        split += [indicator for indicator in (getattr(self, "power_indicator", None),) if indicator]
+        for indicator in split:
             indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
         self.pool.shutdown(wait=False, cancel_futures=True)
         if getattr(self, "collector", None) is not None:

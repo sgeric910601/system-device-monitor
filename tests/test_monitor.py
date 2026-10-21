@@ -220,7 +220,7 @@ class SmokePages(unittest.TestCase):
         self.monitor.stop = lambda: self.stopped.append(True)
 
     def test_power_page_comes_first(self):
-        self.assertEqual(ui_app.SMOKE_PAGES, ("power", "overview", "devices"))
+        self.assertEqual(ui_app.SMOKE_PAGES, ("power", "overview", "devices", "settings"))
 
     def test_rendered_pages_are_reported(self):
         with patch.object(ui_app.GLib, "timeout_add") as timer:
@@ -231,7 +231,7 @@ class SmokePages(unittest.TestCase):
         self.monitor.scrolls["devices"].mapped = False
         self.monitor.smoke_finish()
         report = json.loads((self.monitor.output_dir/"smoke.json").read_text())
-        self.assertEqual(report["pages"], ["power", "overview", "devices"])
+        self.assertEqual(report["pages"], list(ui_app.SMOKE_PAGES))
         self.assertTrue(report["ok"])
         self.assertEqual(self.stopped, [True])
 

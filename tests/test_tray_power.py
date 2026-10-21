@@ -1,0 +1,119 @@
+"""頂端列「耗電」指示器、選單第一行與設定頁勾選框；不建立真正的 GTK 元件。"""
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from sdm import paths
+from sdm.core.settings import Preferences
+from sdm.data.ups import UpsReading
+from sdm.services.power_service import PowerService
+from sdm.ui import app as ui_app
+
+ACTIVE = ui_app.AyatanaAppIndicator3.IndicatorStatus.ACTIVE
+PASSIVE = ui_app.AyatanaAppIndicator3.IndicatorStatus.PASSIVE
+
+
+class FakeIndicator:
+    def __init__(self): self.label, self.status = None, None
+    def set_label(self, label, guide): self.label = label
+    def set_status(self, status): self.status = status
+
+
+class FakeItem:
+    def __init__(self, label=""): self.label, self.sets = label, 0
+    def get_label(self): return self.label
+    def set_label(self, label): self.label, self.sets = label, self.sets + 1
+
+
+class FakeCheck:
+    def __init__(self, active):
+        self.active, self.sensitive, self.tooltip, self.blocked = active, True, None, []
+    def get_active(self): return self.active
+    def set_active(self, value): self.active = value
+    def set_sensitive(self, value): self.sensitive = value
+    def set_tooltip_text(self, text): self.tooltip = text
+    def handler_block(self, handler): self.blocked.append(("block", handler))
+    def handler_unblock(self, handler): self.blocked.append(("unblock", handler))
+
+
+def snapshot(load_w=288.0):
+    ups = UpsReading(status=("ONLINE",), online=True, load_w=load_w)
+    return PowerService(read_ups=lambda: ups, read_gpus=lambda: (), read_uptime=lambda: None,
+                        clock=lambda: 1.0, wall=lambda: 1.0).sample()
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.prefs_path = Path(temp.name)/"preferences.json"
+        self.legacy_path = Path(temp.name)/"settings.json"
+        guard = patch.multiple(paths, PREFERENCES=self.prefs_path, CONFIG=self.legacy_path)
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.monitor = ui_app.Monitor.__new__(ui_app.Monitor)
+        self.monitor.preferences = Preferences.defaults()
+        self.monitor.power_indicator = FakeIndicator()
+        self.monitor.power_item = FakeItem()
+        self.rendered = []
+        self.monitor.render_indicator = lambda: self.rendered.append(True)
+
+
+class Indicator(Base):
+    def test_label_and_menu_line(self):
+        self.monitor.render_power_tray(snapshot())
+        self.assertEqual(self.monitor.power_indicator.label, "288 W")
+        self.assertEqual(self.monitor.power_indicator.status, ACTIVE)
+        self.assertEqual(self.monitor.power_item.label, "耗電：288 W（3 分鐘平均 288 W）")
+
+    def test_hidden_when_turned_off(self):
+        self.monitor.preferences = Preferences.defaults().with_changes(tray_power=False)
+        self.monitor.render_power_tray(snapshot())
+        self.assertEqual(self.monitor.power_indicator.status, PASSIVE)
+
+    def test_menu_label_is_only_set_when_changed(self):
+        self.monitor.render_power_tray(snapshot())
+        self.monitor.render_power_tray(snapshot())
+        self.assertEqual(self.monitor.power_item.sets, 1)
+
+    def test_before_the_first_reading(self):
+        self.monitor.render_power_tray(None)
+        self.assertEqual(self.monitor.power_indicator.label, "— W")
+        self.assertEqual(self.monitor.power_item.label, "耗電：讀取中")
+
+
+class Checkbox(Base):
+    def test_toggle_writes_only_preferences(self):
+        check = FakeCheck(False)
+        self.monitor.toggle_power_tray(check)
+        self.assertIs(json.loads(self.prefs_path.read_text())["tray_power"], False)
+        self.assertFalse(self.legacy_path.exists())
+        self.assertIs(self.monitor.preferences.tray_power, False)
+        self.assertEqual(self.rendered, [True])
+
+    def test_read_only_preferences_revert_and_disable_the_checkbox(self):
+        self.monitor.preferences = Preferences.defaults(read_only=True)
+        self.monitor.power_check_handler = 7
+        check = FakeCheck(False)
+        self.monitor.toggle_power_tray(check)
+        self.assertTrue(check.active)
+        self.assertFalse(check.sensitive)
+        self.assertTrue(check.tooltip)
+        self.assertEqual(check.blocked, [("block", 7), ("unblock", 7)])
+        self.assertFalse(self.prefs_path.exists())
+        self.assertIs(self.monitor.preferences.tray_power, True)
+
+    def test_write_failure_keeps_the_choice_for_this_session(self):
+        check = FakeCheck(False)
+        with patch.object(ui_app, "save_preferences", side_effect=OSError("disk full")):
+            with self.assertLogs(level="WARNING"):
+                self.monitor.toggle_power_tray(check)
+        self.assertIs(self.monitor.preferences.tray_power, False)
+        self.assertTrue(check.tooltip)
+        self.assertTrue(check.sensitive)
+
+
+if __name__ == "__main__":
+    unittest.main()
