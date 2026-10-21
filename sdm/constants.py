@@ -60,7 +60,8 @@ class History:
     """耗電與電量歷史（XDG 資料目錄下的 history.json）。"""
     FILE_NAME = "history.json"
     FORMAT = 1
-    DIRECTORY_MODE = 0o700
+    DIRECTORY_MODE = 0o700              # 本程式建立的資料夾
+    FILE_MODE = 0o600                   # history.json 與其備份只有本人可讀寫
     RETENTION_SECONDS = 7 * 24 * 3600
     SAVE_EVERY = 15                     # 每累積幾筆新紀錄寫檔一次
     RECORD_INTERVAL_SECONDS = 60        # 桌機每分鐘記錄一次

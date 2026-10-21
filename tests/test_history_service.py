@@ -1,5 +1,6 @@
 """歷史檔案服務：載入、每 15 筆存檔、損壞時備份成新檔且絕不覆寫，全部在暫存目錄。"""
 import json
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -9,7 +10,7 @@ from unittest.mock import patch
 from sdm import paths
 from sdm.constants import History
 from sdm.core.history import HistorySample, encode_history
-from sdm.core.jsonfile import write_bytes_atomic
+from sdm.core.jsonfile import create_backup, write_bytes_atomic, write_exclusive
 from sdm.services.history_service import HistoryService, default_path, read_boot_time
 
 NOW = 1_800_000_000.0
@@ -25,12 +26,18 @@ class Writer:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, path, data):
+    def __call__(self, path, data, **options):
         self.calls.append((path, data))
+
+
+def file_mode(path):
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 class TempData(unittest.TestCase):
     def setUp(self):
+        previous = os.umask(0o022)
+        self.addCleanup(os.umask, previous)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name)
@@ -102,7 +109,7 @@ class Saving(TempData):
         self.assertEqual(service.samples, ())
 
     def test_write_failure_keeps_samples_for_the_next_try(self):
-        def failing(path, data):
+        def failing(path, data, **options):
             raise OSError("disk full")
         service = self.service(writer=failing)
         with self.assertLogs(LOGGER, "WARNING"):
@@ -267,6 +274,46 @@ class AtomicBytes(TempData):
                 write_bytes_atomic(self.path, b"lost\n")
         self.assertEqual(self.path.read_bytes(), b"kept\n")
         self.assertEqual([p.name for p in self.path.parent.iterdir()], ["history.json"])
+
+
+class Permissions(TempData):
+    def test_writers_accept_a_mode(self):
+        self.path.parent.mkdir(parents=True)
+        write_exclusive(self.path.parent/"a", b"x", mode=0o600)
+        write_bytes_atomic(self.path.parent/"b", b"x", mode=0o600)
+        backup = create_backup(self.path.parent/"c.json", b"x", 1, mode=0o600)
+        write_bytes_atomic(self.path.parent/"d", b"x")
+        self.assertEqual([file_mode(self.path.parent/name) for name in ("a", "b")], [0o600] * 2)
+        self.assertEqual(file_mode(backup), 0o600)
+        self.assertEqual(file_mode(self.path.parent/"d"), 0o644)   # 預設仍依 umask
+
+    def test_history_file_and_backups_are_owner_only(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_bytes(b"broken")
+        with self.assertLogs(LOGGER, "WARNING"):
+            service = self.service()
+        service.add(sample(NOW))
+        service.save()
+        self.assertEqual(file_mode(self.path), 0o600)
+        self.assertEqual([file_mode(self.path.parent/name) for name in self.backups()], [0o600])
+
+    def test_created_data_directory_is_private_and_parents_untouched(self):
+        parent = self.path.parent.parent
+        parent.mkdir(parents=True, mode=0o755)
+        os.chmod(parent, 0o755)
+        service = self.service()
+        service.add(sample(NOW))
+        service.save()
+        self.assertEqual(file_mode(self.path.parent), 0o700)
+        self.assertEqual(file_mode(parent), 0o755)
+
+    def test_existing_data_directory_keeps_its_mode(self):
+        self.path.parent.mkdir(parents=True)
+        os.chmod(self.path.parent, 0o755)
+        service = self.service()
+        service.add(sample(NOW))
+        service.save()
+        self.assertEqual(file_mode(self.path.parent), 0o755)
 
 
 class Boot(unittest.TestCase):

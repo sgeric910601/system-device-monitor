@@ -12,6 +12,7 @@ from sdm.constants import Storage
 LOG = logging.getLogger(__name__)
 TOKEN_BYTES = 8           # 暫存檔名中的亂數：16 位小寫十六進位
 TEMPORARY_SUFFIX = ".tmp"
+DEFAULT_MODE = 0o666      # 與一般寫檔相同，再扣除 umask
 
 
 def load_json(path):
@@ -34,13 +35,13 @@ def temporary_pattern(path):
                       + re.escape(TEMPORARY_SUFFIX))
 
 
-def write_exclusive(path, data):
+def write_exclusive(path, data, mode=DEFAULT_MODE):
     """以獨占方式建立新檔並寫入、fsync。
 
     檔案已存在時拋出 FileExistsError，絕不覆寫；建立後任何失敗都會關閉描述子、
-    移除這個剛建立的檔案並重新拋出。權限為 0666 扣除 umask，與一般寫檔相同。
+    移除這個剛建立的檔案並重新拋出。權限為 mode 扣除 umask（預設與一般寫檔相同）。
     """
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         handle = os.fdopen(descriptor, "wb")
     except BaseException:
@@ -62,11 +63,14 @@ def write_json_atomic(path, value):
     write_bytes_atomic(path, json_text(value).encode("utf-8"))
 
 
-def write_bytes_atomic(path, data):
-    """先寫同目錄暫存檔並 fsync，再以 os.replace 取代；失敗時原檔不變、不留暫存檔。"""
+def write_bytes_atomic(path, data, mode=DEFAULT_MODE):
+    """先寫同目錄暫存檔並 fsync，再以 os.replace 取代；失敗時原檔不變、不留暫存檔。
+
+    新檔的權限為 mode 扣除 umask（取代後沿用暫存檔的權限）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(TOKEN_BYTES)}{TEMPORARY_SUFFIX}")
-    write_exclusive(temporary, data)
+    write_exclusive(temporary, data, mode)
     try:
         os.replace(temporary, path)
     except BaseException:
@@ -75,7 +79,7 @@ def write_bytes_atomic(path, data):
     _sync_directory(path.parent)
 
 
-def create_backup(path, data, epoch):
+def create_backup(path, data, epoch, mode=DEFAULT_MODE):
     """把 data 存成同目錄的新備份檔並回傳其路徑。
 
     檔名為 <主檔名>-<epoch><副檔名>.bak；已存在時依序加 -1、-2…，絕不覆寫。
@@ -84,7 +88,7 @@ def create_backup(path, data, epoch):
         number = f"-{attempt}" if attempt else ""
         backup = path.with_name(f"{path.stem}-{epoch}{number}{path.suffix}.bak")
         try:
-            write_exclusive(backup, data)
+            write_exclusive(backup, data, mode)
         except FileExistsError:
             continue
         _sync_directory(path.parent)

@@ -9,6 +9,7 @@
   資料（時鐘大幅往前跳），本次執行第一次發生時先另存備份再修剪。
 """
 import logging
+import os
 from pathlib import Path
 import time
 
@@ -75,7 +76,7 @@ class HistoryService:
 
     def _recover(self, data, now):
         try:
-            backup = self.backup(self.path, data, int(now))
+            backup = self.backup(self.path, data, int(now), mode=History.FILE_MODE)
         except OSError as error:
             self._disable("History file is invalid and could not be backed up (%s)",
                           type(error).__name__)
@@ -113,7 +114,7 @@ class HistoryService:
         if self.jump_backup_done:
             return True
         try:
-            backup = self.backup(self.path, data, int(now))
+            backup = self.backup(self.path, data, int(now), mode=History.FILE_MODE)
         except OSError as error:
             self._disable("Clock jumped forward and history could not be backed up (%s)",
                           type(error).__name__)
@@ -127,13 +128,21 @@ class HistoryService:
         if not self.writable or not self.unsaved:
             return False
         try:
-            self.path.parent.mkdir(mode=History.DIRECTORY_MODE, parents=True, exist_ok=True)
-            self.writer(self.path, encode_history(self.samples))
+            self._ensure_directory()
+            self.writer(self.path, encode_history(self.samples), mode=History.FILE_MODE)
         except (OSError, ValueError) as error:
             LOG.warning("Cannot save history: %s", type(error).__name__)
             return False
         self.unsaved = 0
         return True
+
+    def _ensure_directory(self):
+        """資料夾不存在時才建立並設為 0700；既有的資料夾與上層資料夾都不動。"""
+        directory = self.path.parent
+        if directory.is_dir():
+            return
+        directory.mkdir(mode=History.DIRECTORY_MODE, parents=True, exist_ok=True)
+        os.chmod(directory, History.DIRECTORY_MODE)
 
     def points(self, range_s, now=None, max_points=History.MAX_POINTS):
         now = self.clock() if now is None else now
