@@ -243,6 +243,24 @@ class SmokePages(unittest.TestCase):
             self.monitor.smoke_capture(1)
         self.assertEqual(self.monitor.smoke_pages, [])
 
+class Signals(unittest.TestCase):
+    """登出或 kill 送來的 SIGTERM／SIGINT 走正常結束流程（存歷史、停止 nvidia-smi）。"""
+    def test_signal_runs_the_normal_stop(self):
+        monitor = ui_app.Monitor.__new__(ui_app.Monitor)
+        stopped = []
+        monitor.stop = lambda: stopped.append(True)
+        self.assertFalse(monitor.on_signal())
+        self.assertEqual(stopped, [True])
+
+    def test_handlers_are_installed_for_term_and_interrupt(self):
+        monitor = ui_app.Monitor.__new__(ui_app.Monitor)
+        monitor.timers = []
+        with patch.object(ui_app.GLib, "unix_signal_add", return_value=9) as add:
+            monitor.install_signal_handlers()
+        self.assertEqual(sorted(call.args[1] for call in add.call_args_list),
+                         sorted([ui_app.signal.SIGTERM, ui_app.signal.SIGINT]))
+        self.assertEqual(monitor.timers, [9, 9])  # 結束時與其他計時器一起移除
+
 class Devices(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 from pathlib import Path
+import signal
 import sys
 import time
 from typing import NamedTuple, Optional
@@ -97,10 +98,21 @@ class Monitor(Gtk.Application):
             self.timers.append(GLib.timeout_add_seconds(interval, self.tick, kind))
         self.timers.append(GLib.timeout_add_seconds(History.RECORD_INTERVAL_SECONDS,
                                                     self.record_history))
+        self.install_signal_handlers()
         if not self.background:
             self.window.show_all()
         if self.smoke:
             self.timers.append(GLib.timeout_add_seconds(Smoke.CHECK_DELAY_SECONDS, self.smoke_check))
+
+    def install_signal_handlers(self):
+        """登出或 kill 送來 SIGTERM／SIGINT 時照常結束：存歷史、停止 nvidia-smi。"""
+        for number in (signal.SIGTERM, signal.SIGINT):
+            self.timers.append(GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number,
+                                                    self.on_signal))
+
+    def on_signal(self, *_):
+        self.stop()
+        return False
 
     def watch_devices(self):
         self.udev = GUdev.Client.new(["usb", "power_supply"])
