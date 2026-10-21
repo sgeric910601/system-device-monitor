@@ -1,6 +1,6 @@
 """新版設定的鍵值規格表：型別、預設值、選項與範圍集中在這裡。
 
-每個規格的 check(raw) 回傳（正規化後的值, 是否捨棄了部分無效項目）；
+每個規格的 check(raw) 回傳（正規化後的值，是否捨棄了部分無效項目）；
 整個值無效時拋出 ValueError。布林值必須是真正的 bool，整數欄位拒絕 bool。
 """
 from collections.abc import Mapping

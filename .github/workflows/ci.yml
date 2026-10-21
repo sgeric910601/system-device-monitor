@@ -21,6 +21,7 @@ jobs:
         run: |
           make deb
           dpkg-deb -x dist/*.deb /tmp/package-check
+          /usr/bin/python3 -B scripts/import_check.py --root /tmp/package-check/usr/share/system-device-monitor
           /usr/bin/python3 scripts/privacy_check.py --tree /tmp/package-check
           /usr/bin/python3 scripts/scan_secrets.py --tree /tmp/package-check
           desktop-file-validate /tmp/package-check/usr/share/applications/system-device-monitor.desktop

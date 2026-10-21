@@ -12,29 +12,56 @@ Ubuntu 24.04，使用系統 Python。此專案沒有 pip 執行期依賴。
 
 dist/system-device-monitor_0.2.0_all.deb 為純 Python／SVG，
 Architecture: all。建置不需要 sudo；版本由 VERSION 讀取。
+相依套件含 gir1.2-notify-0.7（桌面通知函式庫），供之後的通知功能使用；
+install-dependencies.sh 與 CI 也會安裝它。
 
 套件安裝：
 - /usr/bin/system-device-monitor：啟動器。
-- /usr/share/system-device-monitor：執行期程式與圖示。
+- /usr/share/system-device-monitor：執行期程式（device_monitor.py 與 sdm/ 套件）與圖示。
 - /usr/share/applications/system-device-monitor.desktop：桌面入口。
 - /usr/share/doc/system-device-monitor：文件與授權。
 
-package-files.json 明確列出公開原始碼及執行期檔案。
-建置只複製列出的檔案，拒絕符號連結與逃出專案的路徑，
-不會打包整個工作目錄。
+package-files.json（格式 2）明確列出：
+- runtime：複製到 /usr/share/system-device-monitor 下相同相對路徑的執行期檔案，權限 0644。
+- system：安裝到 /usr 或 /etc 之下的系統檔案，各自指定權限（不得超過 0755）；目前為空。
+- maintainer：preinst、postinst、prerm、postrm 安裝前後腳本，權限 0755；目前為空。
+- source：公開原始碼清單，必須涵蓋所有 git 追蹤檔案。
+
+建置只複製列出的檔案，拒絕符號連結、未正規化或逃出專案的路徑，
+以及重複或互相包含的安裝位置，不會打包整個工作目錄。
+目錄一律 0755，檔案時間固定，以利重現建置。
 
 ## 測試
 
     make test
+    make import-check
     make privacy
+
+make test 執行 /usr/bin/python3 -B -m unittest discover -s tests -t . -v。
+測試放在 tests/，必須有 tests/__init__.py，否則探索會略過整個目錄。
 
 單元測試涵蓋計數器重設、CPU guest 計算、電量等級、服務失敗、
 裝置去重、拔除、溫度配對、設定保留及安裝路徑。
-另涵蓋 Solaar 分段電量解析、來源合併、逾時、離線／重新連線與快取過期。
+另涵蓋 Solaar 分段電量解析、來源合併、逾時、離線／重新連線與快取過期；
+設定相容（舊 settings.json 格式、preferences.json 驗證與原子寫入）；
+打包清單一致性、檔案權限與安裝位置限制；匯入檢查與 CPU 量測解析。
 測試資料為人工建立；不提交實機擷取資料。
+
+make import-check 從指定根目錄匯入 sdm/ 底下每個模組。
+CI 也對解包後的 .deb 執行同一檢查，確認套件內容完整：
+
+    /usr/bin/python3 -B scripts/import_check.py --root 解包目錄/usr/share/system-device-monitor
 
 GUI smoke test 需要桌面或 Xvfb、system bus 與 session bus。
 CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。
+
+## CPU 用量量測
+
+    /usr/bin/python3 -B scripts/measure_cpu.py 程序代號 600
+
+讀取 /proc/程序代號/stat 在量測前後的 CPU 時間（含已回收的子程序，
+例如 nvidia-smi、apcaccess），輸出單一核心百分比到小數第二位；
+100 代表期間內平均用滿一個核心。只讀取，不影響被量測的程序。
 
 ## 發布
 
@@ -56,10 +83,22 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
 
 ## 架構
 
-- device_monitor.py：GTK 視窗、彩色指示器、圖表及背景排程。
-- collectors.py：/proc、/sys、BlueZ、UPower、NVIDIA、APC 唯讀資料來源。
-- model.py：計數器與電量格式化；runtime.py：XDG 路徑與安裝共用功能。
-- logitech_battery.py：選用 Solaar CLI、G304／G305 電量解析及短期記憶體快取。
+- device_monitor.py：進入點；解析命令列、設定日誌後啟動看板。--version 不載入 GTK。
+- sdm/paths.py：安裝位置與 XDG 路徑；sdm/constants.py：更新間隔、逾時與上限。
+- sdm/core/：純邏輯，不載入 GTK。fmt 格式化；counters 計數器；
+  devices 電量等級與裝置正規化；settings 與 preference_specs 設定；
+  jsonfile JSON 讀取與原子寫入。
+- sdm/data/：唯讀資料來源。collectors 讀取 /proc、/sys、BlueZ、UPower、NVIDIA、APC；
+  logitech_battery 為選用 Solaar CLI、G304／G305 電量解析及短期記憶體快取。
+- sdm/services/autostart.py：登入自啟、桌面入口與啟動器腳本。
+- sdm/ui/：GTK 介面。app 為視窗、彩色指示器及背景排程；
+  widgets 為共用元件與曲線圖；theme 為配色與 CSS。
+
+設定分成兩個檔案。settings.json 維持舊格式，只存五個頂端列開關，
+舊版與退回舊版都能照常讀寫；新設定存在同目錄的 preferences.json（schema 2），
+舊版不會讀取或覆寫。首次啟動只依 settings.json 是否存在判斷。
+無效值改用預設值並在日誌記錄鍵名，不認得的鍵在儲存時保留；
+兩個檔案都先寫暫存檔、fsync，再整檔取代。
 
 Solaar 為外部選用工具，沒有複製或封裝其原始碼；Piper 不參與看板執行。
 可使用 ./install-dependencies.sh --logitech 安裝測試用工具。

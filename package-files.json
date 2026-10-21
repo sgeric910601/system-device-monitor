@@ -51,6 +51,8 @@
     "install.py",
     "package-files.json",
     "scripts/build_deb.py",
+    "scripts/import_check.py",
+    "scripts/measure_cpu.py",
     "scripts/privacy_check.py",
     "scripts/release_assets.py",
     "scripts/scan_secrets.py",
@@ -76,8 +78,10 @@
     "tests/__init__.py",
     "tests/test_build.py",
     "tests/test_distribution.py",
+    "tests/test_import_check.py",
     "tests/test_logitech_battery.py",
     "tests/test_manifest.py",
+    "tests/test_measure.py",
     "tests/test_monitor.py",
     "tests/test_settings.py"
   ]
