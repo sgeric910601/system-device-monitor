@@ -245,21 +245,81 @@ class SmokePages(unittest.TestCase):
 
 class Signals(unittest.TestCase):
     """登出或 kill 送來的 SIGTERM／SIGINT 走正常結束流程（存歷史、停止 nvidia-smi）。"""
-    def test_signal_runs_the_normal_stop(self):
+    def test_signal_runs_the_normal_stop_and_removes_its_source(self):
         monitor = ui_app.Monitor.__new__(ui_app.Monitor)
         stopped = []
         monitor.stop = lambda: stopped.append(True)
-        self.assertFalse(monitor.on_signal())
+        self.assertEqual(monitor.on_signal(), ui_app.GLib.SOURCE_REMOVE)
         self.assertEqual(stopped, [True])
 
-    def test_handlers_are_installed_for_term_and_interrupt(self):
+    def test_signal_sources_are_kept_out_of_the_timer_list(self):
         monitor = ui_app.Monitor.__new__(ui_app.Monitor)
-        monitor.timers = []
+        monitor.timers, monitor.signal_sources = [], []
         with patch.object(ui_app.GLib, "unix_signal_add", return_value=9) as add:
             monitor.install_signal_handlers()
         self.assertEqual(sorted(call.args[1] for call in add.call_args_list),
                          sorted([ui_app.signal.SIGTERM, ui_app.signal.SIGINT]))
-        self.assertEqual(monitor.timers, [9, 9])  # 結束時與其他計時器一起移除
+        self.assertEqual(monitor.timers, [])
+        self.assertEqual(monitor.signal_sources, [9, 9])
+
+class Recorder:
+    """記錄呼叫順序；raises 中的步驟會拋出例外。"""
+    def __init__(self, raises=()):
+        self.calls, self.raises = [], set(raises)
+    def step(self, name):
+        def action(*args, **kwargs):
+            self.calls.append(name)
+            if name in self.raises:
+                raise RuntimeError(name)
+        return action
+
+class FakeBus:
+    def __init__(self, recorder): self.signal_unsubscribe = recorder.step("unsubscribe")
+
+class FakeCollector:
+    def __init__(self, recorder):
+        self.bus = FakeBus(recorder)
+        self.nvidia = type("Stream", (), {"stop": staticmethod(recorder.step("stream"))})()
+
+class StatusIndicator:
+    def __init__(self, recorder): self.set_status = recorder.step("indicator")
+
+class StopOrder(unittest.TestCase):
+    """結束時先存歷史，任何一步失敗都不能讓 quit() 被跳過。"""
+    def monitor(self, raises=()):
+        recorder = Recorder(raises)
+        monitor = ui_app.Monitor.__new__(ui_app.Monitor)
+        monitor.closing, monitor.timers, monitor.event_timer = False, [], 0
+        monitor.subscriptions = [1]
+        monitor.collector = FakeCollector(recorder)
+        monitor.history = type("History", (), {"save": staticmethod(recorder.step("save"))})()
+        monitor.indicator = StatusIndicator(recorder)
+        monitor.indicators = {}
+        monitor.pool = type("Pool", (), {"shutdown": staticmethod(recorder.step("pool"))})()
+        monitor.quit = recorder.step("quit")
+        return monitor, recorder
+
+    def test_history_is_saved_before_the_stream_stops(self):
+        monitor, recorder = self.monitor()
+        monitor.stop()
+        self.assertEqual(recorder.calls[0], "save")
+        self.assertLess(recorder.calls.index("save"), recorder.calls.index("stream"))
+        self.assertEqual(recorder.calls[-1], "quit")
+
+    def test_failures_do_not_skip_later_steps_or_quit(self):
+        monitor, recorder = self.monitor(raises=("save", "unsubscribe", "stream"))
+        with self.assertLogs(level="WARNING") as logs:
+            monitor.stop()
+        self.assertEqual(recorder.calls[-1], "quit")
+        self.assertIn("stream", recorder.calls)
+        self.assertTrue(all("RuntimeError" in line for line in logs.output))
+
+    def test_second_stop_does_nothing(self):
+        monitor, recorder = self.monitor()
+        monitor.stop()
+        count = len(recorder.calls)
+        monitor.stop()
+        self.assertEqual(len(recorder.calls), count)
 
 class Devices(unittest.TestCase):
     def setUp(self):

@@ -74,6 +74,7 @@ class Monitor(Gtk.Application):
         self.last_recorded = None
         self.power_page = None
         self.scrolls = {}
+        self.signal_sources = []   # 不放進 timers：結束流程不移除正在處理中的訊號來源
 
     def do_activate(self):
         if self.window:
@@ -107,12 +108,12 @@ class Monitor(Gtk.Application):
     def install_signal_handlers(self):
         """登出或 kill 送來 SIGTERM／SIGINT 時照常結束：存歷史、停止 nvidia-smi。"""
         for number in (signal.SIGTERM, signal.SIGINT):
-            self.timers.append(GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number,
-                                                    self.on_signal))
+            self.signal_sources.append(GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number,
+                                                            self.on_signal))
 
     def on_signal(self, *_):
         self.stop()
-        return False
+        return GLib.SOURCE_REMOVE
 
     def watch_devices(self):
         self.udev = GUdev.Client.new(["usb", "power_supply"])
@@ -653,27 +654,55 @@ class Monitor(Gtk.Application):
         return False
 
     def stop(self):
+        """先存歷史，再停止其餘部分；任何一步失敗都只記錄，最後一定呼叫 quit()。
+
+        介面最多被 nvidia-smi 的停止時限（Gpu.STOP_TIMEOUT）卡住。
+        """
         if self.closing:
             return
         self.closing = True
+        try:
+            for name, action in (("history", self.save_history), ("sources", self.remove_sources),
+                                 ("subscriptions", self.unsubscribe_all),
+                                 ("indicators", self.hide_indicators),
+                                 ("workers", lambda: self.pool.shutdown(wait=False,
+                                                                       cancel_futures=True)),
+                                 ("stream", self.stop_stream)):
+                try:
+                    action()
+                except Exception as error:
+                    logging.warning("Stop step %s failed: %s", name, type(error).__name__)
+        finally:
+            self.quit()
+
+    def save_history(self):
+        if self.history is not None:
+            self.history.save()
+
+    def remove_sources(self):
         for timer in self.timers:
             if GLib.MainContext.default().find_source_by_id(timer):
                 GLib.source_remove(timer)
         if self.event_timer:
             GLib.source_remove(self.event_timer)
+            self.event_timer = 0
+
+    def unsubscribe_all(self):
         for subscription in self.subscriptions:
-            self.collector.bus.signal_unsubscribe(subscription)
-        self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
+            try:
+                self.collector.bus.signal_unsubscribe(subscription)
+            except Exception as error:
+                logging.warning("Cannot unsubscribe: %s", type(error).__name__)
+
+    def hide_indicators(self):
         split = list(getattr(self, "indicators", {}).values())
         split += [indicator for indicator in (getattr(self, "power_indicator", None),) if indicator]
-        for indicator in split:
+        for indicator in [self.indicator] + split:
             indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
-        self.pool.shutdown(wait=False, cancel_futures=True)
+
+    def stop_stream(self):
         if getattr(self, "collector", None) is not None:
             self.collector.nvidia.stop()
-        if self.history is not None:
-            self.history.save()
-        self.quit()
 
 
 def run(options):
