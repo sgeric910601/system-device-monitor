@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 import math
 import unittest
 
-from sdm.core.chart_layout import (axis_ticks, band_widths, flow_geometry, linear,
-                                   nice_axis_max, watts_summary)
+from sdm.core.chart_layout import (axis_ticks, band_widths, flow_geometry, line_segments,
+                                   linear, nice_axis_max, ups_segments, watts_segments,
+                                   watts_summary)
 from sdm.core.history import ChartPoint
 
 END = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc).timestamp()
@@ -105,6 +106,33 @@ class Flow(unittest.TestCase):
     def test_no_items(self):
         geometry = flow_geometry(900, 220, (), 288.0)
         self.assertEqual((geometry.items, geometry.item_bands), ((), ()))
+
+
+def chart_point(index, t, watts=None, ups=None, segment=0, watts_segment=0, plugged=True):
+    return ChartPoint(index, t, None, watts, ups, plugged, segment, watts_segment)
+
+
+class Segments(unittest.TestCase):
+    def test_watts_runs_follow_watts_segment_and_skip_the_duplicate_point(self):
+        points = (chart_point(0, 0, 10.0), chart_point(1, 60, 20.0),
+                  chart_point(2, 60, None, segment=1),          # 接電狀態改變的複製點
+                  chart_point(3, 120, 30.0, segment=1),
+                  chart_point(4, 900, 40.0, segment=1, watts_segment=1))
+        self.assertEqual(watts_segments(points),
+                         [[(0, 10.0, True), (60, 20.0, True), (120, 30.0, True)],
+                          [(900, 40.0, True)]])
+
+    def test_ups_runs_break_on_missing_values_and_segments(self):
+        points = (chart_point(0, 0, ups=100.0), chart_point(1, 60, ups=None),
+                  chart_point(2, 120, ups=99.0), chart_point(3, 180, ups=98.0),
+                  chart_point(4, 180, ups=98.0, segment=1, plugged=False),
+                  chart_point(5, 240, ups=90.0, segment=1, plugged=False))
+        self.assertEqual(ups_segments(points),
+                         [[(0, 100.0, True)], [(120, 99.0, True), (180, 98.0, True)],
+                          [(180, 98.0, False), (240, 90.0, False)]])
+
+    def test_generic_split(self):
+        self.assertEqual(line_segments((), lambda p: p.watts, lambda p: 0), [])
 
 
 class Summary(unittest.TestCase):

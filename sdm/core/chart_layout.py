@@ -149,6 +149,40 @@ def flow_geometry(width, height, item_values, total_w):
                         stacked_bands(widths, total, items, node_height))
 
 
+def line_segments(points, value, segment, break_on_missing=False):
+    """依分段把圖表點切成多條線，每點為 (t, 值, 是否接電)。
+
+    value、segment 為取值函式；沒有值的點略過，break_on_missing 為 True 時在該處斷開。
+    """
+    runs, current, key = [], [], None
+    for point in points:
+        number = value(point)
+        if number is None:
+            if break_on_missing and current:
+                runs.append(current)
+                current = []
+            continue
+        if current and segment(point) != key:
+            runs.append(current)
+            current = []
+        key = segment(point)
+        current.append((point.t, number, point.plugged))
+    if current:
+        runs.append(current)
+    return runs
+
+
+def watts_segments(points):
+    """耗電線：依 watts_segment 斷開；接電狀態改變的複製點沒有耗電值，略過但不斷線。"""
+    return line_segments(points, lambda point: point.watts, lambda point: point.watts_segment)
+
+
+def ups_segments(points):
+    """不斷電系統電量線：依 segment 斷開（接電與改用電池分色），讀不到電量時也斷開。"""
+    return line_segments(points, lambda point: point.ups_pct, lambda point: point.segment,
+                         break_on_missing=True)
+
+
 def watts_summary(points):
     """圖表下方摘要「平均耗電 X W · 最高 Y W」；沒有耗電資料時回傳 None。"""
     watts = [point.watts for point in points if point.watts is not None]
