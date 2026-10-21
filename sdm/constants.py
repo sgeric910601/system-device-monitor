@@ -69,6 +69,7 @@ class History:
     GAP_SECONDS = 6 * 3600              # 超過此間隔沒有資料時曲線斷開
     WATTS_GAP_SECONDS = 600             # 耗電曲線的斷開間隔
     UNPLUGGED_MAX_AGE_SECONDS = 600     # 最後一筆紀錄超過此秒數就不推算拔電時間
+    CLOCK_JUMP_WINDOW_SECONDS = 24 * 3600   # 修剪會刪到既有最新一筆前這段時間內的資料，視為時鐘往前跳
     RANGES = (3600, 24 * 3600, 7 * 24 * 3600)   # 圖表範圍：1 小時、24 小時、7 天
 
 

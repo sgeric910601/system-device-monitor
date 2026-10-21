@@ -51,10 +51,13 @@ class Rows(unittest.TestCase):
             with self.subTest(row=row):
                 self.assertIsNone(sample_from_row(row, NOW))
 
-    def test_future_rows_beyond_tolerance_are_rejected(self):
+    def test_new_samples_beyond_the_future_tolerance_are_rejected(self):
         tolerance = History.FUTURE_TOLERANCE_SECONDS
         self.assertIsNotNone(sample_from_row(sample(NOW + tolerance).to_row(), NOW))
         self.assertIsNone(sample_from_row(sample(NOW + tolerance + 1).to_row(), NOW))
+
+    def test_stored_rows_are_not_checked_against_the_clock(self):
+        self.assertIsNotNone(sample_from_row(sample(NOW + 30 * DAY).to_row()))
 
     def test_sample_is_frozen(self):
         with self.assertRaises(dataclasses.FrozenInstanceError):
@@ -68,15 +71,15 @@ class Files(unittest.TestCase):
         self.assertEqual(json.loads(data)["format"], 1)
         self.assertEqual(json.loads(data)["samples"][1],
                          [NOW - 60, None, 100.0, True, False, 99.0, True])
-        self.assertEqual(decode_history(data, NOW), (samples, 0))
+        self.assertEqual(decode_history(data), (samples, 0))
 
-    def test_invalid_rows_are_dropped_and_rest_sorted(self):
+    def test_invalid_rows_are_dropped_future_rows_kept_and_sorted(self):
         rows = [sample(NOW - 60).to_row(), ["bad"], sample(NOW - 120).to_row(),
                 sample(NOW + 400).to_row()]
         data = json.dumps({"format": 1, "samples": rows}).encode()
-        samples, dropped = decode_history(data, NOW)
-        self.assertEqual([s.t for s in samples], [NOW - 120, NOW - 60])
-        self.assertEqual(dropped, 2)
+        samples, dropped = decode_history(data)
+        self.assertEqual([s.t for s in samples], [NOW - 120, NOW - 60, NOW + 400])
+        self.assertEqual(dropped, 1)
 
     def test_undecodable_content(self):
         for data in (b"", b"{not json", b"\xff\xfe", b"[]", b'{"format": 1}',
@@ -84,11 +87,11 @@ class Files(unittest.TestCase):
                      b'{"format": "1", "samples": []}', b'{"format": 0, "samples": []}'):
             with self.subTest(data=data):
                 with self.assertRaises(Undecodable):
-                    decode_history(data, NOW)
+                    decode_history(data)
 
     def test_newer_format(self):
         with self.assertRaises(NewerFormat):
-            decode_history(b'{"format": 2, "samples": []}', NOW)
+            decode_history(b'{"format": 2, "samples": []}')
 
 
 class Retention(unittest.TestCase):
@@ -96,6 +99,10 @@ class Retention(unittest.TestCase):
         samples = (sample(NOW - 7 * DAY - 1), sample(NOW - 7 * DAY), sample(NOW))
         self.assertEqual([s.t for s in trim(samples, NOW)], [NOW - 7 * DAY, NOW])
         self.assertEqual(trim((sample(NOW - 8 * DAY),), NOW), ())
+
+    def test_no_trim_while_the_clock_is_behind_the_newest_sample(self):
+        samples = (sample(NOW - 8 * DAY), sample(NOW + 3600))
+        self.assertEqual(trim(samples, NOW), samples)
 
 
 class Points(unittest.TestCase):

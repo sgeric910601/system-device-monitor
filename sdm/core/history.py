@@ -60,17 +60,23 @@ def optional_real(value, low, high, high_inclusive=True):
     return is_real(value) and low <= value and (value <= high if high_inclusive else value < high)
 
 
-def valid_sample(sample, now):
-    """每個欄位的型別與範圍都正確，且時間不超過 now 之後 5 分鐘。"""
+def valid_sample(sample, now=None):
+    """每個欄位的型別與範圍都正確；有 now 時（新紀錄）時間也不能超過 now 之後 5 分鐘。
+
+    檔案中已存的列不檢查時間（now 為 None），時鐘暫時落後時不會把資料當成無效丟掉。
+    """
+    if not (is_real(sample.t) and sample.t > 0):
+        return False
+    if now is not None and sample.t > now + History.FUTURE_TOLERANCE_SECONDS:
+        return False
     pct_ok = sample.pct is None or (type(sample.pct) is int and 0 <= sample.pct <= 100)
-    return (is_real(sample.t) and 0 < sample.t <= now + History.FUTURE_TOLERANCE_SECONDS
-            and pct_ok and optional_real(sample.watts, 0, Power.SYSTEM_MAX_W, False)
+    return (pct_ok and optional_real(sample.watts, 0, Power.SYSTEM_MAX_W, False)
             and type(sample.plugged) is bool and type(sample.charging) is bool
             and optional_real(sample.ups_pct, 0, 100)
             and (sample.ups_online is None or type(sample.ups_online) is bool))
 
 
-def sample_from_row(row, now):
+def sample_from_row(row, now=None):
     """把一列轉成 HistorySample；任何欄位無效時回傳 None。"""
     if not isinstance(row, list) or len(row) != ROW_LENGTH:
         return None
@@ -78,7 +84,7 @@ def sample_from_row(row, now):
     return candidate if valid_sample(candidate, now) else None
 
 
-def decode_history(data, now):
+def decode_history(data):
     """回傳（依時間排序的有效樣本、捨棄的列數）；無法解讀時拋出 Undecodable。"""
     try:
         raw = json.loads(data.decode("utf-8"))
@@ -91,7 +97,7 @@ def decode_history(data, now):
         raise NewerFormat(str(version))
     if type(version) is not int or version != History.FORMAT:
         raise Undecodable("unknown format")
-    samples = [sample_from_row(row, now) for row in raw["samples"]]
+    samples = [sample_from_row(row) for row in raw["samples"]]
     valid = [item for item in samples if item is not None]
     return tuple(sorted(valid, key=lambda item: item.t)), len(samples) - len(valid)
 
@@ -103,7 +109,9 @@ def encode_history(samples):
 
 
 def trim(samples, now, retention=History.RETENTION_SECONDS):
-    """只保留最近 retention 秒內的樣本。"""
+    """只保留最近 retention 秒內的樣本；now 早於最新一筆（時鐘落後）時完全不修剪。"""
+    if samples and now < samples[-1].t:
+        return tuple(samples)
     cutoff = now - retention
     return tuple(item for item in samples if item.t >= cutoff)
 

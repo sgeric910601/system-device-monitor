@@ -103,9 +103,15 @@ class HistoryChart(Gtk.Box):
         foreground = (color.red, color.green, color.blue)
         layout = self.area.create_pango_layout("")
         self.draw_grid(cr, layout, foreground, (left, right, top, bottom))
+        # 時鐘落後時可能有時間在未來的紀錄：只畫在繪圖區內
+        cr.save()
+        cr.rectangle(left - DOT_RADIUS, top - DOT_RADIUS, right - left + 2 * DOT_RADIUS,
+                     bottom - top + 2 * DOT_RADIUS)
+        cr.clip()
         self.draw_watts(cr, (left, right, top, bottom))
         if self.has_ups:
             self.draw_ups(cr, (left, right, top, bottom))
+        cr.restore()
         return False
 
     def draw_text(self, cr, layout, text, x, y, align):

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from sdm import paths
 from sdm.constants import History
-from sdm.core.history import HistorySample
+from sdm.core.history import HistorySample, encode_history
 from sdm.core.jsonfile import write_bytes_atomic
 from sdm.services.history_service import HistoryService, default_path, read_boot_time
 
@@ -119,14 +119,77 @@ class Loading(TempData):
         self.assertTrue(service.writable)
         self.assertFalse(self.path.parent.exists())
 
-    def test_invalid_and_future_rows_are_dropped_and_old_rows_trimmed(self):
-        rows = [sample(NOW - 8 * 86400).to_row(), sample(NOW - 60).to_row(), [1, 2],
-                sample(NOW + 301).to_row(), sample(NOW + 300).to_row()]
+    def test_invalid_rows_are_dropped_and_old_rows_trimmed(self):
+        rows = [sample(NOW - 8 * 86400).to_row(), sample(NOW - 60).to_row(), [1, 2]]
         self.write_file(json.dumps({"format": 1, "samples": rows}).encode())
         with self.assertLogs(LOGGER, "WARNING"):
             service = self.service()
-        self.assertEqual([s.t for s in service.samples], [NOW - 60, NOW + 300])
+        self.assertEqual([s.t for s in service.samples], [NOW - 60])
         self.assertTrue(service.writable)
+        self.assertEqual(self.backups(), [])
+
+
+class ClockAnomalies(TempData):
+    def write_rows(self, *times):
+        self.write_file(encode_history(tuple(sample(t) for t in times)))
+
+    def test_clock_behind_at_load_keeps_every_row(self):
+        self.write_rows(NOW - 8 * 86400, NOW - 60, NOW + 3600)
+        service = self.service()
+        self.assertEqual([s.t for s in service.samples], [NOW - 8 * 86400, NOW - 60, NOW + 3600])
+        service.add(sample(NOW))
+        service.save()
+        self.assertEqual(len(json.loads(self.path.read_text())["samples"]), 4)
+        self.assertEqual(self.backups(), [])
+
+    def test_forward_jump_at_load_backs_up_before_trimming(self):
+        original = encode_history(tuple(sample(NOW - 10 * 86400 + i) for i in (0, 60)))
+        self.write_file(original)
+        with self.assertLogs(LOGGER, "WARNING"):
+            service = self.service()
+        self.assertEqual(service.samples, ())
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual((self.path.parent/self.backups()[0]).read_bytes(), original)
+
+    def test_forward_jump_while_running_backs_up_once(self):
+        self.write_rows(NOW - 120, NOW - 60)
+        service = self.service()
+        jumped = NOW + 10 * 86400
+        self.clock = lambda: jumped
+        service.clock = self.clock
+        with self.assertLogs(LOGGER, "WARNING"):
+            service.add(sample(jumped))
+        self.assertEqual([s.t for s in service.samples], [jumped])
+        (backup,) = self.backups()
+        self.assertEqual(len(json.loads((self.path.parent/backup).read_text())["samples"]), 3)
+        later = jumped + 10 * 86400
+        service.clock = lambda: later
+        service.add(sample(later))
+        self.assertEqual(len(self.backups()), 1)
+        self.assertEqual([s.t for s in service.samples], [later])
+
+    def test_ordinary_retention_does_not_back_up(self):
+        self.write_rows(NOW - 7 * 86400 - 120, NOW - 7 * 86400 + 30, NOW - 3600, NOW - 60)
+        service = self.service()
+        self.assertEqual(len(service.samples), 3)
+        self.clock = lambda: NOW + 60
+        service.clock = self.clock
+        service.add(sample(NOW + 60))
+        self.assertEqual([s.t for s in service.samples], [NOW - 3600, NOW - 60, NOW + 60])
+        self.assertEqual(self.backups(), [])
+
+    def test_backup_failure_on_a_jump_keeps_everything_and_disables_writes(self):
+        self.write_rows(NOW - 120, NOW - 60)
+
+        def failing_backup(path, data, epoch, **options):
+            raise PermissionError("read-only")
+        service = self.service(backup=failing_backup)
+        jumped = NOW + 10 * 86400
+        service.clock = lambda: jumped
+        with self.assertLogs(LOGGER, "WARNING"):
+            service.add(sample(jumped))
+        self.assertEqual(len(service.samples), 3)
+        self.assertFalse(service.writable)
 
     def test_corrupt_file_is_copied_to_a_backup_and_replaced_on_next_save(self):
         corrupt = b"{\"format\": 1, \"samples\": [[1,"
@@ -157,7 +220,7 @@ class Loading(TempData):
         writer = Writer()
         self.write_file(b"broken")
 
-        def failing_backup(path, data, epoch):
+        def failing_backup(path, data, epoch, **options):
             raise PermissionError("read-only")
         with self.assertLogs(LOGGER, "WARNING") as logs:
             service = self.service(writer=writer, backup=failing_backup)
