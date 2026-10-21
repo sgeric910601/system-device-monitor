@@ -106,6 +106,22 @@ class Service(unittest.TestCase):
         self.assertEqual(power.system_w, 288.0)
 
 
+class ReadOrder(unittest.TestCase):
+    def test_readings_taken_during_the_sample_are_not_in_the_future(self):
+        ticks = iter(range(100, 200))
+        clock = lambda: float(next(ticks))
+
+        def read_gpus():
+            # AMD 讀值在讀取當下打時間戳記，晚於 sample() 開始的時間
+            return (GpuReading(vendor="amd", index=0, name="AMD 顯示卡", watts=150.0,
+                               stamp=clock()),)
+        service = PowerService(read_ups=lambda: ONLINE, read_gpus=read_gpus, clock=clock,
+                               wall=lambda: 1.0, read_uptime=lambda: None)
+        power = service.sample()
+        self.assertEqual([gpu.gpu_id for gpu in power.gpus], ["gpu:amd:0"])
+        self.assertEqual((power.breakdown.status, power.breakdown.other_w), (AVAILABLE, 138.0))
+
+
 class HistoryRow(unittest.TestCase):
     def snapshot(self, ups):
         service = PowerService(read_ups=lambda: ups, read_gpus=lambda: (nvidia(),),

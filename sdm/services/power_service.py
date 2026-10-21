@@ -58,9 +58,10 @@ class PowerService:
         self.source = None
 
     def sample(self):
-        now = self.clock()
         ups = self.read_ups()
         gpus = tuple(self.read_gpus())
+        # 讀完才取時間：讀取期間打上的時間戳記不會晚於 now 而被當成未來樣本
+        now = self.clock()
         breakdown = make_breakdown(ups.load_w if ups else None, gpu_components(gpus), now,
                                    self.interval, sampling=self.gpus_pending())
         if breakdown.source != self.source:
