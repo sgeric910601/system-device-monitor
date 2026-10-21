@@ -6,6 +6,11 @@ COLORS = {"cpu": "#64a8ff", "gpu": "#bc91ff", "ram": "#55c98c", "network": "#46c
 # 曲線圖使用的 RGB（0–1），與 COLORS 同色系。
 GRAPH_COLORS = {"cpu": (.39, .66, 1), "gpu": (.74, .57, 1), "ram": (.33, .79, .55)}
 
+# 改由不斷電系統電池供電（警告）與電池電量低（嚴重）的文字顏色，明暗主題都看得清楚。
+WARNING = "#e8913a"
+CRITICAL = "#e5534b"
+HEX_DIGITS = 6
+
 BASE_CSS = """
         window { font-family: "Noto Sans CJK TC", "Ubuntu", sans-serif; }
         .page { padding: 22px; }
@@ -19,7 +24,23 @@ BASE_CSS = """
         .device-row { padding: 13px; border-bottom: 1px solid alpha(@theme_fg_color, .09); }
         .device-power { font-size: 17px; font-weight: 600; }
         .footnote { padding: 8px 22px; font-size: 11px; color: alpha(@theme_fg_color, .6); }
+        .power-value { font-size: 44px; font-weight: 700; }
+        .power-sub { font-size: 13px; color: alpha(@theme_fg_color, .72); }
+        """ + f"""
+        .power-warning {{ color: {WARNING}; }}
+        .power-critical {{ color: {CRITICAL}; font-weight: 600; }}
         """
+
+
+def rgb(color):
+    """「#rrggbb」轉成 0–1 的 (r, g, b)，給 Cairo 繪圖使用。"""
+    digits = color[1:] if color.startswith("#") else ""
+    if len(digits) != HEX_DIGITS:
+        raise ValueError("Expected #rrggbb")
+    try:
+        return tuple(int(digits[i:i + 2], 16) / 255 for i in range(0, HEX_DIGITS, 2))
+    except ValueError:
+        raise ValueError("Expected #rrggbb") from None
 
 
 def accent_css(key, color):

@@ -70,6 +70,35 @@ class History:
     RANGES = (3600, 24 * 3600, 7 * 24 * 3600)   # 圖表範圍：1 小時、24 小時、7 天
 
 
+class Chart:
+    """耗電歷史圖。"""
+    REFERENCE_AXIS_MINIMUM = 1000   # 參考專案 niceAxisMax 的預設下限
+    WATTS_AXIS_MINIMUM = 10         # 耗電圖 Y 軸上限至少 10 W
+    AXIS_MARGIN_RATIO = 0.07        # 太靠近左右邊緣的時間刻度不畫（標籤會被切掉）
+    HEIGHT = 180
+    MARGIN_LEFT = 58                # 左側瓦數標籤
+    MARGIN_RIGHT = 46               # 右側不斷電系統電量標籤
+    MARGIN_TOP = 10
+    MARGIN_BOTTOM = 24              # 下方時間標籤
+    WATTS_LINE_WIDTH = 2.0
+    UPS_LINE_WIDTH = 1.5
+
+
+class Flow:
+    """電力流向圖（靜態，無動畫）。"""
+    PADDING = 8
+    SOURCE_WIDTH = 92
+    TOTAL_WIDTH = 104
+    ITEM_WIDTH = 180
+    NODE_HEIGHT = 96                # 來源與整機節點的高度上限
+    ITEM_HEIGHT = 44
+    ITEM_GAP = 8
+    MIN_HEIGHT = 140
+    BAND_MIN = 2                    # 流帶最細 2 px
+    BAND_MAX = 44                   # 流帶最粗（整機）
+    MIN_WIDTH = 420                 # 兩欄排列時每張卡片的最小內容寬度
+
+
 class Counter:
     """累計計數器：超過此間隔沒有取樣就重新建立基準（睡眠／喚醒）。"""
     RESET_SECONDS = 15
@@ -98,9 +127,9 @@ class Ui:
 class Smoke:
     """--smoke-test 的時間安排。"""
     CHECK_DELAY_SECONDS = 14    # 啟動後多久開始檢查
-    CAPTURE_DELAY_MS = 700      # 切換頁面後等待繪製再截圖
-    DEVICES_DELAY_MS = 1400     # 總覽頁之後切到設備頁
-    FINISH_DELAY_MS = 1500      # 設備頁之後寫出結果
+    CAPTURE_DELAY_MS = 700      # 切換頁面後等待繪製再確認與截圖
+    PAGE_DELAY_MS = 700         # 截圖後再切到下一頁
+    FINISH_DELAY_MS = 800       # 最後一頁之後寫出結果
 
 
 class Launcher:

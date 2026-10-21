@@ -8,8 +8,10 @@ from gi.repository import Gtk
 from sdm.constants import Ui
 
 
-def label(text="", css=None, wrap=False):
+def label(text="", css=None, wrap=False, markup=False):
     widget = Gtk.Label(label=text, xalign=0)
+    if markup:
+        widget.set_markup(text)
     widget.set_line_wrap(wrap)
     if css:
         widget.get_style_context().add_class(css)

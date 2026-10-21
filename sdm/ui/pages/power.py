@@ -1,0 +1,152 @@
+"""「電源」頁：整機耗電、電力流向、耗電拆解、耗電歷史與詳細資訊。
+
+自成一個 Gtk.Box，對外只有 update(power) 與 history_changed()，之後換外殼可直接重用。
+頁面沒有顯示時只記下最新資料，顯示時才更新文字與重算圖表；文字沒變就不重設。
+"""
+import time
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Pango
+
+from sdm.constants import Flow
+from sdm.ui.charts import HistoryChart
+from sdm.ui.power_flow import PowerFlow
+from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, detail_rows,
+                               flow_model, header_text)
+from sdm.ui.widgets import box, clear, label
+
+TONE_CLASSES = {TONE_WARNING: "power-warning", TONE_CRITICAL: "power-critical"}
+DETAIL_COLUMNS = 2
+SPACING = 16
+CARD_PADDING = 16     # 與 CSS .card 的 padding 相同
+
+
+def set_text(widget, text):
+    if widget.get_text() != text:
+        widget.set_text(text)
+
+
+def card(title, *children):
+    container = box(spacing=10)
+    container.get_style_context().add_class("card")
+    container.pack_start(label(title, "section"), False, False, 0)
+    for child in children:
+        container.pack_start(child, False, False, 0)
+    return container
+
+
+def ellipsized(text, css=None):
+    widget = label(text, css)
+    widget.set_ellipsize(Pango.EllipsizeMode.END)
+    widget.set_hexpand(True)
+    return widget
+
+
+class PowerPage(Gtk.Box):
+    def __init__(self, points_for, clock=time.time):
+        """points_for(range_s, now) 回傳歷史圖表點（HistoryService.points）。"""
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=SPACING)
+        self.points_for, self.clock = points_for, clock
+        self.power, self.stale = None, True
+        self.row_ids, self.row_labels = None, []
+        self.build_header()
+        self.build_cards()
+        self.build_details()
+        self.connect("map", self.on_map)
+
+    def build_header(self):
+        header = box(spacing=2)
+        self.value = label("—", "power-value")
+        self.sub = label("正在讀取耗電…", "power-sub", True)
+        header.pack_start(self.value, False, False, 0)
+        header.pack_start(self.sub, False, False, 0)
+        self.pack_start(header, False, False, 0)
+
+    def build_cards(self):
+        self.flow = PowerFlow()
+        self.rows = Gtk.Grid(column_spacing=SPACING, row_spacing=6)
+        self.message = label("", "muted", True)
+        self.chart = HistoryChart(lambda _range: self.refresh_chart())
+        cards = Gtk.FlowBox(homogeneous=True, min_children_per_line=1, max_children_per_line=2,
+                            column_spacing=SPACING, row_spacing=SPACING,
+                            selection_mode=Gtk.SelectionMode.NONE)
+        for child in (card("耗電流向", self.flow, self.rows, self.message),
+                      card("耗電歷史", self.chart)):
+            child.set_size_request(Flow.MIN_WIDTH + 2 * CARD_PADDING, -1)
+            cards.add(child)
+        for child in cards.get_children():
+            child.set_can_focus(False)
+        self.pack_start(cards, False, False, 0)
+
+    def build_details(self):
+        grid = Gtk.Grid(column_spacing=SPACING, row_spacing=8)
+        self.detail_values = []
+        for index, (name, value) in enumerate(detail_rows(None)):
+            row, column = divmod(index, DETAIL_COLUMNS)
+            text = ellipsized(value)
+            grid.attach(label(name, "muted"), column * 2, row, 1, 1)
+            grid.attach(text, column * 2 + 1, row, 1, 1)
+            self.detail_values.append(text)
+        self.pack_start(card("詳細資訊", grid), False, False, 0)
+
+    def update(self, power):
+        """收到新的 DesktopPower（或 None）；同一份快照不重複處理。"""
+        if power is self.power and not self.stale:
+            return
+        self.power, self.stale = power, True
+        if self.get_mapped():
+            self.apply()
+
+    def history_changed(self):
+        if self.get_mapped():
+            self.refresh_chart()
+
+    def on_map(self, *_):
+        if self.stale:
+            self.apply()
+        self.refresh_chart()
+
+    def apply(self):
+        self.stale = False
+        power = self.power
+        big, sub, tone = header_text(power)
+        set_text(self.value, big)
+        set_text(self.sub, sub)
+        for widget in (self.value, self.sub):
+            context = widget.get_style_context()
+            for name in TONE_CLASSES.values():
+                context.remove_class(name)
+            if tone in TONE_CLASSES:
+                context.add_class(TONE_CLASSES[tone])
+        self.flow.set_model(flow_model(power))
+        self.update_rows(power.breakdown if power else None)
+        for widget, (_, value) in zip(self.detail_values, detail_rows(power)):
+            if widget.get_text() != value:
+                widget.set_text(value)
+                widget.set_tooltip_text(value)
+
+    def update_rows(self, breakdown):
+        """拆解清單：項目組成改變才重建，否則只更新文字。"""
+        rows = breakdown_rows(breakdown) if breakdown else ()
+        set_text(self.message, breakdown.message if breakdown else "")
+        ids = [row[0] for row in rows]
+        if ids != self.row_ids:
+            self.row_ids = ids
+            clear(self.rows)
+            self.row_labels = []
+            for index, (_, name, watts, share) in enumerate(rows):
+                labels = (ellipsized(name), label(watts), label(share, "muted"))
+                for column, widget in enumerate(labels):
+                    if column:
+                        widget.set_xalign(1)
+                    self.rows.attach(widget, column, index, 1, 1)
+                self.row_labels.append(labels)
+            self.rows.show_all()
+        for labels, row in zip(self.row_labels, rows):
+            for widget, text in zip(labels, row[1:]):
+                set_text(widget, text)
+
+    def refresh_chart(self):
+        now = self.clock()
+        self.chart.set_points(self.points_for(self.chart.range_s, now), now)

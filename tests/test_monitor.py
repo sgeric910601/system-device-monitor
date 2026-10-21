@@ -1,4 +1,5 @@
 """計數器、電量、頂端列選單與裝置收集的回歸測試。"""
+import json
 from pathlib import Path
 import tempfile
 import subprocess
@@ -149,6 +150,11 @@ class FakeStream:
 class FakeHistory:
     def __init__(self): self.added = []
     def add(self, sample): self.added.append(sample)
+    def points(self, range_s, now): return ("points", range_s, now)
+
+class FakePage:
+    def __init__(self): self.changes = 0
+    def history_changed(self): self.changes += 1
 
 class HistoryRecording(unittest.TestCase):
     """每分鐘記錄最新快照；同一快照不重複記，結束中不再記錄。"""
@@ -156,6 +162,7 @@ class HistoryRecording(unittest.TestCase):
         self.monitor = ui_app.Monitor.__new__(ui_app.Monitor)
         self.monitor.closing, self.monitor.last_recorded = False, None
         self.monitor.history = FakeHistory()
+        self.monitor.power_page = FakePage()
 
     def snapshot(self, stamp, load_w=288.0):
         ups = UpsReading(status=("ONLINE",), online=True, charge_pct=100.0, load_w=load_w)
@@ -173,6 +180,12 @@ class HistoryRecording(unittest.TestCase):
         self.assertTrue(self.record(self.snapshot(1060.0, 250.0)))
         self.assertEqual([(s.t, s.watts) for s in self.monitor.history.added],
                          [(1000.0, 288.0), (1060.0, 250.0)])
+        self.assertEqual(self.monitor.power_page.changes, 2)
+
+    def test_chart_points_come_from_the_history(self):
+        self.assertEqual(self.monitor.history_points(3600, 5.0), ("points", 3600, 5.0))
+        self.monitor.history = None
+        self.assertEqual(self.monitor.history_points(3600, 5.0), ())
 
     def test_nothing_without_a_snapshot_and_stops_when_closing(self):
         self.assertTrue(self.record(None))
@@ -180,6 +193,55 @@ class HistoryRecording(unittest.TestCase):
         self.monitor.closing = True
         self.assertFalse(self.record(self.snapshot(1000.0)))
         self.assertEqual(self.monitor.history.added, [])
+
+class FakeStack:
+    def __init__(self): self.visible = None
+    def set_visible_child_name(self, name): self.visible = name
+    def get_visible_child_name(self): return self.visible
+
+class FakeScroll:
+    def __init__(self, mapped=True): self.mapped = mapped
+    def get_mapped(self): return self.mapped
+
+class SmokePages(unittest.TestCase):
+    """模擬測試依序顯示各頁，只有真的切換並顯示出來的頁面才列入 pages。"""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.monitor = ui_app.Monitor.__new__(ui_app.Monitor)
+        self.monitor.output_dir = Path(temp.name)
+        self.monitor.capture_enabled = False
+        self.monitor.stack = FakeStack()
+        self.monitor.scrolls = {name: FakeScroll() for name in ui_app.SMOKE_PAGES}
+        self.monitor.smoke_pages = []
+        self.monitor.errors, self.monitor.indicators = {}, {}
+        self.monitor.data = {"system": {"cpu": 1}}
+        self.stopped = []
+        self.monitor.stop = lambda: self.stopped.append(True)
+
+    def test_power_page_comes_first(self):
+        self.assertEqual(ui_app.SMOKE_PAGES, ("power", "overview", "devices"))
+
+    def test_rendered_pages_are_reported(self):
+        with patch.object(ui_app.GLib, "timeout_add") as timer:
+            for index, name in enumerate(ui_app.SMOKE_PAGES):
+                self.monitor.stack.set_visible_child_name(name)
+                self.monitor.smoke_capture(index)
+            self.assertEqual(timer.call_count, len(ui_app.SMOKE_PAGES))
+        self.monitor.scrolls["devices"].mapped = False
+        self.monitor.smoke_finish()
+        report = json.loads((self.monitor.output_dir/"smoke.json").read_text())
+        self.assertEqual(report["pages"], ["power", "overview", "devices"])
+        self.assertTrue(report["ok"])
+        self.assertEqual(self.stopped, [True])
+
+    def test_page_that_was_not_shown_is_left_out(self):
+        with patch.object(ui_app.GLib, "timeout_add"):
+            self.monitor.stack.set_visible_child_name("overview")
+            self.monitor.smoke_capture(0)
+            self.monitor.scrolls["overview"].mapped = False
+            self.monitor.smoke_capture(1)
+        self.assertEqual(self.monitor.smoke_pages, [])
 
 class Devices(unittest.TestCase):
     def setUp(self):

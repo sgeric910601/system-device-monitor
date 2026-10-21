@@ -24,11 +24,13 @@ from sdm.data.ups import UpsReading
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.services.history_service import HistoryService
 from sdm.services.power_service import desktop_history_sample
+from sdm.ui.pages.power import PowerPage
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 MENU_INDENT = "    "
+SMOKE_PAGES = ("power", "overview", "devices")   # 模擬測試依序顯示的頁面
 
 
 class RunResult(NamedTuple):
@@ -65,6 +67,8 @@ class Monitor(Gtk.Application):
         self.event_timer = 0
         self.history = None
         self.last_recorded = None
+        self.power_page = None
+        self.scrolls = {}
 
     def do_activate(self):
         if self.window:
@@ -165,7 +169,13 @@ class Monitor(Gtk.Application):
         if sample is not None and sample.t != self.last_recorded:
             self.last_recorded = sample.t
             self.history.add(sample)
+            if self.power_page is not None:
+                self.power_page.history_changed()
         return True
+
+    def history_points(self, range_s, now):
+        """電源頁歷史圖的資料來源。"""
+        return self.history.points(range_s, now) if self.history is not None else ()
 
     def build_window(self):
         settings = Gtk.Settings.get_default()
@@ -199,6 +209,7 @@ class Monitor(Gtk.Application):
         root.pack_start(self.stack, True, True, 0)
         self.footer = label("正在讀取本機資料…", "footnote")
         root.pack_end(self.footer, False, False, 0)
+        self.build_power()
         self.build_overview()
         self.build_devices()
         self.build_settings()
@@ -210,9 +221,14 @@ class Monitor(Gtk.Application):
         content.get_style_context().add_class("page")
         scroll.add(content)
         self.stack.add_titled(scroll, key, title)
-        if key == "overview":
-            self.overview_scroll = scroll
+        self.scrolls[key] = scroll
         return content
+
+    def build_power(self):
+        """「電源」頁放在第一頁。"""
+        content = self.page("power", "電源")
+        self.power_page = PowerPage(self.history_points)
+        content.pack_start(self.power_page, False, False, 0)
 
     def build_overview(self):
         page = self.page("overview", "系統總覽")
@@ -338,6 +354,7 @@ class Monitor(Gtk.Application):
     def render(self):
         fast, slow = self.data["system"], self.data["slow"]
         gpu, ups = slow.get("gpu"), slow.get("ups") or UpsReading()
+        self.power_page.update(slow.get("power"))
         self.cards["cpu"][0].set_text(percent(fast.get("cpu")))
         info = fast.get("cpu_info", {})
         self.card_titles["cpu"].set_text(info.get("name", "CPU") + " · " + temperature(slow.get("cpu_temp")))
@@ -506,43 +523,54 @@ class Monitor(Gtk.Application):
         self.battery_rows = rows
 
     def smoke_check(self):
-        artifact = self.output_dir
-        artifact.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.window.show_all()
         self.window.present()
-        self.stack.set_visible_child_name("overview")
-        self.overview_scroll.get_vadjustment().set_value(0)
-        GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.capture, "overview")
-        GLib.timeout_add(Smoke.DEVICES_DELAY_MS, self.smoke_devices)
+        self.smoke_pages = []
+        self.smoke_show(0)
         return False
 
-    def capture(self, name):
+    def smoke_show(self, index):
+        self.stack.set_visible_child_name(SMOKE_PAGES[index])
+        GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.smoke_capture, index)
+        return False
+
+    def smoke_capture(self, index):
+        """確認頁面已切換並顯示，選用時截圖，再排下一頁或結束。"""
+        name = SMOKE_PAGES[index]
+        if self.stack.get_visible_child_name() == name and self.scrolls[name].get_mapped():
+            self.smoke_pages.append(name)
+        self.capture(name, name)
+        if name == "power":
+            self.capture("power-lower", name, bottom=True)
+        if index + 1 < len(SMOKE_PAGES):
+            GLib.timeout_add(Smoke.PAGE_DELAY_MS, self.smoke_show, index + 1)
+        else:
+            GLib.timeout_add(Smoke.FINISH_DELAY_MS, self.smoke_finish)
+        return False
+
+    def capture(self, name, page, bottom=False):
+        """只在 --capture 時把視窗存成 name.png；bottom 為 True 時先捲到頁面底部。"""
         if not self.capture_enabled:
-            return False
-        if name == "overview":
-            self.window.set_focus(None)
-            self.overview_scroll.get_vadjustment().set_value(0)
-            while Gtk.events_pending():
-                Gtk.main_iteration_do(False)
+            return
+        self.window.set_focus(None)
+        adjustment = self.scrolls[page].get_vadjustment()
+        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() if bottom else 0)
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
         window = self.window.get_window()
         if window:
             width, height = window.get_width(), window.get_height()
             pixbuf = Gdk.pixbuf_get_from_window(window, 0, 0, width, height)
             if pixbuf:
                 pixbuf.savev(str(self.output_dir/f"{name}.png"), "png", [], [])
-        return False
-
-    def smoke_devices(self):
-        self.stack.set_visible_child_name("devices")
-        GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.capture, "devices")
-        GLib.timeout_add(Smoke.FINISH_DELAY_MS, self.smoke_finish)
-        return False
 
     def smoke_finish(self):
         self.smoke_failed = bool(self.errors) or not bool(self.data["system"])
         report = dict(ok=not self.smoke_failed, collector_errors=sorted(self.errors),
                       system_ready=bool(self.data["system"]),
-                      indicator_count=len(getattr(self, "indicators", {})))
+                      indicator_count=len(getattr(self, "indicators", {})),
+                      pages=list(getattr(self, "smoke_pages", [])))
         (self.output_dir/"smoke.json").write_text(json.dumps(report, indent=2) + "\n")
         self.smoke_report = report
         self.stop()
