@@ -1,4 +1,5 @@
 {
+  "format": 2,
   "runtime": [
     "device_monitor.py",
     "sdm/__init__.py",
@@ -27,6 +28,8 @@
     "icons/gpu.svg",
     "icons/network.svg"
   ],
+  "system": [],
+  "maintainer": {},
   "source": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -71,8 +74,10 @@
     "sdm/ui/theme.py",
     "sdm/ui/widgets.py",
     "tests/__init__.py",
+    "tests/test_build.py",
     "tests/test_distribution.py",
     "tests/test_logitech_battery.py",
+    "tests/test_manifest.py",
     "tests/test_monitor.py",
     "tests/test_settings.py"
   ]

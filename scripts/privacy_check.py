@@ -33,6 +33,27 @@ def findings(path):
             break
     return issues
 
+def packaged_sources(manifest):
+    """system 與 maintainer 條目引用的來源檔。"""
+    system = manifest.get("system", [])
+    maintainer = manifest.get("maintainer", {})
+    names = [item.get("source") if isinstance(item, dict) else item
+             for item in (system if isinstance(system, list) else [system])]
+    names += list(maintainer.values()) if isinstance(maintainer, dict) else [maintainer]
+    return names
+
+def manifest_errors(manifest):
+    """檢查清單格式 2：runtime 與打包來源都必須列在公開來源清單。"""
+    errors = []
+    if manifest.get("format") != 2:
+        errors.append(("package-files.json", "unsupported manifest format"))
+    names = set(manifest["source"])
+    if not set(manifest["runtime"]) <= names:
+        errors.append(("package-files.json", "runtime files missing from public source list"))
+    errors.extend((str(name), "packaged file missing from public source list")
+                  for name in packaged_sources(manifest) if name not in names)
+    return errors
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tree", type=Path, help="Scan an unpacked publication artifact")
@@ -45,8 +66,7 @@ def main():
         base = ROOT
         manifest = json.loads((ROOT/"package-files.json").read_text())
         names = set(manifest["source"])
-        if not set(manifest["runtime"]) <= names:
-            errors.append(("package-files.json", "runtime files missing from public source list"))
+        errors.extend(manifest_errors(manifest))
         files = []
         for name in sorted(names):
             p = ROOT/name
