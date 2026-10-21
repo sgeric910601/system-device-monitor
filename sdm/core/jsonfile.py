@@ -58,10 +58,15 @@ def write_exclusive(path, data):
 
 
 def write_json_atomic(path, value):
+    """以設定檔共用的文字格式原子寫入 JSON。"""
+    write_bytes_atomic(path, json_text(value).encode("utf-8"))
+
+
+def write_bytes_atomic(path, data):
     """先寫同目錄暫存檔並 fsync，再以 os.replace 取代；失敗時原檔不變、不留暫存檔。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(TOKEN_BYTES)}{TEMPORARY_SUFFIX}")
-    write_exclusive(temporary, json_text(value).encode("utf-8"))
+    write_exclusive(temporary, data)
     try:
         os.replace(temporary, path)
     except BaseException:

@@ -54,6 +54,22 @@ class Power:
     COMPONENT_MAX_W = 1000      # 單一元件合理上限（不含）
 
 
+class History:
+    """耗電與電量歷史（XDG 資料目錄下的 history.json）。"""
+    FILE_NAME = "history.json"
+    FORMAT = 1
+    DIRECTORY_MODE = 0o700
+    RETENTION_SECONDS = 7 * 24 * 3600
+    SAVE_EVERY = 15                     # 每累積幾筆新紀錄寫檔一次
+    RECORD_INTERVAL_SECONDS = 60        # 桌機每分鐘記錄一次
+    FUTURE_TOLERANCE_SECONDS = 300      # 載入時容許的未來時間（時鐘誤差）
+    MAX_POINTS = 240                    # 圖表降採樣後的最多點數
+    GAP_SECONDS = 6 * 3600              # 超過此間隔沒有資料時曲線斷開
+    WATTS_GAP_SECONDS = 600             # 耗電曲線的斷開間隔
+    UNPLUGGED_MAX_AGE_SECONDS = 600     # 最後一筆紀錄超過此秒數就不推算拔電時間
+    RANGES = (3600, 24 * 3600, 7 * 24 * 3600)   # 圖表範圍：1 小時、24 小時、7 天
+
+
 class Counter:
     """累計計數器：超過此間隔沒有取樣就重新建立基準（睡眠／喚醒）。"""
     RESET_SECONDS = 15
