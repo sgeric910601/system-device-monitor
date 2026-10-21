@@ -46,7 +46,7 @@ class Component(NamedTuple):
 
 
 class Item(NamedTuple):
-    """拆解結果中的一列：（id, 名稱, 瓦數）。"""
+    """拆解結果中的一列：（id、名稱、瓦數）。"""
     id: str
     label: str
     watts: Optional[float]

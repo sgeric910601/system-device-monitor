@@ -79,7 +79,7 @@ def sample_from_row(row, now):
 
 
 def decode_history(data, now):
-    """回傳（依時間排序的有效樣本, 捨棄的列數）；無法解讀時拋出 Undecodable。"""
+    """回傳（依時間排序的有效樣本、捨棄的列數）；無法解讀時拋出 Undecodable。"""
     try:
         raw = json.loads(data.decode("utf-8"))
     except (ValueError, RecursionError):

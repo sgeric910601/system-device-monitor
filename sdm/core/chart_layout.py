@@ -59,7 +59,7 @@ def linear(value, low, high, start, end):
 
 
 def tick_plan(range_s):
-    """（間隔, 對齊到整點或整天, 是否顯示日期）。"""
+    """（間隔、對齊到整點或整天、是否顯示日期）。"""
     if range_s <= HOUR:
         return timedelta(minutes=15), "hour", False
     if range_s <= DAY:

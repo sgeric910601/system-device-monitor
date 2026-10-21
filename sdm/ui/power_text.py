@@ -60,7 +60,7 @@ def on_ups_battery(power):
 
 
 def header_text(power):
-    """（大字瓦數, 說明, 語氣）；改由不斷電系統電池供電時語氣為警告，電量低時為嚴重。"""
+    """（大字瓦數、說明、語氣）；改由不斷電系統電池供電時語氣為警告，電量低時為嚴重。"""
     if power is None:
         return PLACEHOLDER, "正在讀取耗電…", TONE_NORMAL
     if power.source == SOURCE_NONE:
@@ -99,7 +99,7 @@ def menu_line(power):
 
 
 def breakdown_rows(breakdown):
-    """（id, 名稱, 瓦數, 占整機比例）；只有整機讀值來自不斷電系統時才顯示比例。"""
+    """（id、名稱、瓦數、占整機比例）；只有整機讀值來自不斷電系統時才顯示比例。"""
     system = breakdown.system_w if breakdown.source == SOURCE_UPS else None
     rows = []
     for item in breakdown.items:
