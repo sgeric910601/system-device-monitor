@@ -3,6 +3,7 @@ import dataclasses
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -10,7 +11,7 @@ import unittest
 
 from sdm.constants import Gpu
 from sdm.data.gpu import (GpuReading, NvidiaStream, parse_nvidia_line, primary_gpu,
-                          read_amd_gpus)
+                          read_amd_gpus, terminate)
 
 MIB = 1024 * 1024
 ROWS = ("0, Example GPU A, 37, 1644, 24564, 34, 0, 61.50\n"
@@ -160,6 +161,103 @@ class Stream(FakeExecutable):
         self.assertTrue(stream.pending())
         stream.accept_line(ROWS.splitlines()[0])
         self.assertFalse(stream.pending())
+
+
+class HangingProcess:
+    """不理會 SIGTERM、連 SIGKILL 後 wait() 也一直逾時的假程序。"""
+    pid = 0
+
+    def __init__(self):
+        self.calls = []
+
+    def terminate(self):
+        self.calls.append("terminate")
+
+    def kill(self):
+        self.calls.append("kill")
+
+    def wait(self, timeout=None):
+        if timeout is None:
+            raise AssertionError("wait() without a timeout would block forever")
+        time.sleep(timeout)
+        raise subprocess.TimeoutExpired("fake", timeout)
+
+
+class BoundedStop(FakeExecutable):
+    def test_terminate_gives_up_within_the_budget(self):
+        process = HangingProcess()
+        began = time.monotonic()
+        with self.assertLogs("sdm.data.gpu", "WARNING"):
+            self.assertFalse(terminate(process, 0.3))
+        self.assertLess(time.monotonic() - began, 0.6)
+        self.assertEqual(process.calls, ["terminate", "kill"])
+
+    def test_stop_with_a_hung_process_and_thread_is_bounded(self):
+        stream = NvidiaStream(command=str(self.dir/"missing"), interval_ms=5000)
+        release = threading.Event()
+        stream._process = HangingProcess()
+        stream._thread = threading.Thread(target=release.wait, daemon=True)
+        stream._thread.start()
+        self.addCleanup(release.set)
+        began = time.monotonic()
+        with self.assertLogs("sdm.data.gpu", "WARNING"):
+            stream.stop(timeout=0.4)
+        self.assertLess(time.monotonic() - began, 0.8)
+        self.assertFalse(stream.running())
+
+    def test_child_ignoring_sigterm_is_killed_and_reaped(self):
+        command = self.script(self.record_spawn() + (
+            "import signal\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "while True:\n"
+            "    sys.stdout.write('0, Example GPU A, 1, 2, 3, 4, 5, 6.5\\n')\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.05)\n"))
+        stream = NvidiaStream(command=command, interval_ms=5000)
+        stream.start()
+        self.assertTrue(wait_until(lambda: stream.readings()))
+        pid = int((self.dir/"spawns").read_text().split()[0])
+        began = time.monotonic()
+        stream.stop()
+        self.assertLessEqual(time.monotonic() - began, Gpu.STOP_TIMEOUT + 0.5)
+        self.assertFalse(Path(f"/proc/{pid}").exists())
+
+    def test_start_after_a_timed_out_stop_is_refused_until_the_thread_ends(self):
+        stream = NvidiaStream(command=self.script("time.sleep(5)\n"), interval_ms=5000)
+        release = threading.Event()
+        stream._run = release.wait          # 執行緒卡住，模擬停止逾時
+        self.assertTrue(stream.start())
+        with self.assertLogs("sdm.data.gpu", "WARNING"):
+            stream.stop(timeout=0.1)
+        self.assertFalse(stream.running())
+        with self.assertLogs("sdm.data.gpu", "WARNING"):
+            self.assertFalse(stream.start())
+        release.set()
+        self.assertTrue(wait_until(lambda: not stream._thread.is_alive()))
+        del stream._run
+        self.assertTrue(stream.start())
+        self.assertTrue(stream.running())
+        stream.stop()
+
+
+class SilentFailures(FakeExecutable):
+    def test_gives_up_after_repeated_exits_without_output(self):
+        command = self.script(self.record_spawn() + "sys.exit(9)\n")
+        delays = []
+
+        def wait(delay):
+            delays.append(delay)
+            return False
+        stream = NvidiaStream(command=command, interval_ms=5000, wait=wait)
+        with self.assertLogs("sdm.data.gpu", "WARNING") as logs:
+            stream.start()
+            self.assertTrue(wait_until(lambda: not stream._thread.is_alive()))
+        self.assertEqual(self.spawns(), Gpu.MAX_SILENT_FAILURES)
+        self.assertEqual(delays, [1, 2, 4, 8])
+        self.assertEqual(len(logs.output), 1)
+        self.assertFalse(stream.running())
+        self.assertFalse(stream.pending())
+        stream.stop()
 
 
 def write(path, text):

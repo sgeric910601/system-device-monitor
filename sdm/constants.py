@@ -37,7 +37,9 @@ class Gpu:
     BACKOFF_INITIAL = 1         # 串流程序結束後重新啟動的等待（秒），每次加倍
     BACKOFF_MAX = 60
     BACKOFF_RESET_SECONDS = 60  # 程序持續執行超過此秒數，下次重啟從最短等待算起
-    STOP_TIMEOUT = 2            # 停止時等待程序與執行緒結束的秒數
+    STOP_TIMEOUT = 2            # 停止時等待程序與執行緒結束的總秒數（介面最多卡住這麼久）
+    TERM_GRACE_RATIO = 0.5      # 總時限中留給 SIGTERM 的比例，之後改送 SIGKILL
+    MAX_SILENT_FAILURES = 5     # 連續幾次很快結束且沒有任何輸出，就停止重啟
     NAME_MAX_CHARS = 64
     TEMP_MIN_C = -40            # 溫度合理範圍
     TEMP_MAX_C = 150

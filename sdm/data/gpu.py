@@ -83,14 +83,24 @@ def parse_nvidia_line(line, stamp):
         watts=within(number(watts), 0, math.inf), stamp=stamp)
 
 
-def terminate(process):
-    """結束並回收子程序，避免留下殭屍程序。"""
+def terminate(process, timeout=Gpu.STOP_TIMEOUT):
+    """先送 SIGTERM，寬限期過後送 SIGKILL 並回收；總等待不超過 timeout 秒。
+
+    回傳是否已回收。連 SIGKILL 後都等不到時只記錄警告，絕不無限期等待。
+    """
+    deadline = time.monotonic() + timeout
     process.terminate()
     try:
-        process.wait(Gpu.STOP_TIMEOUT)
+        process.wait(timeout * Gpu.TERM_GRACE_RATIO)
+        return True
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait()
+    try:
+        process.wait(max(0.0, deadline - time.monotonic()))
+        return True
+    except subprocess.TimeoutExpired:
+        LOG.warning("nvidia-smi did not exit after SIGKILL; no longer waiting for it")
+        return False
 
 
 class NvidiaStream:
@@ -117,9 +127,12 @@ class NvidiaStream:
                 "-lms", str(self.interval_ms)]
 
     def start(self):
-        """啟動串流；找不到可執行檔時回傳 False 且不建立執行緒。"""
-        if self.running():
-            return True
+        """啟動串流；找不到可執行檔、或上一次停止還沒結束時回傳 False。"""
+        if self._thread is not None and self._thread.is_alive():
+            if not self._stop.is_set():
+                return True
+            LOG.warning("NVIDIA stream is still stopping; not restarting it")
+            return False
         if not os.access(self.command, os.X_OK):
             LOG.info("nvidia-smi not available; NVIDIA readings disabled")
             return False
@@ -129,19 +142,24 @@ class NvidiaStream:
         self._thread.start()
         return True
 
-    def stop(self):
-        """停止重啟、結束子程序並等待執行緒結束。"""
+    def stop(self, timeout=Gpu.STOP_TIMEOUT):
+        """停止重啟、結束子程序並等待執行緒結束；總共最多等 timeout 秒。"""
+        deadline = time.monotonic() + timeout
         self._stop.set()
+        self._started_at = None
         with self._lock:
             process = self._process
         if process is not None:
-            terminate(process)
+            terminate(process, timeout)
         if self._thread is not None:
-            self._thread.join(Gpu.STOP_TIMEOUT)
-        self._started_at = None
+            self._thread.join(max(0.0, deadline - time.monotonic()))
+            if self._thread.is_alive():
+                LOG.warning("NVIDIA stream thread did not stop in time")
 
     def running(self):
-        return self._thread is not None and self._thread.is_alive()
+        """已啟動、尚未要求停止，而且背景執行緒還在。"""
+        return (self._thread is not None and self._thread.is_alive()
+                and not self._stop.is_set())
 
     def pending(self, now=None):
         """已啟動但還沒收到第一行，且仍在等待期內。"""
@@ -180,16 +198,22 @@ class NvidiaStream:
         return self._stop.wait(delay)
 
     def _run(self):
-        backoff = Gpu.BACKOFF_INITIAL
+        backoff, silent = Gpu.BACKOFF_INITIAL, 0
         try:
             while not self._stop.is_set():
-                began = self.clock()
-                self._run_once()
+                began = time.monotonic()
+                lines = self._run_once()
                 if self._stop.is_set():
                     break
-                if self.clock() - began >= Gpu.BACKOFF_RESET_SECONDS:
+                lived = time.monotonic() - began
+                if lived >= Gpu.BACKOFF_RESET_SECONDS:
                     backoff = Gpu.BACKOFF_INITIAL
-                LOG.info("nvidia-smi stream ended; restarting in %d s", backoff)
+                silent = silent + 1 if lines == 0 and lived < Gpu.BACKOFF_RESET_SECONDS else 0
+                if silent >= Gpu.MAX_SILENT_FAILURES:
+                    LOG.warning("nvidia-smi exited %d times without output; "
+                                "NVIDIA readings disabled for this session", silent)
+                    break
+                LOG.debug("nvidia-smi stream ended; restarting in %d s", backoff)
                 if self._sleep(backoff):
                     break
                 backoff = self.next_backoff(backoff)
@@ -197,6 +221,8 @@ class NvidiaStream:
             LOG.warning("NVIDIA stream stopped: %s", type(error).__name__)
 
     def _run_once(self):
+        """執行一次 nvidia-smi 直到它結束；回傳讀到的行數（無法啟動時為 0）。"""
+        lines = 0
         try:
             process = subprocess.Popen(
                 self.args(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -204,18 +230,20 @@ class NvidiaStream:
                 text=True, encoding="utf-8", errors="replace", close_fds=True)
         except OSError as error:
             LOG.warning("Cannot start nvidia-smi: %s", type(error).__name__)
-            return
+            return lines
         with self._lock:
             self._process = process
         try:
             if not self._stop.is_set():
                 for line in process.stdout:
+                    lines += 1
                     self.accept_line(line)
         finally:
             terminate(process)
             process.stdout.close()
             with self._lock:
                 self._process = None
+        return lines
 
 
 def card_devices(root):
