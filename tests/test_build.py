@@ -1,4 +1,5 @@
 """打包腳本測試：以人工建立的清單暫存套件內容，檢查權限、路徑限制與控制檔。"""
+import ast
 import copy
 import importlib.util
 import os
@@ -45,7 +46,8 @@ class StagePackage(unittest.TestCase):
             "system": [
                 {"source": "helper/tool", "target": "/usr/libexec/system-device-monitor/tool",
                  "mode": "0755"},
-                {"source": "helper/rule.rules", "target": "/etc/polkit-1/rules.d/50-example.rules"},
+                {"source": "helper/rule.rules",
+                 "target": "/usr/share/polkit-1/actions/tw.local.example.policy"},
             ],
             "maintainer": {"postinst": "packaging/postinst"},
             "source": sorted(files),
@@ -63,7 +65,7 @@ class StagePackage(unittest.TestCase):
         expected = {
             APP + "/app.py": 0o644, APP + "/lib/mod.py": 0o644,
             "usr/libexec/system-device-monitor/tool": 0o755,
-            "etc/polkit-1/rules.d/50-example.rules": 0o644,
+            "usr/share/polkit-1/actions/tw.local.example.policy": 0o644,
             "DEBIAN/postinst": 0o755, "DEBIAN/control": 0o644,
             "usr/bin/system-device-monitor": 0o755,
             "usr/share/applications/system-device-monitor.desktop": 0o644,
@@ -85,14 +87,31 @@ class StagePackage(unittest.TestCase):
                 else:
                     self.assertFalse(path.is_symlink())
 
-    def test_system_target_outside_usr_or_etc_is_rejected(self):
-        for target in ("/opt/tool", "/var/lib/tool", "usr/lib/tool", "/usr/../var/tool",
-                       "/usr/./lib/tool", "/usr/lib/", "/usr", "/etcetera/tool", "",
-                       "/usr/bin/system-device-monitor"):
+    def test_system_target_outside_allowlist_is_rejected(self):
+        for target in ("/etc/sudoers.d/x", "/usr/bin/sudo", "/etc/ld.so.preload",
+                       "/usr/libexec/other/x", "/usr/libexec/system-device-monitor",
+                       "/usr/libexec/system-device-monitor-evil/x", "/etc/polkit-1/rules.d/x",
+                       "/opt/tool", "/var/lib/tool", "usr/libexec/system-device-monitor/x",
+                       "/usr/libexec/system-device-monitor/../other/x",
+                       "/usr/libexec/system-device-monitor/./x",
+                       "/usr/libexec/system-device-monitor/x/", "", None,
+                       "/usr/share/applications/system-device-monitor.desktop"):
             with self.subTest(target=target):
                 manifest = copy.deepcopy(self.manifest)
                 manifest["system"][0]["target"] = target
                 self.rejected(manifest)
+
+    def test_allowlisted_system_targets_are_accepted(self):
+        for prefix in ("/usr/libexec/system-device-monitor", "/usr/share/system-device-monitor",
+                       "/usr/share/polkit-1/actions", "/usr/lib/systemd/system",
+                       "/usr/share/applications", "/usr/share/icons/hicolor"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(str(build.system_target(prefix + "/sub/file")),
+                                 prefix.lstrip("/") + "/sub/file")
+        manifest = copy.deepcopy(self.manifest)
+        manifest["system"][1]["target"] = "/usr/share/icons/hicolor/scalable/apps/example.svg"
+        self.stage_with(manifest)
+        self.assertEqual(mode(self.stage/"usr/share/icons/hicolor/scalable/apps/example.svg"), 0o644)
 
     def test_unsafe_system_modes_are_rejected(self):
         for value in ("4755", "0777", "0666", "755x", "0200", 493):
@@ -105,7 +124,8 @@ class StagePackage(unittest.TestCase):
         os.symlink(self.root/"app.py", self.root/"link.py")
         os.symlink(self.root/"lib", self.root/"linked")
         for section, value in (("runtime", ["link.py"]), ("runtime", ["linked/mod.py"]),
-                               ("system", [{"source": "link.py", "target": "/usr/lib/x"}]),
+                               ("system", [{"source": "link.py",
+                                            "target": "/usr/libexec/system-device-monitor/x"}]),
                                ("maintainer", {"postinst": "link.py"})):
             with self.subTest(section=section, value=value):
                 manifest = copy.deepcopy(self.manifest)
@@ -155,6 +175,19 @@ class StagePackage(unittest.TestCase):
         manifest = dict(self.manifest, system=[], maintainer={})
         self.stage_with(manifest)
         self.assertEqual(sorted(p.name for p in (self.stage/"DEBIAN").iterdir()), ["control"])
+
+
+class TextEncoding(unittest.TestCase):
+    def test_text_file_calls_name_utf8(self):
+        tree = ast.parse((ROOT/"scripts/build_deb.py").read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in ("read_text", "write_text")]
+        self.assertTrue(calls)
+        for call in calls:
+            with self.subTest(line=call.lineno):
+                encodings = [k.value for k in call.keywords if k.arg == "encoding"]
+                self.assertEqual([getattr(value, "value", None) for value in encodings], ["utf-8"])
 
 
 class ControlText(unittest.TestCase):

@@ -83,6 +83,7 @@
     "tests/test_manifest.py",
     "tests/test_measure.py",
     "tests/test_monitor.py",
-    "tests/test_settings.py"
+    "tests/test_settings.py",
+    "tests/test_settings_persistence.py"
   ]
 }

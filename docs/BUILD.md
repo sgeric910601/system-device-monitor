@@ -23,7 +23,10 @@ install-dependencies.sh 與 CI 也會安裝它。
 
 package-files.json（格式 2）明確列出：
 - runtime：複製到 /usr/share/system-device-monitor 下相同相對路徑的執行期檔案，權限 0644。
-- system：安裝到 /usr 或 /etc 之下的系統檔案，各自指定權限（不得超過 0755）；目前為空。
+- system：系統檔案，各自指定權限（不得超過 0755）；目前為空。
+  只能安裝到 /usr/libexec/system-device-monitor、/usr/share/system-device-monitor、
+  /usr/share/polkit-1/actions、/usr/lib/systemd/system、/usr/share/applications、
+  /usr/share/icons/hicolor 之下（清單在 sdm/constants.py）；套件不安裝任何 /etc 檔案。
 - maintainer：preinst、postinst、prerm、postrm 安裝前後腳本，權限 0755；目前為空。
 - source：公開原始碼清單，必須涵蓋所有 git 追蹤檔案。
 
@@ -99,6 +102,9 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
 舊版不會讀取或覆寫。首次啟動只依 settings.json 是否存在判斷。
 無效值改用預設值並在日誌記錄鍵名，不認得的鍵在儲存時保留；
 兩個檔案都先寫暫存檔、fsync，再整檔取代。
+preferences.json 無法解析時，先另存為新的 preferences-<時間>.json.bak（不覆寫既有備份）
+再使用預設值；無法讀取、無法備份，或檔案來自較新版本（schema 較大）時，
+本次執行只讀不寫，避免覆蓋或降級。載入時會清理本程式殘留超過一小時的暫存檔。
 
 Solaar 為外部選用工具，沒有複製或封裝其原始碼；Piper 不參與看板執行。
 可使用 ./install-dependencies.sh --logitech 安裝測試用工具。

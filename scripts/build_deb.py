@@ -12,6 +12,7 @@ from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from sdm.constants import Packaging
 from sdm.paths import VERSION
 from sdm.services.autostart import desktop_entry, launcher_script
 
@@ -22,7 +23,7 @@ DESKTOP = PurePosixPath("usr/share/applications/system-device-monitor.desktop")
 DOC_DIR = PurePosixPath("usr/share/doc/system-device-monitor")
 DOCS = ("README.md", "CHANGELOG.md", "docs/USAGE.md", "docs/PRIVACY.md", "docs/BUILD.md")
 MAINTAINER_SCRIPTS = frozenset({"preinst", "postinst", "prerm", "postrm"})
-SYSTEM_ROOTS = ("usr", "etc")
+SYSTEM_PREFIXES = tuple(PurePosixPath(prefix) for prefix in Packaging.SYSTEM_PREFIXES)
 FILE_MODE = 0o644
 DIRECTORY_MODE = 0o755
 EXECUTABLE_MODE = 0o755
@@ -61,12 +62,14 @@ def public_source(manifest, root, name):
 
 
 def system_target(target):
-    """系統檔案只能安裝到 /usr 或 /etc 之下的正規化絕對路徑。"""
+    """系統檔案只能安裝到允許清單目錄之下的正規化絕對路徑。"""
     pure = PurePosixPath(target) if isinstance(target, str) and target else None
-    if (pure is None or not pure.is_absolute() or str(pure) != target
-            or ".." in pure.parts or len(pure.parts) < 3 or pure.parts[1] not in SYSTEM_ROOTS):
-        raise ValueError("System target must be under /usr or /etc: " + str(target))
-    return pure.relative_to("/")
+    if pure is None or not pure.is_absolute() or str(pure) != target or ".." in pure.parts:
+        raise ValueError("Invalid system target: " + str(target))
+    relative = pure.relative_to("/")
+    if not any(prefix in relative.parents for prefix in SYSTEM_PREFIXES):
+        raise ValueError("System target outside the allowed locations: " + target)
+    return relative
 
 
 def file_mode(text):
@@ -160,7 +163,7 @@ def write_tree(stage, plan, generated):
     for target, text, mode in generated:
         path = stage/target
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         path.chmod(mode)
     for entry in plan:
         path = stage/entry.target
@@ -189,7 +192,7 @@ def stage_package(manifest, stage, root=ROOT, version=VERSION, epoch=0):
 
 
 def main():
-    manifest = json.loads((ROOT/"package-files.json").read_text())
+    manifest = json.loads((ROOT/"package-files.json").read_text(encoding="utf-8"))
     dist = ROOT/"dist"
     dist.mkdir(exist_ok=True)
     epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))

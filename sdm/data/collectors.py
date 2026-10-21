@@ -277,9 +277,9 @@ class Collectors:
             errors.append("藍牙服務暫時無法取得")
         # 藍牙無線電屬於連線基礎設施，不列入周邊清單。
         try:
-            paths = dbus(self.bus, "org.freedesktop.UPower", "/org/freedesktop/UPower",
-                         "org.freedesktop.UPower", "EnumerateDevices")[0]
-            for path in paths:
+            power_paths = dbus(self.bus, "org.freedesktop.UPower", "/org/freedesktop/UPower",
+                               "org.freedesktop.UPower", "EnumerateDevices")[0]
+            for path in power_paths:
                 d = dbus(self.bus, "org.freedesktop.UPower", path,
                          "org.freedesktop.DBus.Properties", "GetAll",
                          GLib.Variant("(s)", ("org.freedesktop.UPower.Device",)))[0]

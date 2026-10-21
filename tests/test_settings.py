@@ -225,11 +225,6 @@ class PreferenceValue(TempConfig):
         self.assertEqual(data["low_threshold"], 25)
         self.assertEqual(data["schema"], 2)
 
-    def test_newer_schema_number_is_preserved(self):
-        self.write_prefs({"schema": 3})
-        save_preferences(self.prefs, load_preferences(self.prefs))
-        self.assertEqual(json.loads(self.prefs.read_text())["schema"], 3)
-
     def test_invalid_schema_number_is_replaced(self):
         for raw in (1, "2", True, None):
             with self.subTest(raw=raw):

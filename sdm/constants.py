@@ -54,3 +54,25 @@ class Smoke:
 class Launcher:
     """啟動器腳本等待專案磁碟掛載的最長秒數。"""
     WAIT_SECONDS = 60
+
+
+class Packaging:
+    """.deb 中 system 條目允許的安裝位置（不含開頭斜線的目錄前綴）。
+
+    目標必須位於其中某個目錄之下；套件本身不安裝任何 /etc 檔案，
+    之後若需要 /etc 設定，只能在執行期由特權小程式寫入。
+    """
+    SYSTEM_PREFIXES = (
+        "usr/libexec/system-device-monitor",
+        "usr/share/system-device-monitor",
+        "usr/share/polkit-1/actions",
+        "usr/lib/systemd/system",
+        "usr/share/applications",
+        "usr/share/icons/hicolor",
+    )
+
+
+class Storage:
+    """設定檔寫入與保護。"""
+    STALE_TEMPORARY_SECONDS = 3600  # 超過 1 小時的本程式暫存檔視為殘留，載入時清理
+    BACKUP_NAME_ATTEMPTS = 100      # 同一秒內備份檔名加序號的嘗試上限
