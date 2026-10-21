@@ -15,13 +15,15 @@ gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
 
 from sdm import paths
-from sdm.constants import Collect, Smoke, Solaar, Ui
+from sdm.constants import Collect, History, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
 from sdm.core.fmt import percent, size, age, temperature, value_text
 from sdm.core.settings import LEGACY_KEYS, load_settings, save_legacy
 from sdm.data.collectors import Collectors
 from sdm.data.ups import UpsReading
 from sdm.services.autostart import set_autostart, initialize_preferences
+from sdm.services.history_service import HistoryService
+from sdm.services.power_service import desktop_history_sample
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
 
@@ -61,6 +63,8 @@ class Monitor(Gtk.Application):
         self.graphs = []
         self.device_fingerprint = None
         self.event_timer = 0
+        self.history = None
+        self.last_recorded = None
 
     def do_activate(self):
         if self.window:
@@ -72,6 +76,9 @@ class Monitor(Gtk.Application):
             initialize_preferences()
         self.collector = Collectors()
         self.collector.nvidia.start()
+        # 模擬測試也照常讀寫：XDG 資料目錄在測試時指向暫存資料夾
+        self.history = HistoryService()
+        self.history.load()
         self.build_window()
         self.build_indicator()
         self.watch_devices()
@@ -80,6 +87,8 @@ class Monitor(Gtk.Application):
                                ("logitech", Solaar.INTERVAL)):
             self.submit(kind)
             self.timers.append(GLib.timeout_add_seconds(interval, self.tick, kind))
+        self.timers.append(GLib.timeout_add_seconds(History.RECORD_INTERVAL_SECONDS,
+                                                    self.record_history))
         if not self.background:
             self.window.show_all()
         if self.smoke:
@@ -137,6 +146,8 @@ class Monitor(Gtk.Application):
             logging.error("Collector %s failed: %s", kind, type(error).__name__)
             self.errors[kind] = "資料暫時無法取得"
             self.data[kind] = {} if kind != "devices" else {"devices": [], "errors": ["設備資料暫時無法取得"]}
+        if kind == "slow" and self.last_recorded is None:
+            self.record_history()
         if kind == "system":
             now = time.monotonic()
             gpu = self.data["slow"].get("gpu")
@@ -145,6 +156,16 @@ class Monitor(Gtk.Application):
                 self.series[key].append((now, value))
         self.render()
         return False
+
+    def record_history(self):
+        """每分鐘把最新的耗電快照記入歷史；第一次收到快照時也記一筆，同一快照不重複記。"""
+        if self.closing:
+            return False
+        sample = desktop_history_sample(self.data["slow"].get("power"))
+        if sample is not None and sample.t != self.last_recorded:
+            self.last_recorded = sample.t
+            self.history.add(sample)
+        return True
 
     def build_window(self):
         settings = Gtk.Settings.get_default()
@@ -544,6 +565,8 @@ class Monitor(Gtk.Application):
         self.pool.shutdown(wait=False, cancel_futures=True)
         if getattr(self, "collector", None) is not None:
             self.collector.nvidia.stop()
+        if self.history is not None:
+            self.history.save()
         self.quit()
 
 

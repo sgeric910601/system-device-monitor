@@ -94,6 +94,7 @@ PREFERENCE_SPECS = MappingProxyType({
     "tray_display": choice("icon_percent", ("icon_percent", "icon_only", "percent_only",
                                             "icon_time", "icon_percent_time")),
     "refresh_interval": choice(2, (1, 2, 5, 10)),
+    "tray_power": boolean(True),                 # 頂端列「耗電」指示器（不寫入舊版 settings.json）
     "power_saving": boolean(False),
     "power_saving_on_battery_only": boolean(False),
     "system_monitors": boolean(True),

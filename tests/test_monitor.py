@@ -11,6 +11,8 @@ from sdm.core.devices import battery, battery_menu_rows, normalize_usb, parse_ap
 from sdm.core.fmt import number
 from sdm.data.collectors import Collectors
 from sdm.data.gpu import GpuReading
+from sdm.data.ups import UpsReading
+from sdm.services.power_service import PowerService
 from sdm.ui import app as ui_app
 
 class Calculations(unittest.TestCase):
@@ -144,6 +146,41 @@ class FakeStream:
     def latest(self): return self.values
     def pending(self, now=None): return self.waiting
 
+class FakeHistory:
+    def __init__(self): self.added = []
+    def add(self, sample): self.added.append(sample)
+
+class HistoryRecording(unittest.TestCase):
+    """每分鐘記錄最新快照；同一快照不重複記，結束中不再記錄。"""
+    def setUp(self):
+        self.monitor = ui_app.Monitor.__new__(ui_app.Monitor)
+        self.monitor.closing, self.monitor.last_recorded = False, None
+        self.monitor.history = FakeHistory()
+
+    def snapshot(self, stamp, load_w=288.0):
+        ups = UpsReading(status=("ONLINE",), online=True, charge_pct=100.0, load_w=load_w)
+        service = PowerService(read_ups=lambda: ups, read_gpus=lambda: (),
+                               wall=lambda: stamp, read_uptime=lambda: None)
+        return service.sample()
+
+    def record(self, power):
+        self.monitor.data = {"slow": {"power": power}}
+        return self.monitor.record_history()
+
+    def test_records_each_new_snapshot_once(self):
+        self.assertTrue(self.record(self.snapshot(1000.0)))
+        self.assertTrue(self.record(self.snapshot(1000.0)))
+        self.assertTrue(self.record(self.snapshot(1060.0, 250.0)))
+        self.assertEqual([(s.t, s.watts) for s in self.monitor.history.added],
+                         [(1000.0, 288.0), (1060.0, 250.0)])
+
+    def test_nothing_without_a_snapshot_and_stops_when_closing(self):
+        self.assertTrue(self.record(None))
+        self.assertEqual(self.monitor.history.added, [])
+        self.monitor.closing = True
+        self.assertFalse(self.record(self.snapshot(1000.0)))
+        self.assertEqual(self.monitor.history.added, [])
+
 class Devices(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -213,6 +250,8 @@ class Devices(unittest.TestCase):
         self.collector.disk_meta = []
         self.collector.last_disk_meta = time.monotonic()
         self.collector.nvidia = FakeStream(gpus, pending)
+        self.collector.cpu_info = dict(name="Example CPU")
+        self.collector.power = self.collector.make_power_service(model="Example Board")
         def command(args, timeout=3):
             self.assertNotIn("nvidia-smi", args[0])  # 改由常駐串流提供，不再每次啟動
             if isinstance(ups, Exception):
@@ -230,9 +269,10 @@ class Devices(unittest.TestCase):
         self.assertEqual(result["ups"].charge_pct, 30.0)
 
     def test_gpu_card_prefers_nvidia_then_amd_discrete(self):
-        nvidia = GpuReading(vendor="nvidia", index=0, name="Example A", watts=61.5)
-        apu = GpuReading(vendor="amd", index=0, name="AMD", integrated=True)
-        dgpu = GpuReading(vendor="amd", index=1, name="AMD", watts=150.0)
+        now = time.monotonic()
+        nvidia = GpuReading(vendor="nvidia", index=0, name="Example A", watts=61.5, stamp=now)
+        apu = GpuReading(vendor="amd", index=0, name="AMD", integrated=True, stamp=now)
+        dgpu = GpuReading(vendor="amd", index=1, name="AMD", watts=150.0, stamp=now)
         result = self.slow(gpus=(nvidia,), amd=(apu, dgpu))
         self.assertIs(result["gpu"], nvidia)
         self.assertEqual(result["gpus"], (nvidia, apu, dgpu))
@@ -242,6 +282,17 @@ class Devices(unittest.TestCase):
         result = self.slow(pending=True)
         self.assertIsNone(result["gpu"])
         self.assertEqual(result["gpu_error"], "")
+
+    def test_power_snapshot_uses_ups_load_and_gpu_power(self):
+        nvidia = GpuReading(vendor="nvidia", index=0, name="Example A", watts=61.5,
+                            stamp=time.monotonic())
+        result = self.slow(gpus=(nvidia,), ups="STATUS : ONLINE\nLOADPCT : 32.0 Percent\n"
+                                                 "NOMPOWER : 900 Watts\n")
+        power = result["power"]
+        self.assertEqual((power.system_w, power.breakdown.other_w), (288.0, 226.5))
+        self.assertEqual((power.processor, power.model), ("Example CPU", "Example Board"))
+        self.assertIs(result["ups"], power.ups)
+        self.assertEqual(result["gpus"], power.gpus)
 
     def test_ups_failure_gives_no_reading(self):
         result = self.slow(ups=subprocess.TimeoutExpired("apcaccess", 2))

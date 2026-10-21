@@ -14,10 +14,13 @@ from sdm.core.counters import Counters, CpuCounter
 from sdm.core.devices import battery, normalize_usb, STATES, disk_is_physical
 from sdm.core.fmt import number
 from sdm.core.jsonfile import load_json
+from sdm.core.power_breakdown import SAMPLING
 from sdm.data.gpu import NvidiaStream, primary_gpu, read_amd_gpus
 from sdm.data.logitech_battery import SolaarBattery, apply_battery
+from sdm.data.machine import read_model
 from sdm.data.sources import command, read
 from sdm.data.ups import read_ups
+from sdm.services.power_service import PowerService
 
 GPU_UNAVAILABLE = "GPU 資料暫時無法取得"
 
@@ -136,6 +139,7 @@ class Collectors:
         self.disk_meta = []
         self.last_disk_meta = 0
         self.nvidia = NvidiaStream()  # 由 App 在啟動時 start()、結束時 stop()
+        self.power = self.make_power_service()
 
     def system(self):
         now = time.monotonic()
@@ -181,13 +185,21 @@ class Collectors:
                     ram_used=used, ram_total=total, networks=networks,
                     rx=net_sum("rx"), tx=net_sum("tx"), disks=disks, stamp=time.time())
 
+    def make_power_service(self, model=None):
+        """不斷電系統與顯示卡讀取都在呼叫時才查模組層級函式，測試可替換。"""
+        nvidia = self.nvidia
+        return PowerService(
+            read_ups=lambda: read_ups(command),
+            read_gpus=lambda: tuple(nvidia.latest()) + tuple(read_amd_gpus()),
+            gpus_pending=nvidia.pending, processor=self.cpu_info.get("name", ""),
+            model=read_model() if model is None else model)
+
     def slow(self):
         temperatures = hwmon_temperatures()
         cpu_temp, cpu_temp_label = cpu_temperature(temperatures)
-        gpus = self.gpu_readings()
-        gpu = primary_gpu(gpus)
-        pending = getattr(self, "nvidia", None) is not None and self.nvidia.pending()
-        ups = read_ups(command)
+        power = self.power.sample()
+        gpu = primary_gpu(power.gpus)
+        pending = power.breakdown.status == SAMPLING
         self.refresh_disk_meta()
         storage, used = [], set()
         for disk in self.disk_meta:
@@ -203,15 +215,10 @@ class Collectors:
                 network_temperatures[interface.name] = max(s["value"] for s in matched)
                 used.update(id(s) for s in matched)
         remaining = [s for s in temperatures if id(s) not in used and s["chip"] not in ("k10temp", "coretemp")]
-        return dict(gpu=gpu, gpus=gpus, gpu_error="" if gpu or pending else GPU_UNAVAILABLE,
-                    ups=ups, temperatures=remaining, cpu_temp=cpu_temp,
+        return dict(gpu=gpu, gpus=power.gpus, gpu_error="" if gpu or pending else GPU_UNAVAILABLE,
+                    ups=power.ups, power=power, temperatures=remaining, cpu_temp=cpu_temp,
                     cpu_temp_label=cpu_temp_label, fans=hwmon_fans(), storage=storage,
                     network_temperatures=network_temperatures, stamp=time.time())
-
-    def gpu_readings(self):
-        """NVIDIA 串流中未過期的讀值，加上本次讀取的 AMD 顯示卡。"""
-        nvidia = self.nvidia.readings() if getattr(self, "nvidia", None) is not None else ()
-        return tuple(nvidia) + tuple(read_amd_gpus())
 
     def refresh_disk_meta(self):
         if time.monotonic() - self.last_disk_meta < Collect.DISK_META_INTERVAL:

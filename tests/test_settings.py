@@ -90,8 +90,9 @@ class PreferenceDefaults(TempConfig):
 
     def test_documented_defaults(self):
         prefs = Preferences.defaults()
-        self.assertEqual(len(PREFERENCE_SPECS), 34)
+        self.assertEqual(len(PREFERENCE_SPECS), 35)
         expected = dict(tray_mode="split", tray_display="icon_percent", refresh_interval=2,
+                        tray_power=True,
                         power_saving=False, system_monitors=True, low_threshold=20,
                         full_threshold=100, ups_low_threshold=50, app_icon_color="mint",
                         companion_appearance="cat", desktop_pet_scale=1.0,
@@ -157,6 +158,22 @@ class PreferenceValidation(TempConfig):
         self.assertEqual(prefs.with_changes(charging_target_percent=65).charging_target_percent, 65)
         self.assertEqual(prefs.desktop_pet_scale, 2.0)
         self.assertIs(type(prefs.desktop_pet_scale), float)
+
+    def test_tray_power_must_be_a_boolean(self):
+        for raw in (1, "yes", None, [True]):
+            with self.subTest(raw=raw):
+                self.assertIs(self.load_with_warning({"tray_power": raw}, "tray_power").tray_power,
+                              True)
+                with self.assertRaises(ValueError):
+                    Preferences.defaults().with_changes(tray_power=raw)
+        self.assertIs(Preferences.defaults().with_changes(tray_power=False).tray_power, False)
+
+    def test_tray_power_is_not_a_legacy_setting(self):
+        self.assertNotIn("tray_power", LEGACY_KEYS)
+        prefs = Preferences.defaults().with_changes(tray_power=False)
+        save_preferences(self.prefs, prefs)
+        self.assertIs(json.loads(self.prefs.read_text())["tray_power"], False)
+        self.assertFalse(self.legacy.exists())
 
     def test_unknown_enum_values_are_rejected(self):
         cases = [("app_icon_color", "pink", "mint"), ("companion_appearance", "dog", "cat"),
