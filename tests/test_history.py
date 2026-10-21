@@ -107,6 +107,25 @@ class Points(unittest.TestCase):
         self.assertEqual(points[0].watts, 20.5)
         self.assertEqual([p.id for p in points], list(range(240)))
         self.assertEqual({p.segment for p in points}, {0})
+        # 區間起點相隔 42 分鐘，但資料本身每分鐘一筆：耗電線不能每點都斷開
+        self.assertEqual({p.watts_segment for p in points}, {0})
+
+    def test_bucketed_gaps_use_the_time_between_actual_samples(self):
+        # 每 4 筆一個區間：第 22 筆之後空 15 分鐘，空白兩側不能被平均成同一點
+        times = [NOW - 3600 + i * 60 for i in range(60) if not 22 <= i < 37]
+        points = chart_points(tuple(sample(t) for t in times), 3600, NOW, max_points=15)
+        self.assertLessEqual(len(points), 15)
+        self.assertIn(NOW - 3600 + 37 * 60, [p.t for p in points])
+        self.assertEqual(sorted({p.watts_segment for p in points}), [0, 1])
+        self.assertEqual({p.segment for p in points}, {0})
+
+    def test_long_gap_inside_a_week_breaks_both_lines(self):
+        gap = range(3 * 24 * 60, 3 * 24 * 60 + 400)        # 約 6.7 小時沒有資料
+        samples = tuple(sample(NOW - i * 60) for i in range(7 * 24 * 60, 0, -1) if i not in gap)
+        points = chart_points(samples, 7 * DAY, NOW)
+        self.assertLessEqual(len(points), History.MAX_POINTS)
+        self.assertEqual(sorted({p.segment for p in points}), [0, 1])
+        self.assertEqual(sorted({p.watts_segment for p in points}), [0, 1])
 
     def test_range_filters_older_samples(self):
         samples = (sample(NOW - 3601), sample(NOW - 3600), sample(NOW))

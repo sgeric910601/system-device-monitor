@@ -121,17 +121,41 @@ def bucket_point(chunk):
                 plugged=any(item.plugged for item in chunk))
 
 
+def gap_aware_chunks(selected, max_points):
+    """依筆數分區間，但超過 600 秒的空白一定另起區間。
+
+    沒有空白時與參考專案相同（每區間 ceil(n / max_points) 筆）；有空白時先把空白數
+    從點數預算扣掉，總點數仍不超過 max_points。
+    """
+    limit = History.WATTS_GAP_SECONDS
+    gaps = sum(1 for before, after in zip(selected, selected[1:]) if after.t - before.t > limit)
+    budget = max_points if not gaps else max(1, max_points - gaps - 1)
+    size = max(1, math.ceil(len(selected) / budget))
+    chunks, current = [], []
+    for item in selected:
+        if current and (len(current) >= size or item.t - current[-1].t > limit):
+            chunks.append(current)
+            current = []
+        current.append(item)
+    chunks.append(current)
+    return chunks
+
+
 def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
-    """取 range_s 秒內的樣本並降採樣到 max_points 以內（參考專案 points()）。"""
+    """取 range_s 秒內的樣本並降採樣到 max_points 以內（參考專案 points()）。
+
+    與參考專案的差別只在降採樣時：區間不跨越空白，間隔改量「上一區間最後一筆到
+    這一區間第一筆」。每區間一筆時兩者完全相同；參考的算法在 7 天範圍（約 42 分鐘
+    一區間）會讓每一點都超過 600 秒而自成一段，耗電線畫不出來，空白也會被平均掉。
+    """
     selected = [item for item in samples if item.t >= now - range_s]
     if not selected:
         return ()
-    size = max(1, math.ceil(len(selected) / max_points))
-    out, segment, watts_segment, previous = [], 0, 0, None
-    for start in range(0, len(selected), size):
-        values = bucket_point(selected[start:start + size])
+    out, segment, watts_segment, previous, last_t = [], 0, 0, None, None
+    for chunk in gap_aware_chunks(selected, max_points):
+        values = bucket_point(chunk)
         if previous is not None:
-            elapsed = values["t"] - previous.t
+            elapsed = values["t"] - last_t
             if values["watts"] is None or previous.watts is None or \
                     elapsed > History.WATTS_GAP_SECONDS:
                 watts_segment += 1
@@ -145,6 +169,7 @@ def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
                                       watts_segment))
         previous = ChartPoint(len(out), segment=segment, watts_segment=watts_segment, **values)
         out.append(previous)
+        last_t = chunk[-1].t
     return tuple(out)
 
 
