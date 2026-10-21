@@ -2,7 +2,7 @@
 
 檔案格式：{"format": 1, "samples": [[t, pct, watts, plugged, charging, ups_pct, ups_online], ...]}
 t 為 Unix 時間（秒）；桌機沒有電池，pct 為 None。
-圖表降採樣與分段規則與參考專案 HistoryStore.points 相同。
+圖表的分段與複製點規則沿用參考專案 HistoryStore.points，分區間方式刻意不同（見 chart_points）。
 """
 from dataclasses import dataclass
 import json
@@ -121,38 +121,51 @@ def bucket_point(chunk):
                 plugged=any(item.plugged for item in chunk))
 
 
-def gap_aware_chunks(selected, max_points):
-    """依筆數分區間，但超過 600 秒的空白一定另起區間。
-
-    沒有空白時與參考專案相同（每區間 ceil(n / max_points) 筆）；有空白時先把空白數
-    從點數預算扣掉，總點數仍不超過 max_points。
-    """
-    limit = History.WATTS_GAP_SECONDS
-    gaps = sum(1 for before, after in zip(selected, selected[1:]) if after.t - before.t > limit)
-    budget = max_points if not gaps else max(1, max_points - gaps - 1)
-    size = max(1, math.ceil(len(selected) / budget))
-    chunks, current = [], []
-    for item in selected:
-        if current and (len(current) >= size or item.t - current[-1].t > limit):
-            chunks.append(current)
+def split_runs(selected):
+    """在超過 600 秒的空白處切開，空白兩側的資料不會被平均成同一點。"""
+    runs, current = [], [selected[0]]
+    for before, item in zip(selected, selected[1:]):
+        if item.t - before.t > History.WATTS_GAP_SECONDS:
+            runs.append(current)
             current = []
         current.append(item)
-    chunks.append(current)
-    return chunks
+    runs.append(current)
+    return runs
 
 
-def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
-    """取 range_s 秒內的樣本並降採樣到 max_points 以內（參考專案 points()）。
+def merge_oldest(groups, limit):
+    """段數超過 limit 時，從最舊的開始兩兩合併：只犧牲最舊資料的細節。"""
+    while len(groups) > limit:
+        pairs = min(len(groups) - limit, len(groups) // 2)
+        merged = [groups[2 * index] + groups[2 * index + 1] for index in range(pairs)]
+        groups = merged + groups[2 * pairs:]
+    return groups
 
-    與參考專案的差別只在降採樣時：區間不跨越空白，間隔改量「上一區間最後一筆到
-    這一區間第一筆」。每區間一筆時兩者完全相同；參考的算法在 7 天範圍（約 42 分鐘
-    一區間）會讓每一點都超過 600 秒而自成一段，耗電線畫不出來，空白也會被平均掉。
-    """
-    selected = [item for item in samples if item.t >= now - range_s]
-    if not selected:
-        return ()
+
+def chunk_size(groups, budget):
+    """最小的每區間筆數，讓各段依此切分後的區間總數不超過 budget。"""
+    low, high = 1, max(len(group) for group in groups)
+    while low < high:
+        middle = (low + high) // 2
+        if sum(math.ceil(len(group) / middle) for group in groups) <= budget:
+            high = middle
+        else:
+            low = middle + 1
+    return low
+
+
+def plan_buckets(selected, budget):
+    """區間數不超過 budget；沒有空白時與參考專案相同（每區間 ceil(n / budget) 筆）。"""
+    groups = merge_oldest(split_runs(selected), budget)
+    size = chunk_size(groups, budget)
+    return [group[start:start + size] for group in groups
+            for start in range(0, len(group), size)]
+
+
+def bucket_points(buckets):
+    """依參考專案規則產生圖表點；間隔量的是上一區間最後一筆到這一區間第一筆。"""
     out, segment, watts_segment, previous, last_t = [], 0, 0, None, None
-    for chunk in gap_aware_chunks(selected, max_points):
+    for chunk in buckets:
         values = bucket_point(chunk)
         if previous is not None:
             elapsed = values["t"] - last_t
@@ -171,6 +184,26 @@ def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
         out.append(previous)
         last_t = chunk[-1].t
     return tuple(out)
+
+
+def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
+    """取 range_s 秒內的樣本並降採樣，點數（含複製點）保證不超過 max_points。
+
+    分段、斷線與複製點的規則沿用參考專案 HistoryStore.points()，但分區間刻意不同：
+    區間不跨越超過 600 秒的空白（參考的作法在 7 天範圍會讓耗電線畫不出來，
+    空白也會被平均掉），空白太多時從最舊的資料開始合併；複製點也計入點數，
+    超過時縮小區間預算重算。每區間一筆時結果與參考相同。
+    """
+    selected = [item for item in samples if item.t >= now - range_s]
+    if not selected:
+        return ()
+    limit = max(1, max_points)
+    budget = limit
+    while True:
+        points = bucket_points(plan_buckets(selected, budget))
+        if len(points) <= limit or budget == 1:
+            return points
+        budget = max(1, min(budget - 1, budget * limit // len(points)))
 
 
 def clamp_to_boot(unplugged, boot_time):

@@ -6,6 +6,7 @@
 import dataclasses
 import json
 import math
+import random
 import unittest
 
 from sdm.constants import History
@@ -137,8 +138,8 @@ class Points(unittest.TestCase):
                    sample(NOW - 120, pct=None, watts=None, plugged=True, ups_pct=None),
                    sample(NOW - 60, pct=40, watts=30.0, plugged=False, ups_pct=80.0),
                    sample(NOW, pct=30, watts=50.0, plugged=False, ups_pct=70.0))
-        points = chart_points(samples, 3600, NOW, max_points=2)
-        self.assertEqual(len(points), 3)  # 接電狀態改變，中間多一個複製點
+        points = chart_points(samples, 3600, NOW, max_points=3)
+        self.assertEqual(len(points), 3)  # 兩個區間，接電狀態改變，中間多一個複製點
         first, last = points[0], points[-1]
         self.assertEqual((first.t, first.pct, first.watts, first.ups_pct, first.plugged),
                          (NOW - 180, 50.0, 10.0, 90.0, True))
@@ -174,6 +175,47 @@ class Points(unittest.TestCase):
         limit = History.WATTS_GAP_SECONDS
         samples = (sample(NOW - 2 * limit - 1), sample(NOW - limit - 1), sample(NOW))
         self.assertEqual([p.watts_segment for p in chart_points(samples, 3600, NOW)], [0, 0, 1])
+
+
+class PointBudget(unittest.TestCase):
+    """降採樣後的點數（含接電狀態改變的複製點）一定不超過 max_points。"""
+    def assert_valid(self, points, max_points):
+        self.assertLessEqual(len(points), max_points)
+        self.assertEqual([p.id for p in points], list(range(len(points))))
+        self.assertEqual([p.t for p in points], sorted(p.t for p in points))
+        self.assertEqual([p.segment for p in points], sorted(p.segment for p in points))
+
+    def test_plug_flip_at_every_bucket_boundary(self):
+        samples = tuple(sample(NOW - 7 * DAY + i * 60, plugged=(i // 42) % 2 == 0)
+                        for i in range(10080))
+        self.assert_valid(chart_points(samples, 7 * DAY, NOW), History.MAX_POINTS)
+
+    def test_four_hundred_gaps_longer_than_ten_minutes(self):
+        samples = tuple(sample(NOW - 400 * 900 + i * 900) for i in range(401))
+        points = chart_points(samples, 7 * DAY, NOW)
+        self.assert_valid(points, History.MAX_POINTS)
+        # 犧牲最舊資料的細節：最新的 79 筆仍各自一點
+        self.assertEqual([p.t for p in points[-79:]], [s.t for s in samples[-79:]])
+
+    def test_gaps_with_longer_runs(self):
+        samples = tuple(sample(NOW - 6 * DAY + run * 1200 + i * 60)
+                        for run in range(400) for i in range(3))
+        self.assert_valid(chart_points(samples, 7 * DAY, NOW), History.MAX_POINTS)
+
+    def test_random_data_never_exceeds_the_budget(self):
+        rng = random.Random(20261021)
+        for case in range(300):
+            t, samples = NOW - 7 * DAY, []
+            for _ in range(rng.randrange(0, 2500)):
+                t += rng.choice((60, 60, 60, 120, 601, 3600, 7 * 3600))
+                if t > NOW:
+                    break
+                samples.append(sample(t, watts=rng.choice((None, 10.0, 250.0)),
+                                      plugged=rng.random() < 0.5,
+                                      ups_pct=rng.choice((None, 90.0))))
+            limit = rng.randrange(1, 300)
+            with self.subTest(case=case, count=len(samples), limit=limit):
+                self.assert_valid(chart_points(tuple(samples), 7 * DAY, NOW, limit), limit)
 
 
 class LastUnplugged(unittest.TestCase):
