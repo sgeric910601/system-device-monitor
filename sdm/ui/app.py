@@ -17,9 +17,10 @@ from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
 from sdm import paths
 from sdm.constants import Collect, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
-from sdm.core.fmt import percent, size, age, number, temperature, value_text
+from sdm.core.fmt import percent, size, age, temperature, value_text
 from sdm.core.settings import LEGACY_KEYS, load_settings, save_legacy
 from sdm.data.collectors import Collectors
+from sdm.data.ups import UpsReading
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
@@ -70,6 +71,7 @@ class Monitor(Gtk.Application):
         if not self.smoke:
             initialize_preferences()
         self.collector = Collectors()
+        self.collector.nvidia.start()
         self.build_window()
         self.build_indicator()
         self.watch_devices()
@@ -137,9 +139,9 @@ class Monitor(Gtk.Application):
             self.data[kind] = {} if kind != "devices" else {"devices": [], "errors": ["設備資料暫時無法取得"]}
         if kind == "system":
             now = time.monotonic()
+            gpu = self.data["slow"].get("gpu")
             for key in self.series:
-                value = self.data["slow"].get("gpu", {}).get("usage") if (
-                    key == "gpu" and self.data["slow"].get("gpu")) else self.data["system"].get(key)
+                value = (gpu.usage if gpu else None) if key == "gpu" else self.data["system"].get(key)
                 self.series[key].append((now, value))
         self.render()
         return False
@@ -314,18 +316,18 @@ class Monitor(Gtk.Application):
 
     def render(self):
         fast, slow = self.data["system"], self.data["slow"]
-        gpu, ups = slow.get("gpu") or {}, slow.get("ups") or {}
+        gpu, ups = slow.get("gpu"), slow.get("ups") or UpsReading()
         self.cards["cpu"][0].set_text(percent(fast.get("cpu")))
         info = fast.get("cpu_info", {})
         self.card_titles["cpu"].set_text(info.get("name", "CPU") + " · " + temperature(slow.get("cpu_temp")))
         self.cards["cpu"][1].set_text(
             f"{info.get('cores') or '—'} 核心 · {info.get('threads') or '—'} 執行緒 · 全機使用率")
-        self.card_titles["gpu"].set_text(gpu.get("name", "GPU") + " · " + temperature(gpu.get("temp")))
-        self.cards["gpu"][0].set_text(percent(gpu.get("usage")))
+        self.card_titles["gpu"].set_text((gpu.name if gpu else "GPU") + " · " +
+                                         temperature(gpu.temp_c if gpu else None))
+        self.cards["gpu"][0].set_text(percent(gpu.usage if gpu else None))
         self.cards["gpu"][1].set_text(
-            f"顯示記憶體 {size(gpu.get('used')*1048576 if gpu.get('used') is not None else None)}"
-            f" / {size(gpu.get('total')*1048576 if gpu.get('total') is not None else None)}\n"
-            f"{value_text(gpu.get('watts'), ' W')} · 風扇 {percent(gpu.get('fan'))}"
+            f"顯示記憶體 {size(gpu.vram_used)} / {size(gpu.vram_total)}\n"
+            f"{value_text(gpu.watts, ' W')} · 風扇 {percent(gpu.fan_pct)}"
             if gpu else slow.get("gpu_error") or "正在讀取…")
         self.cards["ram"][0].set_text(percent(fast.get("ram")))
         self.cards["ram"][1].set_text(f"{size(fast.get('ram_used'))} / {size(fast.get('ram_total'))}\n依系統可用記憶體計算")
@@ -333,13 +335,11 @@ class Monitor(Gtk.Application):
         self.cards["network"][1].set_text("↑ " + size(fast.get("tx"), True) + " · 虛擬網路獨立列出")
         self.cards["temperature"][0].set_text(temperature(slow.get("cpu_temp")))
         self.cards["temperature"][1].set_text(slow.get("cpu_temp_label", "讀取中…"))
-        charge = number(ups.get("BCHARGE"))
-        status = ups.get("STATUS", "")
-        mode = "市電供電" if "ONLINE" in status else ("電池供電" if "ONBATT" in status else "通訊暫時無法取得")
-        self.cards["ups"][0].set_text(percent(charge))
+        mode = "市電供電" if ups.online else ("電池供電" if ups.on_battery else "通訊暫時無法取得")
+        self.cards["ups"][0].set_text(percent(ups.charge_pct))
         self.cards["ups"][1].set_text(
-            f"{mode} · 負載 {percent(number(ups.get('LOADPCT')))}\n"
-            f"預估續航 {value_text(number(ups.get('TIMELEFT')), ' 分鐘')}")
+            f"{mode} · 負載 {percent(ups.load_pct)}\n"
+            f"預估續航 {value_text(ups.time_left_min, ' 分鐘')}")
         for graph in self.graphs:
             graph.queue_draw()
         self.render_storage()
@@ -437,10 +437,10 @@ class Monitor(Gtk.Application):
         if not hasattr(self, "indicator"):
             return
         fast, slow = self.data["system"], self.data["slow"]
-        gpu = slow.get("gpu") or {}
+        gpu = slow.get("gpu")
         parts = {
             "cpu": "CPU " + percent(fast.get("cpu")),
-            "gpu": "GPU " + percent(gpu.get("usage")),
+            "gpu": "GPU " + percent(gpu.usage if gpu else None),
             "ram": "RAM " + percent(fast.get("ram")),
             "network": "↓" + size(fast.get("rx"), True) + " ↑" + size(fast.get("tx"), True),
             "temperature": temperature(slow.get("cpu_temp")),
@@ -454,9 +454,9 @@ class Monitor(Gtk.Application):
                                  else AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
         for key, text in parts.items():
             self.summary_items[key].set_label(text)
-        ups = slow.get("ups") or {}
-        self.summary_items["ups"].set_label("UPS " + percent(number(ups.get("BCHARGE"))) +
-            " · 續航 " + value_text(number(ups.get("TIMELEFT")), " 分鐘"))
+        ups = slow.get("ups") or UpsReading()
+        self.summary_items["ups"].set_label("UPS " + percent(ups.charge_pct) +
+            " · 續航 " + value_text(ups.time_left_min, " 分鐘"))
         self.sync_battery_items(battery_menu_rows(self.data["devices"]))
 
     def battery_item(self, text):
@@ -542,6 +542,8 @@ class Monitor(Gtk.Application):
         for indicator in getattr(self, "indicators", {}).values():
             indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
         self.pool.shutdown(wait=False, cancel_futures=True)
+        if getattr(self, "collector", None) is not None:
+            self.collector.nvidia.stop()
         self.quit()
 
 

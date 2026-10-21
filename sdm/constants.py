@@ -16,6 +16,42 @@ class Collect:
     APCACCESS_TIMEOUT = 2
     LSBLK_TIMEOUT = 3
     DBUS_TIMEOUT_MS = 1800      # 同步 D-Bus 呼叫逾時（毫秒）
+    APCACCESS = "/sbin/apcaccess"
+    NVIDIA_SMI = "/usr/bin/nvidia-smi"
+
+
+class Ups:
+    """apcaccess 數值的合理範圍；超出範圍視為讀不到。"""
+    LOAD_MAX_PCT = 150          # 負載百分比上限（過載時可能超過 100）
+    CHARGE_MAX_PCT = 100
+    NOMINAL_MIN_W = 1           # 額定功率範圍（瓦）
+    NOMINAL_MAX_W = 20000
+    TIME_LEFT_MAX_MIN = 10000   # 預估續航上限（分鐘）
+    LINE_V_MAX = 400            # 市電電壓上限（伏特）
+    MODEL_MAX_CHARS = 64
+
+
+class Gpu:
+    """顯示卡讀取：NVIDIA 常駐串流與 AMD sysfs。"""
+    STREAM_INTERVAL_MS = Collect.SLOW_INTERVAL * 1000   # nvidia-smi -lms 間隔
+    BACKOFF_INITIAL = 1         # 串流程序結束後重新啟動的等待（秒），每次加倍
+    BACKOFF_MAX = 60
+    BACKOFF_RESET_SECONDS = 60  # 程序持續執行超過此秒數，下次重啟從最短等待算起
+    STOP_TIMEOUT = 2            # 停止時等待程序與執行緒結束的秒數
+    NAME_MAX_CHARS = 64
+    TEMP_MIN_C = -40            # 溫度合理範圍
+    TEMP_MAX_C = 150
+    INTEGRATED_VRAM_MAX = 2 * 1024 ** 3   # 專用顯示記憶體不超過 2 GiB 視為內建顯示
+    AMD_VENDOR = "0x1002"
+    PWM_MAX = 255               # pwm1_max 不存在時的預設上限
+
+
+class Power:
+    """整機耗電、元件拆解與平均。"""
+    EMA_TAU_SECONDS = 180       # 平均的時間常數，約等於「近 3 分鐘平均」
+    STALE_FACTOR = 3            # 元件樣本超過「慢速間隔 × 此倍數」視為過期
+    SYSTEM_MAX_W = 2000         # 整機耗電合理上限（不含）
+    COMPONENT_MAX_W = 1000      # 單一元件合理上限（不含）
 
 
 class Counter:

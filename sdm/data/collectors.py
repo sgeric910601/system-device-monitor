@@ -1,6 +1,4 @@
 """唯讀資料來源轉接；不做任何裝置控制，也不存取 SMTP。"""
-import csv
-import io
 import json
 import os
 from pathlib import Path
@@ -13,22 +11,15 @@ from gi.repository import Gio, GLib, GUdev
 from sdm import paths
 from sdm.constants import Collect
 from sdm.core.counters import Counters, CpuCounter
-from sdm.core.devices import (battery, normalize_usb, parse_apc, STATES,
-                              disk_is_physical)
+from sdm.core.devices import battery, normalize_usb, STATES, disk_is_physical
 from sdm.core.fmt import number
 from sdm.core.jsonfile import load_json
+from sdm.data.gpu import NvidiaStream, primary_gpu, read_amd_gpus
 from sdm.data.logitech_battery import SolaarBattery, apply_battery
+from sdm.data.sources import command, read
+from sdm.data.ups import read_ups
 
-def read(path, default=""):
-    try:
-        return Path(path).read_text().strip()
-    except (OSError, UnicodeError):
-        return default
-
-def command(args, timeout=Collect.COMMAND_TIMEOUT):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
-                            env={**os.environ, "LC_ALL": "C"}, check=True)
-    return result.stdout
+GPU_UNAVAILABLE = "GPU 資料暫時無法取得"
 
 def dbus(bus, destination, path, interface, method, args=None):
     if bus is None:
@@ -87,6 +78,49 @@ def storage_temperature(sensors):
     composite = [s for s in sensors if s["label"].lower() == "composite"]
     return max((s["value"] for s in (composite or sensors)), default=None)
 
+def hwmon_temperatures():
+    temperatures = []
+    for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        chip = read(hw / "name")
+        for path in sorted(hw.glob("temp*_input")):
+            value = number(read(path))
+            if value is not None:
+                label = read(path.with_name(path.name.replace("_input", "_label")), path.stem)
+                temperatures.append(dict(chip=chip, label=label, value=value / 1000,
+                                         device=str((hw/"device").resolve())))
+    return temperatures
+
+def hwmon_fans():
+    fans = []
+    for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+        for path in hw.glob("fan*_input"):
+            value = number(read(path))
+            if value is not None:
+                fans.append(dict(name=read(hw/"name") + " " + read(
+                    path.with_name(path.name.replace("_input", "_label")), path.stem),
+                    value=value))
+    return fans
+
+def disk_entry(device):
+    """lsblk 的一個實體磁碟：型號、介面、容量與已掛載的分割區用量。"""
+    volumes = []
+    def visit(node):
+        for mount in node.get("mountpoints") or []:
+            if mount and not mount.startswith("/snap/"):
+                try:
+                    s = os.statvfs(mount)
+                    capacity = s.f_blocks * s.f_frsize
+                    volumes.append(dict(mount=mount, total=capacity,
+                        used=(s.f_blocks - s.f_bfree) * s.f_frsize,
+                        available=s.f_bavail * s.f_frsize))
+                except OSError:
+                    pass
+        for child in node.get("children", []):
+            visit(child)
+    visit(device)
+    return dict(name=device["name"], model=(device.get("model") or "").strip(),
+                transport=device.get("tran") or "", size=device.get("size", 0), volumes=volumes)
+
 class Collectors:
     def __init__(self):
         self.aliases = load_json(paths.ALIASES)
@@ -101,6 +135,7 @@ class Collectors:
         self.updates = {}
         self.disk_meta = []
         self.last_disk_meta = 0
+        self.nvidia = NvidiaStream()  # 由 App 在啟動時 start()、結束時 stop()
 
     def system(self):
         now = time.monotonic()
@@ -147,74 +182,13 @@ class Collectors:
                     rx=net_sum("rx"), tx=net_sum("tx"), disks=disks, stamp=time.time())
 
     def slow(self):
-        temperatures = []
-        for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
-            chip = read(hw / "name")
-            for path in sorted(hw.glob("temp*_input")):
-                value = number(read(path))
-                if value is not None:
-                    label = read(path.with_name(path.name.replace("_input", "_label")), path.stem)
-                    temperatures.append(dict(chip=chip, label=label, value=value / 1000,
-                                             device=str((hw/"device").resolve())))
+        temperatures = hwmon_temperatures()
         cpu_temp, cpu_temp_label = cpu_temperature(temperatures)
-        fans = []
-        for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
-            for path in hw.glob("fan*_input"):
-                value = number(read(path))
-                if value is not None:
-                    fans.append(dict(name=read(hw/"name") + " " + read(
-                        path.with_name(path.name.replace("_input", "_label")), path.stem),
-                        value=value))
-        gpu = None
-        gpu_error = ""
-        try:
-            output = command(["/usr/bin/nvidia-smi",
-                "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,fan.speed,power.draw",
-                "--format=csv,noheader,nounits"], Collect.NVIDIA_SMI_TIMEOUT)
-            rows = list(csv.reader(io.StringIO(output)))
-            row = rows[0]  # 驅動列舉順序中的第一張 NVIDIA GPU。
-            gpu = dict(name=row[0].strip(), usage=number(row[1]), used=number(row[2]),
-                       total=number(row[3]), temp=number(row[4]), fan=number(row[5]), watts=number(row[6]))
-        except (OSError, subprocess.SubprocessError, IndexError):
-            gpu_error = "GPU 資料暫時無法取得"
-        ups = None
-        try:
-            ups = parse_apc(command(["/sbin/apcaccess", "status"], Collect.APCACCESS_TIMEOUT))
-            ups = {key: ups[key] for key in ("STATUS", "BCHARGE", "TIMELEFT", "LOADPCT") if key in ups}
-            if "COMMLOST" in ups.get("STATUS", ""):
-                ups = None
-        except (OSError, subprocess.SubprocessError):
-            pass
-        if time.monotonic() - self.last_disk_meta >= Collect.DISK_META_INTERVAL:
-            self.last_disk_meta = time.monotonic()
-            try:
-                root = json.loads(command(["/usr/bin/lsblk", "-J", "-b",
-                    "-o", "NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL"], Collect.LSBLK_TIMEOUT))
-                disks = []
-                for device in root["blockdevices"]:
-                    if device.get("type") != "disk" or not disk_is_physical(device["name"]):
-                        continue
-                    volumes = []
-                    def visit(node):
-                        for mount in node.get("mountpoints") or []:
-                            if mount and not mount.startswith("/snap/"):
-                                try:
-                                    s = os.statvfs(mount)
-                                    capacity = s.f_blocks * s.f_frsize
-                                    volumes.append(dict(mount=mount, total=capacity,
-                                        used=(s.f_blocks - s.f_bfree) * s.f_frsize,
-                                        available=s.f_bavail * s.f_frsize))
-                                except OSError:
-                                    pass
-                        for child in node.get("children", []):
-                            visit(child)
-                    visit(device)
-                    disks.append(dict(name=device["name"], model=(device.get("model") or "").strip(),
-                                      transport=device.get("tran") or "", size=device.get("size", 0),
-                                      volumes=volumes))
-                self.disk_meta = disks
-            except (OSError, subprocess.SubprocessError, ValueError, KeyError):
-                self.disk_meta = []
+        gpus = self.gpu_readings()
+        gpu = primary_gpu(gpus)
+        pending = getattr(self, "nvidia", None) is not None and self.nvidia.pending()
+        ups = read_ups(command)
+        self.refresh_disk_meta()
         storage, used = [], set()
         for disk in self.disk_meta:
             matched = device_temperatures(temperatures, f"/sys/class/block/{disk['name']}/device")
@@ -229,9 +203,27 @@ class Collectors:
                 network_temperatures[interface.name] = max(s["value"] for s in matched)
                 used.update(id(s) for s in matched)
         remaining = [s for s in temperatures if id(s) not in used and s["chip"] not in ("k10temp", "coretemp")]
-        return dict(gpu=gpu, gpu_error=gpu_error, ups=ups, temperatures=remaining,
-                    cpu_temp=cpu_temp, cpu_temp_label=cpu_temp_label, fans=fans,
-                    storage=storage, network_temperatures=network_temperatures, stamp=time.time())
+        return dict(gpu=gpu, gpus=gpus, gpu_error="" if gpu or pending else GPU_UNAVAILABLE,
+                    ups=ups, temperatures=remaining, cpu_temp=cpu_temp,
+                    cpu_temp_label=cpu_temp_label, fans=hwmon_fans(), storage=storage,
+                    network_temperatures=network_temperatures, stamp=time.time())
+
+    def gpu_readings(self):
+        """NVIDIA 串流中未過期的讀值，加上本次讀取的 AMD 顯示卡。"""
+        nvidia = self.nvidia.readings() if getattr(self, "nvidia", None) is not None else ()
+        return tuple(nvidia) + tuple(read_amd_gpus())
+
+    def refresh_disk_meta(self):
+        if time.monotonic() - self.last_disk_meta < Collect.DISK_META_INTERVAL:
+            return
+        self.last_disk_meta = time.monotonic()
+        try:
+            root = json.loads(command(["/usr/bin/lsblk", "-J", "-b",
+                "-o", "NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL"], Collect.LSBLK_TIMEOUT))
+            self.disk_meta = [disk_entry(device) for device in root["blockdevices"]
+                              if device.get("type") == "disk" and disk_is_physical(device["name"])]
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+            self.disk_meta = []
 
     def logitech(self):
         return self.logitech_battery.refresh()

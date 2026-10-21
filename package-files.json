@@ -13,7 +13,10 @@
     "sdm/core/settings.py",
     "sdm/data/__init__.py",
     "sdm/data/collectors.py",
+    "sdm/data/gpu.py",
     "sdm/data/logitech_battery.py",
+    "sdm/data/sources.py",
+    "sdm/data/ups.py",
     "sdm/paths.py",
     "sdm/services/__init__.py",
     "sdm/services/autostart.py",
@@ -67,7 +70,10 @@
     "sdm/core/settings.py",
     "sdm/data/__init__.py",
     "sdm/data/collectors.py",
+    "sdm/data/gpu.py",
     "sdm/data/logitech_battery.py",
+    "sdm/data/sources.py",
+    "sdm/data/ups.py",
     "sdm/paths.py",
     "sdm/services/__init__.py",
     "sdm/services/autostart.py",
@@ -78,12 +84,14 @@
     "tests/__init__.py",
     "tests/test_build.py",
     "tests/test_distribution.py",
+    "tests/test_gpu.py",
     "tests/test_import_check.py",
     "tests/test_logitech_battery.py",
     "tests/test_manifest.py",
     "tests/test_measure.py",
     "tests/test_monitor.py",
     "tests/test_settings.py",
-    "tests/test_settings_persistence.py"
+    "tests/test_settings_persistence.py",
+    "tests/test_ups.py"
   ]
 }

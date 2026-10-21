@@ -10,6 +10,7 @@ from sdm.core.counters import CpuCounter, Counters
 from sdm.core.devices import battery, battery_menu_rows, normalize_usb, parse_apc
 from sdm.core.fmt import number
 from sdm.data.collectors import Collectors
+from sdm.data.gpu import GpuReading
 from sdm.ui import app as ui_app
 
 class Calculations(unittest.TestCase):
@@ -135,6 +136,14 @@ class BatteryMenuSync(unittest.TestCase):
         self.assertEqual(item.handlers, [])
         self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "讀取中…", "---"])
 
+class FakeStream:
+    """取代 NvidiaStream：回傳固定讀值，不啟動任何程序。"""
+    def __init__(self, readings=(), pending=False):
+        self.values, self.waiting = tuple(readings), pending
+    def readings(self, now=None): return self.values
+    def latest(self): return self.values
+    def pending(self, now=None): return self.waiting
+
 class Devices(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -200,18 +209,45 @@ class Devices(unittest.TestCase):
         self.assertEqual(len(result["devices"]), 1)
         self.assertTrue(result["errors"])
 
-    def test_gpu_timeout_preserves_other_sources(self):
+    def slow(self, gpus=(), amd=(), pending=False, ups="STATUS : ONLINE\nBCHARGE : 30 Percent\n"):
         self.collector.disk_meta = []
         self.collector.last_disk_meta = time.monotonic()
+        self.collector.nvidia = FakeStream(gpus, pending)
         def command(args, timeout=3):
-            if "nvidia-smi" in args[0]:
-                raise subprocess.TimeoutExpired(args, timeout)
-            return "STATUS : ONLINE\nBCHARGE : 30 Percent\n"
-        with patch("sdm.data.collectors.command", side_effect=command):
-            result = self.collector.slow()
+            self.assertNotIn("nvidia-smi", args[0])  # 改由常駐串流提供，不再每次啟動
+            if isinstance(ups, Exception):
+                raise ups
+            return ups
+        with patch("sdm.data.collectors.command", side_effect=command), \
+                patch("sdm.data.collectors.read_amd_gpus", return_value=amd):
+            return self.collector.slow()
+
+    def test_missing_gpu_preserves_ups_reading(self):
+        result = self.slow()
         self.assertIsNone(result["gpu"])
         self.assertTrue(result["gpu_error"])
-        self.assertEqual(result["ups"]["STATUS"], "ONLINE")
+        self.assertTrue(result["ups"].online)
+        self.assertEqual(result["ups"].charge_pct, 30.0)
+
+    def test_gpu_card_prefers_nvidia_then_amd_discrete(self):
+        nvidia = GpuReading(vendor="nvidia", index=0, name="Example A", watts=61.5)
+        apu = GpuReading(vendor="amd", index=0, name="AMD", integrated=True)
+        dgpu = GpuReading(vendor="amd", index=1, name="AMD", watts=150.0)
+        result = self.slow(gpus=(nvidia,), amd=(apu, dgpu))
+        self.assertIs(result["gpu"], nvidia)
+        self.assertEqual(result["gpus"], (nvidia, apu, dgpu))
+        self.assertIs(self.slow(amd=(apu, dgpu))["gpu"], dgpu)
+
+    def test_waiting_for_first_stream_row_is_not_an_error(self):
+        result = self.slow(pending=True)
+        self.assertIsNone(result["gpu"])
+        self.assertEqual(result["gpu_error"], "")
+
+    def test_ups_failure_gives_no_reading(self):
+        result = self.slow(ups=subprocess.TimeoutExpired("apcaccess", 2))
+        self.assertIsNone(result["ups"])
+        comm = self.slow(ups="STATUS : COMMLOST\n")["ups"]
+        self.assertTrue(comm.comm_lost)
 
     def test_usb_remove_disappears(self):
         def bus(_bus, dest, path, iface, method, args=None):

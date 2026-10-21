@@ -1,0 +1,252 @@
+"""顯示卡讀取：NVIDIA 常駐串流（以假執行檔測試）與 AMD 假 /sys 目錄。"""
+import dataclasses
+import os
+from pathlib import Path
+import stat
+import tempfile
+import threading
+import time
+import unittest
+
+from sdm.constants import Gpu
+from sdm.data.gpu import (GpuReading, NvidiaStream, parse_nvidia_line, primary_gpu,
+                          read_amd_gpus)
+
+MIB = 1024 * 1024
+ROWS = ("0, Example GPU A, 37, 1644, 24564, 34, 0, 61.50\n"
+        "1, Example GPU B, [N/A], 200, 2048, [Not Supported], [N/A], [Not Supported]\n")
+
+
+def wait_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class NvidiaLine(unittest.TestCase):
+    def test_two_gpus_and_unavailable_values(self):
+        first, second = (parse_nvidia_line(line, 7.0) for line in ROWS.splitlines())
+        self.assertEqual(first, GpuReading(vendor="nvidia", index=0, name="Example GPU A",
+                                           integrated=False, usage=37.0, vram_used=1644 * MIB,
+                                           vram_total=24564 * MIB, temp_c=34.0, fan_pct=0.0,
+                                           watts=61.5, stamp=7.0))
+        self.assertEqual((second.index, second.usage, second.temp_c, second.fan_pct, second.watts),
+                         (1, None, None, None, None))
+        self.assertEqual(second.vram_total, 2048 * MIB)
+        self.assertEqual(first.gpu_id, "gpu:nvidia:0")
+
+    def test_malformed_lines_are_ignored(self):
+        for line in ("", "garbage", "x, Example, 1, 2, 3, 4, 5, 6", "0, Example, 1, 2, 3",
+                     "-1, Example, 1, 2, 3, 4, 5, 6", "0, , 1, 2, 3, 4, 5, 6"):
+            with self.subTest(line=line):
+                self.assertIsNone(parse_nvidia_line(line, 1.0))
+
+    def test_out_of_range_values_become_none(self):
+        reading = parse_nvidia_line("0, Example, 140, -5, 10, 400, 101, nan", 1.0)
+        self.assertEqual((reading.usage, reading.vram_used, reading.temp_c, reading.fan_pct,
+                          reading.watts), (None, None, None, None, None))
+        self.assertEqual(reading.vram_total, 10 * MIB)
+
+    def test_reading_is_frozen(self):
+        reading = parse_nvidia_line(ROWS.splitlines()[0], 1.0)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            reading.watts = 1.0
+
+
+class FakeExecutable(unittest.TestCase):
+    """假的 nvidia-smi：寫在暫存目錄的腳本，忽略參數。"""
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def script(self, body):
+        path = self.dir/"fake-smi"
+        path.write_text("#!/usr/bin/python3 -B\nimport os, sys, time\n" + body)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return str(path)
+
+    def spawns(self):
+        log = self.dir/"spawns"
+        return log.read_text().count("\n") if log.exists() else 0
+
+    def record_spawn(self):
+        return (f"with open({str(self.dir/'spawns')!r}, 'a') as log:\n"
+                "    log.write(str(os.getpid()) + '\\n')\n")
+
+
+class Stream(FakeExecutable):
+    def test_rows_are_read_and_exit_restarts_with_backoff(self):
+        command = self.script(self.record_spawn() + f"sys.stdout.write({ROWS!r})\n")
+        delays, finished = [], threading.Event()
+
+        def wait(delay):
+            delays.append(delay)
+            if len(delays) >= 4:
+                finished.set()
+                return True
+            return False
+        stream = NvidiaStream(command=command, interval_ms=5000, wait=wait)
+        stream.start()
+        self.addCleanup(stream.stop)
+        self.assertTrue(finished.wait(10))
+        self.assertEqual(delays, [1, 2, 4, 8])
+        self.assertEqual(self.spawns(), 4)
+        readings = stream.readings()
+        self.assertEqual([r.index for r in readings], [0, 1])
+        self.assertEqual(readings[0].watts, 61.5)
+
+    def test_backoff_is_capped(self):
+        self.assertEqual([NvidiaStream.next_backoff(value) for value in (1, 32, 60)],
+                         [2, Gpu.BACKOFF_MAX, Gpu.BACKOFF_MAX])
+
+    def test_stop_terminates_the_child_without_zombies(self):
+        command = self.script(self.record_spawn() + (
+            "while True:\n"
+            "    sys.stdout.write('0, Example GPU A, 1, 2, 3, 4, 5, 6.5\\n')\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.05)\n"))
+        stream = NvidiaStream(command=command, interval_ms=5000)
+        stream.start()
+        self.assertTrue(wait_until(lambda: stream.readings()))
+        self.assertTrue(stream.running())
+        pid = int((self.dir/"spawns").read_text().split()[0])
+        stream.stop()
+        self.assertFalse(Path(f"/proc/{pid}").exists())
+        self.assertFalse(stream.running())
+        time.sleep(0.2)
+        self.assertEqual(self.spawns(), 1)
+
+    def test_child_gets_c_locale_and_no_stdin(self):
+        out = self.dir/"env"
+        command = self.script(
+            f"open({str(out)!r}, 'w').write(os.environ.get('LC_ALL', '') + '|' + "
+            "str(sys.stdin.read() if sys.stdin else 'closed'))\n")
+        stream = NvidiaStream(command=command, interval_ms=5000, wait=lambda delay: True)
+        stream.start()
+        self.assertTrue(wait_until(lambda: out.exists() and out.read_text()))
+        stream.stop()
+        self.assertEqual(out.read_text(), "C|")
+
+    def test_missing_executable_does_not_start(self):
+        stream = NvidiaStream(command=str(self.dir/"missing"), interval_ms=5000)
+        self.assertFalse(stream.start())
+        self.assertFalse(stream.running())
+        self.assertFalse(stream.pending())
+        self.assertEqual(stream.readings(), ())
+        stream.stop()
+
+    def test_stale_readings_are_not_returned(self):
+        now = [100.0]
+        stream = NvidiaStream(command=str(self.dir/"missing"), interval_ms=5000,
+                              clock=lambda: now[0])
+        stream.accept_line(ROWS.splitlines()[0])
+        self.assertEqual(len(stream.readings()), 1)
+        now[0] += 15.0
+        self.assertEqual(len(stream.readings()), 1)
+        now[0] += 0.1
+        self.assertEqual(stream.readings(), ())
+        self.assertEqual(len(stream.latest()), 1)
+
+    def test_pending_until_first_row(self):
+        now = [10.0]
+        command = self.script("time.sleep(5)\n")
+        stream = NvidiaStream(command=command, interval_ms=5000, clock=lambda: now[0])
+        self.assertTrue(stream.start())
+        self.addCleanup(stream.stop)
+        self.assertTrue(stream.pending())
+        stream.accept_line(ROWS.splitlines()[0])
+        self.assertFalse(stream.pending())
+
+
+def write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+class AmdSysfs(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.drm = self.root/"sys/class/drm"
+
+    def card(self, name, vendor="0x1002", **files):
+        device = self.drm/name/"device"
+        write(device/"vendor", vendor + "\n")
+        for key, value in files.items():
+            write(device/key.replace("__", "/"), str(value) + "\n")
+        return device
+
+    def test_apu_with_ppt_is_integrated_and_keeps_raw_value_only(self):
+        self.card("card1", gpu_busy_percent=3, mem_info_vram_used=26157056,
+                  mem_info_vram_total=2147483648, hwmon__hwmon3__name="amdgpu",
+                  hwmon__hwmon3__power1_label="PPT", hwmon__hwmon3__power1_input=20000,
+                  hwmon__hwmon3__temp1_input=39000)
+        (reading,) = read_amd_gpus(self.root, now=5.0)
+        self.assertTrue(reading.integrated)
+        self.assertIsNone(reading.watts)
+        self.assertEqual(reading.ppt_raw, 20000)
+        self.assertEqual((reading.usage, reading.temp_c, reading.vram_used),
+                         (3.0, 39.0, 26157056))
+        self.assertEqual((reading.vendor, reading.index, reading.stamp), ("amd", 0, 5.0))
+
+    def test_discrete_gpu_power_average_in_microwatts(self):
+        self.card("card0", mem_info_vram_total=17163091968, mem_info_vram_used=1073741824,
+                  hwmon__hwmon1__power1_average=150000000, hwmon__hwmon1__power1_input=1,
+                  hwmon__hwmon1__pwm1=128, hwmon__hwmon1__pwm1_max=255)
+        (reading,) = read_amd_gpus(self.root, now=1.0)
+        self.assertFalse(reading.integrated)
+        self.assertEqual(reading.watts, 150.0)
+        self.assertIsNone(reading.ppt_raw)
+        self.assertAlmostEqual(reading.fan_pct, 50.2, places=1)
+
+    def test_discrete_gpu_falls_back_to_power_input(self):
+        self.card("card0", mem_info_vram_total=8589934592, hwmon__hwmon1__power1_input=95500000)
+        self.assertEqual(read_amd_gpus(self.root, now=1.0)[0].watts, 95.5)
+
+    def test_small_vram_without_label_is_integrated(self):
+        self.card("card0", mem_info_vram_total=536870912, hwmon__hwmon1__power1_input=9000000)
+        (reading,) = read_amd_gpus(self.root, now=1.0)
+        self.assertTrue(reading.integrated)
+        self.assertIsNone(reading.watts)
+        self.assertEqual(reading.ppt_raw, 9000000)
+
+    def test_missing_files_give_none_fields(self):
+        self.card("card0")
+        (reading,) = read_amd_gpus(self.root, now=1.0)
+        fields = (reading.usage, reading.vram_used, reading.vram_total, reading.temp_c,
+                  reading.fan_pct, reading.watts, reading.ppt_raw)
+        self.assertEqual(fields, (None,) * 7)
+        self.assertFalse(reading.integrated)
+
+    def test_connectors_and_other_vendors_are_skipped(self):
+        self.card("card2", vendor="0x10de", mem_info_vram_total=1)
+        self.card("card1-DP-1", vendor="0x1002")
+        self.card("card1", gpu_busy_percent=200, mem_info_vram_total="nan")
+        (reading,) = read_amd_gpus(self.root, now=1.0)
+        self.assertIsNone(reading.usage)
+        self.assertIsNone(reading.vram_total)
+
+    def test_missing_tree_gives_nothing(self):
+        self.assertEqual(read_amd_gpus(self.root/"absent", now=1.0), ())
+
+
+class Primary(unittest.TestCase):
+    def reading(self, vendor, index, integrated=False):
+        return GpuReading(vendor=vendor, index=index, name="Example", integrated=integrated)
+
+    def test_first_nvidia_then_amd_discrete(self):
+        nvidia1, nvidia0 = self.reading("nvidia", 1), self.reading("nvidia", 0)
+        apu, dgpu = self.reading("amd", 0, True), self.reading("amd", 1)
+        self.assertIs(primary_gpu((apu, nvidia1, nvidia0, dgpu)), nvidia0)
+        self.assertIs(primary_gpu((apu, dgpu)), dgpu)
+        self.assertIsNone(primary_gpu((apu,)))
+        self.assertIsNone(primary_gpu(()))
+
+
+if __name__ == "__main__":
+    unittest.main()
