@@ -92,6 +92,7 @@ class Battery:
     FLOW_SWING_W = 5.0          # 方向明顯相反（超過 5 W）時立即切換流向圖
     JUST_PLUGGED_SECONDS = 30   # 剛插電 30 秒內電池仍在放電不算供電不足
     CHARGE_WARMUP_SECONDS = 60  # 開始充電後頭 60 秒的電流不納入平均
+    UNIT_CHANGE_READS = 2       # 推算單位（W／A）要連續幾次改變才切換並重算平均
     LIVE_MIN_W = 0.1            # 平均功率或電流超過此值才推算剩餘時間
     LIVE_MIN_A = 0.010
     RESERVE_PERCENT = 10        # 「到 10%」的保留電量

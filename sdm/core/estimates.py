@@ -204,6 +204,7 @@ class LiveAverages:
     def __init__(self):
         self.discharge = self.charge = None
         self.unit = None
+        self.unit_candidate, self.unit_count = None, 0
         self.last_stamp = None
         self.last_state = None
         self.charging_since = None
@@ -217,13 +218,27 @@ class LiveAverages:
             started_mid_charge = self.last_state is None
             self.charging_since = ((-math.inf if started_mid_charge else now)
                                    if state == CHARGING else None)
-        unit = snapshot.rate_unit
-        if unit != self.unit:
-            self.discharge = self.charge = None
-            self.unit = unit
+        unit = self.accepted_unit(snapshot.rate_unit)
         self._add(self._rate(snapshot, unit), now, dt)
         self.last_stamp, self.last_state = now, state
         return Averages(self.discharge, self.charge, self.unit)
+
+    def accepted_unit(self, unit):
+        """推算單位要連續兩次改變才切換（並重算平均），單筆讀值缺漏不會把平均清掉。"""
+        if unit == self.unit:
+            self.unit_candidate, self.unit_count = None, 0
+            return self.unit
+        if self.unit is None:
+            self.unit = unit
+            return unit
+        if unit == self.unit_candidate:
+            self.unit_count += 1
+        else:
+            self.unit_candidate, self.unit_count = unit, 1
+        if self.unit_count >= Battery.UNIT_CHANGE_READS:
+            self.discharge = self.charge = None
+            self.unit, self.unit_candidate, self.unit_count = unit, None, 0
+        return self.unit
 
     @staticmethod
     def _rate(snapshot, unit):

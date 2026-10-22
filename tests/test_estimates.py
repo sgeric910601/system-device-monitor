@@ -262,16 +262,21 @@ class Averaging(unittest.TestCase):
         s = BatterySnapshot(percent=50, current_a=2.0, charge_now_ah=2.0, rate_unit=UNIT_AMPS)
         self.assertEqual(live.update(CHARGING, s, 0.0).charge, 2.0)
 
-    def test_unit_change_or_unknown_rate(self):
+    def test_unit_change_needs_two_readings_in_a_row(self):
         live = LiveAverages()
-        s = BatterySnapshot(percent=50, battery_w=-10.0, current_a=-1.0, energy_now_wh=20.0,
-                            rate_unit=UNIT_WATTS)
-        live.update(DISCHARGING, s, 0.0)
-        result = live.update(DISCHARGING, dataclasses.replace(s, rate_unit=UNIT_AMPS), 5.0)
-        self.assertEqual(result, Averages(1.0, None, UNIT_AMPS))
-        result = live.update(DISCHARGING, dataclasses.replace(s, rate_unit=None), 10.0)
-        self.assertEqual(result, Averages(None, None, None))
-
+        watts = BatterySnapshot(percent=50, battery_w=-10.0, current_a=-1.0, energy_now_wh=20.0,
+                                rate_unit=UNIT_WATTS)
+        amps_only = dataclasses.replace(watts, rate_unit=UNIT_AMPS)
+        live.update(DISCHARGING, watts, 0.0)
+        # 單筆改變不換單位，平均照常用原本的單位累積
+        self.assertEqual(live.update(DISCHARGING, amps_only, 5.0), Averages(10.0, None, UNIT_WATTS))
+        self.assertEqual(live.update(DISCHARGING, watts, 10.0).unit, UNIT_WATTS)
+        live.update(DISCHARGING, amps_only, 15.0)
+        self.assertEqual(live.update(DISCHARGING, amps_only, 20.0), Averages(1.0, None, UNIT_AMPS))
+        unknown = dataclasses.replace(watts, rate_unit=None)
+        self.assertEqual(live.update(DISCHARGING, unknown, 25.0), Averages(1.0, None, UNIT_AMPS))
+        self.assertEqual(live.update(DISCHARGING, unknown, 30.0), Averages(None, None, None))
+        self.assertEqual(live.update(DISCHARGING, watts, 35.0), Averages(10.0, None, UNIT_WATTS))
 
 if __name__ == "__main__":
     unittest.main()
