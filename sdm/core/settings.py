@@ -2,6 +2,8 @@
 
 相容規則：
 - settings.json 維持舊格式，只存五個頂端列布林值；舊版與退回舊版都只讀寫它。
+  檔案無法解析或不是物件時，第一次覆寫前先另存 settings-<epoch>.json.bak（絕不覆寫既有備份），
+  備份失敗就不覆寫。
 - 新設定存在同目錄的 preferences.json（{"schema": 2, ...}），舊版不會讀取或覆寫。
 - 首次啟動只看 settings.json 是否存在；缺少 preferences.json 不算首次啟動。
 - preferences.json 中不認得的鍵在儲存時原樣保留；無效值改用預設值並記錄鍵名。
@@ -43,13 +45,29 @@ def load_legacy(path):
                              for key, default in LEGACY_DEFAULTS.items()})
 
 
-def save_legacy(path, values):
-    """只寫回舊版格式的五個布林值，與舊版寫出的內容完全相同。"""
+def undecodable(path):
+    """檔案存在但無法解析或不是 JSON 物件時回傳原始內容；不存在或讀不到時回傳 None。"""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return data if _decode_object(data) is None else None
+
+
+def save_legacy(path, values, clock=time.time):
+    """只寫回舊版格式的五個布林值，與舊版寫出的內容完全相同。
+
+    原本的檔案無法解析時先另存備份；備份失敗會拋出 OSError，原檔保持不變。
+    """
     data = {}
     for key in LEGACY_KEYS:
         if type(values.get(key)) is not bool:
             raise ValueError("Legacy setting must be a boolean: " + key)
         data[key] = values[key]
+    damaged = undecodable(path)
+    if damaged is not None:
+        backup = create_backup(path, damaged, int(clock()))
+        LOG.warning("Legacy settings file was invalid; copied to %s", backup.name)
     write_json_atomic(path, data)
 
 

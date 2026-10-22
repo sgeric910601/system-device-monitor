@@ -81,6 +81,37 @@ class LegacySettings(TempConfig):
             LEGACY_DEFAULTS["cpu"] = False
 
 
+class LegacyBackup(TempConfig):
+    """無法解析的 settings.json 在第一次覆寫前先另存備份（絕不覆寫既有備份）。"""
+
+    def backups(self):
+        return sorted(path.name for path in self.dir.glob("settings-*.json.bak"))
+
+    def test_undecodable_file_is_backed_up_before_it_is_replaced(self):
+        for index, broken in enumerate(("{broken", "[1, 2]", "\xff\xfe")):
+            self.legacy.write_text(broken)
+            save_legacy(self.legacy, LEGACY_DEFAULTS, clock=lambda: 1000)
+            with self.subTest(broken=broken):
+                self.assertEqual(json.loads(self.legacy.read_text()), dict(LEGACY_DEFAULTS))
+                self.assertEqual(len(self.backups()), index + 1)
+        self.assertEqual(self.backups(), ["settings-1000-1.json.bak", "settings-1000-2.json.bak",
+                                          "settings-1000.json.bak"])
+        self.assertEqual((self.dir/"settings-1000.json.bak").read_text(), "{broken")
+
+    def test_valid_or_missing_file_needs_no_backup(self):
+        save_legacy(self.legacy, LEGACY_DEFAULTS)
+        self.legacy.write_text(json.dumps({"cpu": "odd"}))     # 可解析：只是值不對
+        save_legacy(self.legacy, LEGACY_DEFAULTS)
+        self.assertEqual(self.backups(), [])
+
+    def test_failed_backup_leaves_the_original_untouched(self):
+        self.legacy.write_text("{broken")
+        with patch("sdm.core.settings.create_backup", side_effect=OSError("full")):
+            with self.assertRaises(OSError):
+                save_legacy(self.legacy, LEGACY_DEFAULTS)
+        self.assertEqual(self.legacy.read_text(), "{broken")
+
+
 class PreferenceDefaults(TempConfig):
     def test_missing_file_gives_defaults_without_writing(self):
         with self.assertNoLogs(LOGGER, "WARNING"):
