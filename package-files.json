@@ -82,6 +82,7 @@
     "sdm/ui/smoke.py",
     "sdm/ui/theme.py",
     "sdm/ui/tray_icons.py",
+    "sdm/ui/tray_text.py",
     "sdm/ui/widgets.py",
     "VERSION",
     "icons/cpu.svg",
@@ -200,6 +201,7 @@
     "sdm/ui/smoke.py",
     "sdm/ui/theme.py",
     "sdm/ui/tray_icons.py",
+    "sdm/ui/tray_text.py",
     "sdm/ui/widgets.py",
     "tests/__init__.py",
     "tests/fixtures/__init__.py",
@@ -257,6 +259,7 @@
     "tests/test_tiers.py",
     "tests/test_tray_icons.py",
     "tests/test_tray_power.py",
+    "tests/test_tray_text.py",
     "tests/test_udisks.py",
     "tests/test_upower.py",
     "tests/test_ups.py"
