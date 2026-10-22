@@ -30,7 +30,7 @@ from sdm.services.power_service import PowerService
 
 GPU_UNAVAILABLE = "GPU 資料暫時無法取得"
 ALL_MODULES = frozenset({"cpu", "memory", "disk", "network"})
-TEMPERATURE_MODULES = frozenset({"cpu", "disk", "network"})   # 需要 hwmon 溫度的模組
+OVERVIEW_TEMPERATURES = frozenset({"disk", "network"})   # 總覽顯示時才需要 hwmon 溫度的模組
 
 def dbus(bus, destination, path, interface, method, args=None):
     if bus is None:
@@ -68,6 +68,8 @@ class Collectors:
     root = Path("/")     # 讀取 /proc 與 /sys 的根目錄；測試時指向假的目錄
     storage_visible = False     # 總覽或磁碟頁顯示中（由介面設定）：lsblk 改為每 30 秒
     modules = ALL_MODULES       # 開啟中的系統監控模組（由介面設定）；關閉的模組不取樣
+    # 總覽頁顯示中（由介面設定）：磁碟讀寫、風扇、其他感測器、磁碟與網路卡溫度只有總覽用得到
+    overview_visible = True
 
     def __init__(self):
         self.aliases = load_json(paths.ALIASES)
@@ -97,7 +99,7 @@ class Collectors:
         return self.details.sample(request)
 
     def system(self):
-        """一般層：只取開啟中的模組（CPU、記憶體、網速、磁碟讀寫）。"""
+        """一般層：只取開啟中的模組；磁碟讀寫只有總覽用得到，總覽沒顯示時不讀。"""
         now, modules = time.monotonic(), self.modules
         result = dict(cpu_info=self.cpu_info, stamp=time.time())
         if "cpu" in modules:
@@ -110,7 +112,7 @@ class Collectors:
                           ram_total=total)
         if "network" in modules:
             result.update(self.network_summary(now))
-        if "disk" in modules:
+        if "disk" in modules and self.overview_visible:
             result["disks"] = self.disk_rates(now)
         return result
 
@@ -171,27 +173,30 @@ class Collectors:
         return dict(power=self.power.sample(), stamp=time.time())
 
     def slow(self):
-        """慢速層：耗電一直取樣；溫度、風扇與磁碟清單只在需要它們的模組開啟時讀取。"""
-        modules = self.modules
-        temperatures = hwmon_temperatures() if modules & TEMPERATURE_MODULES else []
+        """慢速層：耗電一直取樣；CPU 溫度跟著 CPU 模組（頂端列與選單）；
+        風扇、其他感測器、磁碟與網路卡溫度只在總覽顯示且模組開啟時讀取。"""
+        modules, overview = self.modules, self.overview_visible
+        shown = modules if overview else frozenset()
+        needs_hwmon = "cpu" in modules or bool(shown & OVERVIEW_TEMPERATURES)
+        temperatures = hwmon_temperatures() if needs_hwmon else []
         cpu_temp, cpu_temp_label = (cpu_temperature(temperatures) if "cpu" in modules
                                     else (None, ""))
         power = self.power.sample()
         gpu = primary_gpu(power.gpus)
         pending = power.breakdown.status == SAMPLING
-        storage, used = [], set()
         if "disk" in modules:
-            self.refresh_disk_meta()
-            storage, used = self.storage_temperatures(temperatures)
+            self.refresh_disk_meta()        # 磁碟頁的詳細取樣也要用；沒顯示時每 5 分鐘一次
+        storage, used = (self.storage_temperatures(temperatures) if "disk" in shown
+                         else ([], set()))
         network_temperatures, network_used = (self.network_temperatures(temperatures)
-                                              if "network" in modules else ({}, set()))
+                                              if "network" in shown else ({}, set()))
         used = used | network_used
         remaining = [s for s in temperatures if id(s) not in used
-                     and s["chip"] not in ("k10temp", "coretemp")] if "cpu" in modules else []
+                     and s["chip"] not in ("k10temp", "coretemp")] if "cpu" in shown else []
         return dict(gpu=gpu, gpus=power.gpus, gpu_error="" if gpu or pending else GPU_UNAVAILABLE,
                     ups=power.ups, power=power, temperatures=remaining, cpu_temp=cpu_temp,
                     cpu_temp_label=cpu_temp_label,
-                    fans=hwmon_fans() if "cpu" in modules else [], storage=storage,
+                    fans=hwmon_fans() if "cpu" in shown else [], storage=storage,
                     network_temperatures=network_temperatures, stamp=time.time())
 
     def storage_temperatures(self, temperatures):

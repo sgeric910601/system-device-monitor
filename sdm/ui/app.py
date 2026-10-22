@@ -62,6 +62,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
     window = None
     main = None             # 主視窗外殼（MainWindow）
     page_memory = None      # 最後顯示的頁面；示範模式與模擬測試為 None
+    pages_stale = True      # 視窗隱藏期間收到新資料，下次顯示時要重畫頁面
 
     def __init__(self, background=False, smoke=False, output_dir=None, capture=False,
                  preview=None):
@@ -132,6 +133,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         GLib.idle_add(self.ask_first_run)
         self.create_scheduler()
         self.apply_modules()        # 頁面、取樣層與頂端列；各層立即取樣一次
+        self.visibility_changed()   # 視窗還沒顯示：只有總覽用得到的資料先不取
         self.timers.append(GLib.timeout_add_seconds(History.RECORD_INTERVAL_SECONDS,
                                                     self.record_history))
         self.install_signal_handlers()
@@ -231,6 +233,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.devices_page = DevicesPage()
         self.page("devices", PAGE_TITLES["devices"]).pack_start(self.devices_page, False, False, 0)
         self.watch_visibility()
+        self.window.connect("map", lambda *_: self.refresh_stale_pages())
 
     def page(self, key, title):
         return self.main.page(key, title)
@@ -276,12 +279,29 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
             self.main.show_page(page)
 
     def render(self):
+        """頂端列與選單一直更新；視窗隱藏或最小化時頁面只記下需要重畫，顯示時再補。"""
+        self.render_indicator()
+        if self.window_shown():
+            self.render_pages()
+        else:
+            self.pages_stale = True
+
+    def window_shown(self):
+        return (self.window is not None and self.window.get_visible()
+                and not self.window_iconified)
+
+    def refresh_stale_pages(self):
+        if self.pages_stale and self.window_shown():
+            self.pages_stale = False
+            self.render_pages()
+
+    def render_pages(self):
+        self.pages_stale = False
         fast, slow = self.data["system"], self.data["slow"]
         self.power_page.update(self.current_power())
         self.overview.render(fast, slow)
         self.render_monitor_pages(fast, slow)
         self.devices_page.render(self.data["devices"])
-        self.render_indicator()
         errors = list(self.errors.values()) + self.data["devices"].get("errors", [])
         self.footer.set_text(" · ".join(errors) if errors else
                              "更新於 " + time.strftime("%H:%M:%S") + "  ·  本機唯讀監看")

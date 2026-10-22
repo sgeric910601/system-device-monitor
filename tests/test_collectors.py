@@ -200,6 +200,36 @@ class Modules(SlowSample):
         self.assertEqual(result["network_temperatures"], {})
 
 
+class OverviewHidden(SlowSample):
+    """總覽沒有顯示時，一般層與慢速層只取頂端列、選單與耗電需要的資料。"""
+
+    def test_disk_rates_only_while_the_overview_is_shown(self):
+        self.collector.overview_visible = False
+        self.assertNotIn("disks", self.collector.system())
+        result = self.collector.system()
+        self.assertIn("rx", result)
+        self.assertIn("ram", result)
+        self.collector.overview_visible = True
+        self.assertIn("disks", self.collector.system())
+
+    def test_slow_keeps_the_cpu_temperature_but_skips_overview_extras(self):
+        self.collector.overview_visible = False
+        with patch("sdm.data.collectors.hwmon_fans", side_effect=AssertionError("fans")):
+            result = self.sample_without_fans()
+        self.assertEqual((result["cpu_temp"], result["cpu_temp_label"]), (55.0, "Tctl"))
+        self.assertEqual((result["fans"], result["storage"], result["temperatures"],
+                          result["network_temperatures"]), ([], [], [], {}))
+        self.assertIsNotNone(result["power"])
+
+    def sample_without_fans(self):
+        with patch("sdm.data.collectors.hwmon_temperatures", return_value=self.sensors), \
+                patch("sdm.data.collectors.command", side_effect=OSError("no ups")), \
+                patch("sdm.data.collectors.read_amd_gpus", return_value=()), \
+                patch("sdm.data.collectors.read_batteries", return_value=()), \
+                patch("sdm.data.collectors.read_adapters", return_value=()):
+            return self.collector.slow()
+
+
 class FakeSmart:
     def __init__(self, values):
         self.values = values

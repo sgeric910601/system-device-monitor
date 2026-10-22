@@ -123,6 +123,42 @@ class Obscured(unittest.TestCase):
         self.assertEqual(app.power_page.calls[-1], ("set_motion", True, False, False))
 
 
+class FakeWindow:
+    def __init__(self, visible): self.visible = visible
+    def get_visible(self): return self.visible
+
+
+class IdleRender(unittest.TestCase):
+    def setUp(self):
+        self.app = monitor(desktop())
+        self.pages = []
+        self.app.render_pages = lambda: self.pages.append(True)
+
+    def test_hidden_window_updates_only_the_tray(self):
+        self.app.window = FakeWindow(False)
+        self.app.render()
+        self.app.render()
+        self.assertEqual((len(self.app.rendered), self.pages), (2, []))
+        self.app.window.visible = True
+        self.app.refresh_stale_pages()
+        self.app.refresh_stale_pages()
+        self.assertEqual(self.pages, [True])
+
+    def test_visible_window_renders_every_time(self):
+        self.app.window = FakeWindow(True)
+        self.app.render()
+        self.app.render()
+        self.assertEqual(self.pages, [True, True])
+
+    def test_minimized_window_counts_as_hidden(self):
+        self.app.window, self.app.window_iconified = FakeWindow(True), True
+        self.app.render()
+        self.assertEqual(self.pages, [])
+        self.app.window_iconified = False
+        self.app.refresh_stale_pages()
+        self.assertEqual(self.pages, [True])
+
+
 class ModulesLive(unittest.TestCase):
     def setUp(self):
         self.app = monitor(desktop())

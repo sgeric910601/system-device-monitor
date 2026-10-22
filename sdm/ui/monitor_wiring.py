@@ -14,8 +14,8 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from sdm.core.tiers import (PAGE_CPU, PAGE_DISK, PAGE_MEMORY, PAGE_NETWORK, DetailGate,
-                            request_for, storage_visible)
+from sdm.core.tiers import (PAGE_CPU, PAGE_DISK, PAGE_MEMORY, PAGE_NETWORK, PAGE_OVERVIEW,
+                            DetailGate, request_for, storage_visible)
 from sdm.ui.app_names import AppNames
 from sdm.ui.pages.cpu import CpuPage
 from sdm.ui.pages.disk import DiskPage
@@ -77,6 +77,7 @@ class MonitorMixin:
             self.window_iconified = iconified
             self.visibility_changed()
             self.update_motion()
+            self.refresh_stale_pages()
         return False
 
     def window_visibility_changed(self, _window, event):
@@ -98,11 +99,20 @@ class MonitorMixin:
         pages = self.visible_pages()
         self.seed_visible(pages)
         self.collector.storage_visible = storage_visible(pages)
+        self.overview_shown(PAGE_OVERVIEW in pages)
         request = request_for(pages)
         if request is None:
             self.errors.pop(DETAIL, None)    # 沒有頁面需要詳細資料：頁尾不再顯示它的錯誤
         if self.detail_gate.update(request):
             self.restart_detail_timer(request)
+
+    def overview_shown(self, shown):
+        """只有總覽用到的資料（磁碟讀寫、風扇等）只在總覽顯示時取；剛顯示時立即補一次。"""
+        was = self.collector.overview_visible
+        self.collector.overview_visible = shown
+        if shown and not was:
+            self.submit("system")
+            self.submit("slow")
 
     def restart_detail_timer(self, request):
         self.stop_detail()

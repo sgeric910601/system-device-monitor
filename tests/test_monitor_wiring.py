@@ -20,7 +20,10 @@ class FakeScroll:
 
 class FakeCollector:
     storage_visible = False
+    overview_visible = False
     def detail(self, request): return DetailSnapshot(stamp=1.0)
+    def system(self): return {}
+    def slow(self): return {}
 
 
 class FakePool:
@@ -89,6 +92,18 @@ class Visibility(unittest.TestCase):
         self.show("power")
         self.add.assert_called_once()
         self.assertEqual(self.app.pool.submitted[0][1], (DetailRequest(apps_cpu=True),))
+
+    def test_showing_the_overview_refreshes_its_data_at_once(self):
+        self.show("overview")
+        self.assertTrue(self.app.collector.overview_visible)
+        functions = [function for function, _ in self.app.pool.submitted]
+        self.assertIn(self.app.collector.system, functions)
+        self.assertIn(self.app.collector.slow, functions)
+        count = len(self.app.pool.submitted)
+        self.show("overview")                       # 已經在顯示：不重複補
+        self.assertEqual(len(self.app.pool.submitted), count)
+        self.show("cpu")
+        self.assertFalse(self.app.collector.overview_visible)
 
     def test_overview_speeds_up_the_disk_list(self):
         self.show("overview")
