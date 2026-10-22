@@ -70,6 +70,13 @@ class Saving(unittest.TestCase):
         self.assertFalse(external_power(laptop()))
         self.assertTrue(external_power(laptop("Charging", online=True)))
 
+    def test_unknown_adapter_state_counts_as_external_power(self):
+        from dataclasses import replace
+        power = laptop()
+        unknown = replace(power, battery=replace(power.battery, ac_online=None))
+        self.assertTrue(external_power(unknown))
+        self.assertFalse(saving_active(True, True, external_power(unknown)))
+
     def test_desktop_on_battery_means_the_ups_runs_on_battery(self):
         self.assertTrue(external_power(desktop()))
         self.assertFalse(external_power(desktop(on_battery=True)))

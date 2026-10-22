@@ -44,12 +44,15 @@ def saving_active(power_saving, battery_only, on_external_power):
 
 
 def external_power(power):
-    """筆電：變壓器接著；桌機：不斷電系統沒有改用電池。還沒有快照時視為接著電源。"""
+    """筆電：變壓器接著；桌機：不斷電系統沒有改用電池。
+
+    還沒有快照或不知道變壓器狀態時視為接著電源（「只在使用電池時」的省電模式維持不生效）。
+    """
     if power is None:
         return True
     battery = getattr(power, "battery", None)
     if battery is not None:
-        return bool(battery.ac_online)
+        return battery.ac_online is None or bool(battery.ac_online)
     ups = getattr(power, "ups", None)
     return not (ups is not None and ups.on_battery)
 
