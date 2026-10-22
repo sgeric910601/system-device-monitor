@@ -107,6 +107,8 @@ class NvidiaStream:
     """一個常駐的 nvidia-smi -lms 程序；背景執行緒保存每張卡最新一行。
 
     程序結束後只在 start() 之後、stop() 之前重新啟動，等待時間從 1 秒加倍到 60 秒。
+    更新頻率改變時以 set_interval_ms() 換成新的 -lms：只結束目前的程序，
+    背景執行緒立即用新的間隔重新啟動（不等待退避時間，介面執行緒也不等它結束）。
     wait(delay) 可替換以便測試：回傳 True 代表停止重啟。
     """
 
@@ -118,13 +120,34 @@ class NvidiaStream:
         self._lock = threading.Lock()
         self._latest = {}
         self._stop = threading.Event()
+        self._restart = threading.Event()
         self._thread = None
         self._process = None
         self._started_at = None
 
     def args(self):
+        with self._lock:
+            interval = self.interval_ms
         return [self.command, "--query-gpu=" + QUERY, "--format=csv,noheader,nounits",
-                "-lms", str(self.interval_ms)]
+                "-lms", str(interval)]
+
+    def set_interval_ms(self, interval_ms):
+        """換成新的輸出間隔；間隔沒有改變時回傳 False（不重新啟動）。"""
+        interval_ms = int(interval_ms)
+        with self._lock:
+            if interval_ms == self.interval_ms:
+                return False
+            self.interval_ms = interval_ms
+            self.stale_after = interval_ms / 1000 * Power.STALE_FACTOR
+            process = self._process
+            if process is not None:
+                self._restart.set()
+        if process is not None:
+            try:
+                process.terminate()     # 只送出訊號；回收由背景執行緒負責
+            except OSError:
+                pass
+        return True
 
     def start(self):
         """啟動串流；找不到可執行檔、或上一次停止還沒結束時回傳 False。"""
@@ -205,6 +228,10 @@ class NvidiaStream:
                 lines = self._run_once()
                 if self._stop.is_set():
                     break
+                if self._restart.is_set():
+                    self._restart.clear()
+                    backoff, silent = Gpu.BACKOFF_INITIAL, 0
+                    continue
                 lived = time.monotonic() - began
                 if lived >= Gpu.BACKOFF_RESET_SECONDS:
                     backoff = Gpu.BACKOFF_INITIAL

@@ -260,6 +260,52 @@ class SilentFailures(FakeExecutable):
         stream.stop()
 
 
+class IntervalChange(FakeExecutable):
+    """更新頻率改變時：只有實際間隔改變才重新啟動，而且不等待重啟的退避時間。"""
+
+    def looping(self):
+        return self.script(
+            f"with open({str(self.dir/'spawns')!r}, 'a') as log:\n"
+            "    log.write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "while True:\n"
+            "    sys.stdout.write('0, Example GPU A, 1, 2, 3, 4, 5, 6.5\\n')\n"
+            "    sys.stdout.flush()\n"
+            "    time.sleep(0.05)\n")
+
+    def arguments(self):
+        return (self.dir/"spawns").read_text().splitlines()
+
+    def test_new_interval_restarts_the_child_at_once(self):
+        delays = []
+        stream = NvidiaStream(command=self.looping(), interval_ms=2000,
+                              wait=lambda delay: delays.append(delay) or False)
+        stream.start()
+        self.addCleanup(stream.stop)
+        self.assertTrue(wait_until(lambda: stream.readings()))
+        self.assertTrue(stream.set_interval_ms(10000))
+        self.assertTrue(wait_until(lambda: self.spawns() == 2))
+        self.assertTrue(self.arguments()[0].endswith("-lms 2000"))
+        self.assertTrue(self.arguments()[1].endswith("-lms 10000"))
+        self.assertEqual(delays, [])
+        self.assertEqual(stream.stale_after, 10 * 3)
+        self.assertTrue(stream.running())
+
+    def test_same_interval_does_not_restart(self):
+        stream = NvidiaStream(command=self.looping(), interval_ms=2000)
+        stream.start()
+        self.addCleanup(stream.stop)
+        self.assertTrue(wait_until(lambda: stream.readings()))
+        self.assertFalse(stream.set_interval_ms(2000))
+        time.sleep(0.3)
+        self.assertEqual(self.spawns(), 1)
+
+    def test_change_before_start_only_updates_the_arguments(self):
+        stream = NvidiaStream(command=str(self.dir/"missing"), interval_ms=2000)
+        self.assertTrue(stream.set_interval_ms(5000))
+        self.assertEqual(stream.args()[-1], "5000")
+        self.assertFalse(stream.running())
+
+
 def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
