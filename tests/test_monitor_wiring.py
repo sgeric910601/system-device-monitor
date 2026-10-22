@@ -96,6 +96,12 @@ class Visibility(unittest.TestCase):
         self.remove.assert_called_once_with(42)
         self.assertEqual(self.app.detail_timer, 0)
 
+    def test_detail_error_clears_when_no_detail_page_is_shown(self):
+        self.show("cpu")
+        self.app.errors[monitor_wiring.DETAIL] = monitor_wiring.DETAIL_ERROR
+        self.show("devices")
+        self.assertEqual(self.app.errors, {})
+
     def test_minimized_window_counts_as_hidden(self):
         self.show("cpu")
         self.app.window_iconified = True

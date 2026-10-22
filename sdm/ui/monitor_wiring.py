@@ -88,6 +88,8 @@ class MonitorMixin:
         self.seed_visible(pages)
         self.collector.storage_visible = storage_visible(pages)
         request = request_for(pages)
+        if request is None:
+            self.errors.pop(DETAIL, None)    # 沒有頁面需要詳細資料：頁尾不再顯示它的錯誤
         if self.detail_gate.update(request):
             self.restart_detail_timer(request)
 
