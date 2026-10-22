@@ -132,14 +132,17 @@ class AppTracker:
         return AppUsage(app_id, core, core / max(1, cores), memory)
 
 
-def rank(items, name_for, limit=Monitor.TOP_APPS):
-    """（App 代號、數值）→ 依顯示名稱合併、由大到小的前幾名；沒有數值或為 0 的不列入。"""
+def rank(items, key_for, limit=Monitor.TOP_APPS):
+    """（App 代號、數值）→ 依 key_for(代號) 合併、由大到小的前幾名；沒有數值或為 0 的不列入。
+
+    介面以桌面檔當 key：同一個 App 的不同啟動方式合成一列。RankedApp.name 為合併用的 key。
+    """
     totals, members = {}, {}
     for app_id, value in items:
         if value is None or value <= 0:
             continue
-        name = name_for(app_id)
-        totals[name] = totals.get(name, 0) + value
-        members[name] = members.get(name, ()) + (app_id,)
+        key = key_for(app_id)
+        totals[key] = totals.get(key, 0) + value
+        members[key] = members.get(key, ()) + (app_id,)
     ordered = sorted(totals.items(), key=lambda item: (-item[1], item[0]))
-    return tuple(RankedApp(name, value, members[name]) for name, value in ordered[:limit])
+    return tuple(RankedApp(key, value, members[key]) for key, value in ordered[:limit])
