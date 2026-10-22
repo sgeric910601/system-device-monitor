@@ -18,6 +18,8 @@ TONE_CLASSES = {TONE_WARNING: "power-warning", TONE_CRITICAL: "power-critical"}
 SPACING = 16
 CARD_PADDING = 16
 DETAIL_COLUMNS = 2
+DETAIL_FIELD_WIDTH = 260        # 每個欄位的最小寬度：放不下兩欄時改成一欄
+DETAIL_NAME_WIDTH = 96          # 欄位名稱的寬度（「不斷電系統型號」也放得下），值對齊
 RECAP_COLUMNS = 3
 RECAP_NOTE = "依電量歷史計算（看板沒在執行的時段不列入）"
 
@@ -139,8 +141,12 @@ class RecapView:
 
 
 class DetailsView:
+    """詳細資訊：寬的時候兩欄，窄的時候（每欄不到 260 px）自動改成一欄。"""
+
     def __init__(self):
-        self.grid = Gtk.Grid(column_spacing=SPACING, row_spacing=8)
+        self.grid = Gtk.FlowBox(homogeneous=True, min_children_per_line=1,
+                                max_children_per_line=DETAIL_COLUMNS, column_spacing=SPACING,
+                                row_spacing=8, selection_mode=Gtk.SelectionMode.NONE)
         self.ids, self.values = None, []
         self.empty = label("所有欄位都已隱藏。", "muted")
         self.empty.set_no_show_all(True)
@@ -151,15 +157,26 @@ class DetailsView:
         if ids != self.ids:
             self.ids = ids
             clear(self.grid)
-            self.values = []
-            for index, (_, name, value) in enumerate(rows):
-                row, column = divmod(index, DETAIL_COLUMNS)
-                widget = ellipsized(value)
-                self.grid.attach(label(name, "muted"), column * 2, row, 1, 1)
-                self.grid.attach(widget, column * 2 + 1, row, 1, 1)
-                self.values.append(widget)
+            self.values = [self.add_field(name, value) for _, name, value in rows]
+            for child in self.grid.get_children():
+                child.set_can_focus(False)
             self.grid.show_all()
         self.empty.set_visible(not rows)
+        self.update_values(rows)
+
+    def add_field(self, name, value):
+        field = box(False, SPACING)
+        field.set_size_request(DETAIL_FIELD_WIDTH, -1)
+        title = label(name, "muted")
+        title.set_size_request(DETAIL_NAME_WIDTH, -1)
+        widget = ellipsized(value)
+        widget.set_tooltip_text(value)
+        field.pack_start(title, False, False, 0)
+        field.pack_start(widget, True, True, 0)
+        self.grid.add(field)
+        return widget
+
+    def update_values(self, rows):
         for widget, (_, _, value) in zip(self.values, rows):
             if widget.get_text() != value:
                 widget.set_text(value)

@@ -11,7 +11,7 @@ from sdm.ui.widgets import label
 
 ICON_SIZE = 32
 ARROW_SIZE = 22
-NODE_WIDTH = 104
+NODE_WIDTH = 96                 # 三個節點加兩個箭頭要放進最窄的卡片（360 px）
 ADAPTER_ICON = "ac-adapter-symbolic"
 SYSTEM_ICON = "computer-symbolic"
 ARROW_RIGHT = "go-next-symbolic"

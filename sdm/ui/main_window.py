@@ -1,7 +1,7 @@
 """主視窗外殼：標題列（頁面選單、設定、重新整理）、左側頁面側欄與頁尾。
 
 頁面本身由各頁模組建立；這裡只負責外框、每頁的捲動容器與頁面顯示與否。
-寬度小於 640 px 時側欄收起（sdm.ui.navigation），頁面內距也縮小。
+寬度小於 640 px 時側欄收起、頁面內距縮小，副標題顯示目前的頁面（sdm.ui.navigation）。
 """
 import gi
 gi.require_version("Gtk", "3.0")
@@ -18,7 +18,6 @@ HEADER_TITLE = "系統與裝置"
 HEADER_SUBTITLE = "本機即時監看"
 PAGES = (("power", "電源"), ("overview", "系統總覽"), ("cpu", "CPU／GPU"),
          ("memory", "記憶體"), ("disk", "磁碟"), ("network", "網路"), ("devices", "連線設備"))
-NARROW_CLASS = "narrow"
 SETTINGS_ICON = "emblem-system-symbolic"
 REFRESH_ICON = "view-refresh-symbolic"
 _css_installed = []
@@ -57,7 +56,6 @@ class MainWindow:
         self.header.pack_end(icon_button(SETTINGS_ICON, "設定", on_settings))
         self.shell = NavigationShell(self.header)
         self.shell.track(self.window)
-        self.shell.on_narrow = self.narrow_changed
         root = box(spacing=0)
         root.pack_start(self.shell.widget, True, True, 0)
         self.footer = label("正在讀取本機資料…", "footnote")
@@ -65,7 +63,6 @@ class MainWindow:
         root.pack_end(self.footer, False, False, 0)
         self.window.add(root)
         self.scrolls = {}
-        self.shell.stack.connect("notify::visible-child-name", self.page_changed)
 
     @property
     def stack(self):
@@ -91,14 +88,3 @@ class MainWindow:
 
     def current_page(self):
         return self.stack.get_visible_child_name()
-
-    def narrow_changed(self, narrow):
-        context = self.window.get_style_context()
-        (context.add_class if narrow else context.remove_class)(NARROW_CLASS)
-        self.page_changed()
-
-    def page_changed(self, *_):
-        """窄視窗沒有側欄：標題列的副標題改顯示目前的頁面。"""
-        key = self.current_page()
-        title = self.shell.titles.get(key, HEADER_SUBTITLE) if self.shell.narrow else None
-        self.header.set_subtitle(title or HEADER_SUBTITLE)

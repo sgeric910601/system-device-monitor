@@ -162,7 +162,9 @@ class Flow:
     MIN_HEIGHT = 140
     BAND_MIN = 2                    # 流帶最細 2 px
     BAND_MAX = 44                   # 流帶最粗（整機）
-    MIN_WIDTH = 420                 # 兩欄排列時每張卡片的最小內容寬度
+    MIN_WIDTH = 360                 # 卡片的最小內容寬度（480 px 寬的視窗也放得下）
+    NODE_GAP = 12                   # 寬度不夠時節點之間至少保留的空隙
+    NODE_MIN_SCALE = 0.6            # 節點寬度最多縮到原本的 60%
     FRAME_MS = 67                   # 動畫每格間隔：每秒最多 15 格
     DASH_LENGTH = 6                 # 流動虛線的線段與間隔（px）
     DASH_GAP = 10

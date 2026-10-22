@@ -105,14 +105,22 @@ def flow_height(count):
     return max(Flow.MIN_HEIGHT, stacked)
 
 
-def item_rects(count, x, top, inner_height):
+def item_rects(count, x, top, inner_height, width=Flow.ITEM_WIDTH):
     if not count:
         return ()
     gap = Flow.ITEM_GAP
     height = min(Flow.ITEM_HEIGHT, max(0.0, (inner_height - (count - 1) * gap) / count))
     first = top + (inner_height - (count * height + (count - 1) * gap)) / 2
-    return tuple(Rect(x, first + index * (height + gap), Flow.ITEM_WIDTH, height)
+    return tuple(Rect(x, first + index * (height + gap), width, height)
                  for index in range(count))
+
+
+def node_widths(width):
+    """（來源、整機、項目）節點寬度：寬度不夠時等比例縮小（最多到 60%），中間仍留空隙。"""
+    natural = Flow.SOURCE_WIDTH + Flow.TOTAL_WIDTH + Flow.ITEM_WIDTH
+    room = width - 2 * Flow.PADDING - 2 * Flow.NODE_GAP
+    scale = min(1.0, max(Flow.NODE_MIN_SCALE, room / natural))
+    return Flow.SOURCE_WIDTH * scale, Flow.TOTAL_WIDTH * scale, Flow.ITEM_WIDTH * scale
 
 
 def stacked_bands(widths, total, items, limit):
@@ -135,12 +143,13 @@ def flow_geometry(width, height, item_values, total_w):
     inner = max(0.0, height - 2 * pad)
     node_height = min(inner, Flow.NODE_HEIGHT)
     center = height / 2
-    source = Rect(pad, center - node_height / 2, Flow.SOURCE_WIDTH, node_height)
-    item_x = max(source.x + source.width + Flow.TOTAL_WIDTH, width - pad - Flow.ITEM_WIDTH)
-    gap = item_x - (source.x + source.width) - Flow.TOTAL_WIDTH
+    source_width, total_width, item_width = node_widths(width)
+    source = Rect(pad, center - node_height / 2, source_width, node_height)
+    item_x = max(source.x + source.width + total_width, width - pad - item_width)
+    gap = item_x - (source.x + source.width) - total_width
     total = Rect(source.x + source.width + gap / 2, center - node_height / 2,
-                 Flow.TOTAL_WIDTH, node_height)
-    items = item_rects(len(item_values), item_x, pad, inner)
+                 total_width, node_height)
+    items = item_rects(len(item_values), item_x, pad, inner, item_width)
     max_band = min(Flow.BAND_MAX, node_height)
     source_width = band_widths((total_w,), total_w, max_band)[0]
     source_band = Band(source.x + source.width, center, total.x, center, source_width)

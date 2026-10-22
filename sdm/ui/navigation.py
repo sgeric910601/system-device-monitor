@@ -3,6 +3,7 @@
 
 隱藏的頁面（例如關閉的系統監控模組）在側欄與彈出清單都不顯示；
 寬度在 size-allocate 時檢查，狀態改變才在閒置時切換，避免在配置中途改版面。
+窄視窗沒有側欄：標題列的副標題改顯示目前的頁面，視窗加上 narrow 樣式（頁面內距較小）。
 """
 import gi
 gi.require_version("Gtk", "3.0")
@@ -11,6 +12,7 @@ from gi.repository import GLib, Gtk
 from sdm.constants import Ui
 
 MENU_ICON = "view-list-symbolic"
+NARROW_CLASS = "narrow"
 
 
 def is_narrow(width):
@@ -19,6 +21,7 @@ def is_narrow(width):
 
 class NavigationShell:
     def __init__(self, header, menu_tip="切換頁面"):
+        self.header, self.subtitle, self.window = header, header.get_subtitle(), None
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.stack.set_hexpand(True)
@@ -37,13 +40,16 @@ class NavigationShell:
         popover = Gtk.Popover()
         popover.add(self.menu_list)
         self.menu_button = Gtk.MenuButton(popover=popover)
-        self.menu_button.add(Gtk.Image.new_from_icon_name(MENU_ICON, Gtk.IconSize.BUTTON))
+        self.menu_button.remove(self.menu_button.get_child())     # 換掉預設的箭頭圖示
+        image = Gtk.Image.new_from_icon_name(MENU_ICON, Gtk.IconSize.BUTTON)
+        image.show()
+        self.menu_button.add(image)
         self.menu_button.set_tooltip_text(menu_tip)
         self.menu_button.set_no_show_all(True)
         header.pack_start(self.menu_button)
         self.buttons, self.titles = {}, {}
         self.narrow, self.pending, self.width = None, None, 0
-        self.on_narrow = None       # 呼叫端可設定：寬窄切換時通知
+        self.stack.connect("notify::visible-child-name", self.update_subtitle)
 
     def add(self, key, title, child):
         self.stack.add_titled(child, key, title)
@@ -70,7 +76,11 @@ class NavigationShell:
         self.buttons[key].set_visible(visible)
 
     def track(self, window):
+        """依視窗寬度切換；視窗本身的預設寬度就小於 640 px 時一開始就收起側欄。"""
+        self.window = window
         window.connect("size-allocate", self.on_allocate)
+        self.width = window.get_default_size()[0]
+        self.apply_narrow()
 
     def on_allocate(self, _widget, allocation):
         self.width = allocation.width
@@ -85,6 +95,13 @@ class NavigationShell:
         self.sidebar.set_visible(not narrow)
         self.separator.set_visible(not narrow)
         self.menu_button.set_visible(narrow)
-        if self.on_narrow is not None:
-            self.on_narrow(narrow)
+        if self.window is not None:
+            context = self.window.get_style_context()
+            (context.add_class if narrow else context.remove_class)(NARROW_CLASS)
+        self.update_subtitle()
         return False
+
+    def update_subtitle(self, *_):
+        key = self.stack.get_visible_child_name()
+        title = self.titles.get(key) if self.narrow else None
+        self.header.set_subtitle(title or self.subtitle)

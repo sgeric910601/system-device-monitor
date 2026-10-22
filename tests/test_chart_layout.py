@@ -104,6 +104,19 @@ class Flow(unittest.TestCase):
         self.assertEqual(band.y1, item.y + item.height / 2)
         self.assertEqual(geometry.source_band.x0, geometry.source.x + geometry.source.width)
 
+    def test_narrow_width_shrinks_the_nodes_instead_of_overflowing(self):
+        from sdm.constants import Flow as FlowSizes
+        for width in (FlowSizes.MIN_WIDTH, 380, 330):
+            geometry = flow_geometry(width, 160, (61.5, 226.5), 288.0)
+            source, total = geometry.source, geometry.total
+            with self.subTest(width=width):
+                self.assertLess(source.x + source.width, total.x)
+                self.assertLess(total.x + total.width, geometry.items[0].x)
+                for rect in (source, total) + geometry.items:
+                    self.assertLessEqual(rect.x + rect.width, width)
+        wide = flow_geometry(900, 160, (61.5,), 288.0)
+        self.assertEqual(wide.items[0].width, FlowSizes.ITEM_WIDTH)
+
     def test_no_items(self):
         geometry = flow_geometry(900, 220, (), 288.0)
         self.assertEqual((geometry.items, geometry.item_bands), ((), ()))
