@@ -24,7 +24,7 @@ def refresh_delays(supply_type, scope):
 
 class PowerRefresh:
     def __init__(self, refresh, schedule, cancel):
-        """schedule(秒, callback) 回傳計時器代號；callback 回傳 False 代表不再重複。"""
+        """schedule（秒數、callback）回傳計時器代號；callback 回傳 False 代表不再重複。"""
         self.refresh, self.schedule, self.cancel = refresh, schedule, cancel
         self.pending = []
         self.last_online = None

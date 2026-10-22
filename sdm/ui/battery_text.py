@@ -32,7 +32,7 @@ class TimeCard:
     message: str = ""        # 接電時的說明
     columns: tuple = ()      # 用電池時的表格表頭
     table: tuple = ()        # 用電池時的「到 0%／到 10%」兩列
-    rows: tuple = ()         # （名稱, 值）
+    rows: tuple = ()         # （名稱、值）
     note: str = ""
 
 

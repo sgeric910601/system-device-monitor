@@ -12,7 +12,7 @@ UPS_TYPE = 3
 
 
 class FakeBus:
-    """(服務, 路徑, 介面, 屬性) → 值；沒有的屬性拋出 GLib.Error，並記錄讀過哪些屬性。"""
+    """（服務、路徑、介面、屬性）→ 值；沒有的屬性拋出 GLib.Error，並記錄讀過哪些屬性。"""
 
     def __init__(self, values):
         self.values, self.asked = dict(values), []
