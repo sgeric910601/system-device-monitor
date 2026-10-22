@@ -2,6 +2,7 @@
 
 - 先找 org.freedesktop.UPower.PowerProfiles，沒有時改用舊名稱 net.hadess.PowerProfiles。
 - 讀取用 Properties.GetAll，只取 ActiveProfile 與 Profiles；屬性改變時重新讀取。
+  切換成功之前送出、之後才回來的讀取結果是舊的，一律丟棄（世代計數）。
 - 切換用 Properties.Set（ActiveProfile），逾時 1.8 秒；失敗只記錄錯誤名稱並回報失敗，
   呼叫端（頂端列選單、電源頁）把選項恢復成原本的模式。不要求互動式授權：
   作用中的本機使用者本來就不需要密碼。
@@ -50,7 +51,7 @@ class PowerProfiles:
     def __init__(self, bus, on_change, timeout_ms=Collect.DBUS_TIMEOUT_MS):
         self.bus, self.on_change, self.timeout_ms = bus, on_change, timeout_ms
         self.state, self.service, self.subscription = ProfileState(), None, None
-        self.stopped = False
+        self.stopped, self.generation = False, 0     # 每次切換成功加一
 
     def start(self):
         if self.bus is not None:
@@ -61,10 +62,11 @@ class PowerProfiles:
         self.bus.call(destination, path, PROPERTIES_INTERFACE, "GetAll",
                       GLib.Variant("(s)", (interface,)), GLib.VariantType("(a{sv})"),
                       Gio.DBusCallFlags.NO_AUTO_START, self.timeout_ms, None, self.on_read,
-                      index)
+                      (index, self.generation))
 
-    def on_read(self, bus, result, index):
-        if self.stopped:
+    def on_read(self, bus, result, data):
+        index, generation = data
+        if self.stopped or generation != self.generation:
             return
         try:
             values = bus.call_finish(result).unpack()[0]
@@ -113,6 +115,7 @@ class PowerProfiles:
                         Gio.DBusError.get_remote_error(error) or "error")
             done(False)
             return
+        self.generation += 1
         if not self.stopped:
             self.update(ProfileState(self.state.available, profile))
         done(True)

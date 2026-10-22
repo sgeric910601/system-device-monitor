@@ -142,6 +142,23 @@ class Service(unittest.TestCase):
         self.bus.reply(all_properties(dict(PROPERTIES, ActiveProfile="power-saver")))
         self.assertEqual(self.profiles.state.active, "power-saver")
 
+    def test_reads_issued_before_a_switch_are_dropped(self):
+        self.bus.reply(all_properties())
+        callback = self.bus.subscriptions[0]["callback"]
+        changed = GLib.Variant("(sa{sv}as)", (NEW[2], {}, ["ActiveProfile"]))
+        callback(self.bus, NEW[0], NEW[1], "org.freedesktop.DBus.Properties",
+                 "PropertiesChanged", changed)
+        stale = len(self.bus.calls) - 1                 # 切換前送出的讀取
+        results = []
+        self.profiles.set("performance", results.append)
+        self.bus.reply(GLib.Variant("()", ()))
+        self.bus.reply(all_properties(), index=stale)   # 晚到的舊結果（仍是平衡）
+        self.assertEqual((results, self.profiles.state.active), ([True], "performance"))
+        callback(self.bus, NEW[0], NEW[1], "org.freedesktop.DBus.Properties",
+                 "PropertiesChanged", changed)
+        self.bus.reply(all_properties(dict(PROPERTIES, ActiveProfile="power-saver")))
+        self.assertEqual(self.profiles.state.active, "power-saver")   # 之後的讀取照常採用
+
     def test_stop_unsubscribes_and_ignores_late_replies(self):
         self.bus.reply(all_properties())
         self.profiles.stop()
