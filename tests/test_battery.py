@@ -114,6 +114,11 @@ class Combination(unittest.TestCase):
         self.assertTrue(combine((dataclasses.replace(battery, status="Full"),), ()).ac_online)
         self.assertFalse(combine((battery,), ()).ac_online)
 
+    def test_charging_battery_means_external_power_even_with_an_offline_adapter(self):
+        s = from_tree(sysfs.thinkpad, online=0, status="Charging", power_now=20_000_000)
+        self.assertEqual((s.ac_online, s.battery_w, s.charging, s.state), (True, 20.0, True,
+                                                                          CHARGING))
+
     def test_inconsistent_adapter_reading_gives_no_system_power(self):
         s = BatterySnapshot(percent=50, ac_online=True, battery_w=30.0, adapter_w=5.0)
         self.assertIsNone(s.system_w)

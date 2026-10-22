@@ -224,9 +224,10 @@ def combined_status(statuses):
 
 
 def supply_online(adapters, on_battery, status):
-    """有變壓器項目時看它們是否接上；沒有時改看 UPower，再沒有就看電池狀態。"""
+    """有變壓器項目時看它們是否接上；沒有時改看 UPower，再沒有就看電池狀態。
+    電池正在充電一定有外接電源，即使變壓器項目讀不到或不認得也算接電。"""
     if adapters:
-        return any(adapter.online for adapter in adapters)
+        return any(adapter.online for adapter in adapters) or status == STATUS_CHARGING
     if on_battery is not None:
         return not on_battery
     return status in PLUGGED_STATUSES
