@@ -12,7 +12,6 @@ from sdm import paths
 from sdm.constants import Collect
 from sdm.core.counters import Counters, CpuCounter
 from sdm.core.devices import battery, normalize_usb, STATES
-from sdm.core.fmt import number
 from sdm.core.jsonfile import load_json
 from sdm.core.power_breakdown import SAMPLING
 from sdm.data.detail import DetailCollector

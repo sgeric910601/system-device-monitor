@@ -2,6 +2,7 @@
 import unittest
 
 from sdm.constants import Monitor
+from sdm.core import monitor_history
 from sdm.core.monitor_history import MonitorHistory
 
 START = 1_000_000.0
@@ -51,6 +52,29 @@ class Values(unittest.TestCase):
         self.assertIsNone(history.points[0].a)
         self.assertIsNone(history.points[1].b)
         self.assertEqual(history.max_value(), 4.0)
+
+
+class Drawing(unittest.TestCase):
+    def history(self, values, times):
+        history = MonitorHistory()
+        for value, stamp in zip(values, times):
+            history = history.appended(value, value, t=START + stamp)
+        return history
+
+    def test_runs_break_at_missing_values_and_gaps(self):
+        history = self.history([1.0, None, 3.0, 4.0, 5.0, 6.0], [0, 2, 4, 6, 20, 22])
+        runs = monitor_history.runs(history, "a")
+        self.assertEqual([[value for _, value in run] for run in runs], [[1.0], [3.0, 4.0],
+                                                                         [5.0, 6.0]])
+        self.assertEqual(runs[1][0][0], START + 4)
+        self.assertEqual(len(monitor_history.runs(history, "b")), 3)
+        self.assertEqual(monitor_history.runs(MonitorHistory(), "a"), ())
+
+    def test_axis_maximum(self):
+        history = self.history([1500.0, 200.0], [0, 2])
+        self.assertEqual(monitor_history.axis_max(history, percent=True), 100.0)
+        self.assertEqual(monitor_history.axis_max(history, percent=False), 2000.0)
+        self.assertEqual(monitor_history.axis_max(MonitorHistory(), percent=False), 1000.0)
 
 
 if __name__ == "__main__":

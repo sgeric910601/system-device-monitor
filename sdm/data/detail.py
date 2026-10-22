@@ -93,7 +93,8 @@ class DetailCollector:
         readings = cgroups.scan(self.root, self.uid, cpu=request.apps_cpu,
                                 memory=request.apps_memory)
         cores = cgroups.cpu_count()
-        return AppsDetail(self.app_tracker.sample(readings, now, cores), cores)
+        return AppsDetail(self.app_tracker.sample(readings, now, cores), cores,
+                          has_cpu=request.apps_cpu, has_memory=request.apps_memory)
 
     def memory_detail(self):
         values = composition(parse_meminfo(read(self.root/"proc/meminfo")))

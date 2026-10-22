@@ -3,7 +3,6 @@
 所有 /proc 與 /sys 都指向暫存目錄裡的假檔案；介面與磁碟名稱、型號都是虛構的。
 """
 import json
-import os
 from pathlib import Path
 import tempfile
 import time

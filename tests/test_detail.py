@@ -83,6 +83,7 @@ class Detail(unittest.TestCase):
         self.assertAlmostEqual(usages["example-browser"].core_percent, 50.0)
         self.assertAlmostEqual(usages["@session"].core_percent, 5.0)
         self.assertIsNone(usages["example-browser"].memory)   # CPU 頁不讀記憶體
+        self.assertEqual((snapshot.apps.has_cpu, snapshot.apps.has_memory), (True, False))
 
     def test_thermal_is_read_every_five_seconds(self):
         request = DetailRequest(thermal=True)
@@ -99,6 +100,7 @@ class Detail(unittest.TestCase):
         self.assertEqual((memory.pressure.some_avg10, memory.level), (12.0, WARNING))
         usages = {usage.app_id: usage.memory for usage in snapshot.apps.sample.usages}
         self.assertEqual(usages["example-browser"], 300 * 1024 ** 2)
+        self.assertEqual((snapshot.apps.has_cpu, snapshot.apps.has_memory), (False, True))
 
     def test_disk_page(self):
         snapshot = self.second(request_for({"disk"}))
