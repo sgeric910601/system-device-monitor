@@ -38,6 +38,9 @@ def main(argv):
         parser.error("--capture requires --smoke-test")
     if options.preview and options.capture and options.output_dir is None:
         parser.error("--preview --capture requires --output-dir")
+    if options.preview and options.background:
+        # 示範模式沒有頂端列，背景執行就看不到也關不掉
+        parser.error("--preview cannot run in the background")
     if options.dump:
         from sdm.services import dump
         print(json.dumps(dump.build_dump(get=dump.system_getter()), ensure_ascii=False, indent=2))

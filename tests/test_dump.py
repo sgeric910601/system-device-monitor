@@ -148,6 +148,14 @@ class EntryPoint(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--preview", "tablet"])
 
+    def test_preview_rejects_options_it_cannot_honour(self):
+        module = self.load()
+        for argv in (["--preview", "desktop", "--background"],
+                     ["--preview", "desktop", "--smoke-test", "--capture"]):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit):
+                module.main(["device_monitor.py"] + argv)
+
     def test_upower_names_are_not_private(self):
         self.assertTrue(upower.DESTINATION.startswith("org.freedesktop."))
 
