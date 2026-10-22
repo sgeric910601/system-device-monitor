@@ -5,12 +5,12 @@
 sample() 在收集執行緒中呼叫；插拔電源時也會另外觸發，所以用鎖確保一次只取樣一個，
 sequence 依取樣先後遞增，讓介面能分辨哪一份快照比較新。
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import threading
 import time
 from typing import Optional
 
-from sdm.constants import Collect, Power
+from sdm.constants import Battery, Collect, Power
 from sdm.core.battery import combine
 from sdm.core.ema import Ema
 from sdm.core.estimates import SystemTimes
@@ -67,6 +67,7 @@ class PowerService:
         self.average = Ema()
         self.source = None
         self.tracker = None
+        self.last_laptop, self.empty_reads = None, 0
         self.sequence = 0
         self.lock = threading.Lock()
 
@@ -75,8 +76,15 @@ class PowerService:
             self.sequence += 1
             batteries = tuple(self.read_batteries())
             if batteries:
-                return self.laptop(batteries)
-            self.tracker = None
+                self.empty_reads = 0
+                self.last_laptop = self.laptop(batteries)
+                return self.last_laptop
+            if self.last_laptop is not None:
+                self.empty_reads += 1
+                if self.empty_reads < Battery.MODE_SWITCH_EMPTY_READS:
+                    # 電池暫時讀不到：沿用上一份筆電快照（時間不變，不會重複記入歷史）
+                    return replace(self.last_laptop, sequence=self.sequence)
+            self.tracker, self.last_laptop, self.empty_reads = None, None, 0
             return self.desktop()
 
     def laptop(self, batteries):

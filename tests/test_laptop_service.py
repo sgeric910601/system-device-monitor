@@ -185,13 +185,39 @@ class Tracking(Base):
         self.advance(10)
         self.assertEqual(self.service.sample().state, CHARGING)
 
-    def test_returning_to_a_desktop_resets_the_tracker(self):
-        sysfs.thinkpad(self.root)
-        self.service.sample()
+    def remove_supplies(self):
         for name in ("BAT0", "AC"):
             for child in self.battery_dir(name).iterdir():
                 child.unlink()
             self.battery_dir(name).rmdir()
+
+    def test_one_empty_read_keeps_laptop_mode_and_its_state(self):
+        sysfs.thinkpad(self.root, online=0)
+        self.service.sample()
+        self.set_attr("AC", online=1)
+        self.advance(5)
+        before = self.service.sample()
+        tracker = self.service.tracker
+        self.assertIsNotNone(before.plugged_in_at)
+        self.remove_supplies()
+        self.advance(5)
+        kept = self.service.sample()
+        self.assertIsInstance(kept, LaptopPower)
+        self.assertGreater(kept.sequence, before.sequence)
+        self.assertEqual((kept.stamp, kept.percent), (before.stamp, before.percent))
+        self.assertIs(self.service.tracker, tracker)
+        self.assertEqual(tracker.plugged_in_at, before.plugged_in_at)
+        self.assertEqual(tracker.averages.discharge, before.estimates.averages.discharge)
+        sysfs.thinkpad(self.root, online=1)
+        self.advance(5)
+        self.assertEqual(self.service.sample().plugged_in_at, before.plugged_in_at)
+
+    def test_three_empty_reads_return_to_a_desktop_and_reset_the_tracker(self):
+        sysfs.thinkpad(self.root)
+        self.service.sample()
+        self.remove_supplies()
+        self.assertIsInstance(self.service.sample(), LaptopPower)
+        self.assertIsInstance(self.service.sample(), LaptopPower)
         self.assertIsInstance(self.service.sample(), DesktopPower)
         self.assertIsNone(self.service.tracker)
 
