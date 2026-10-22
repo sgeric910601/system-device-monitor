@@ -14,14 +14,13 @@ from sdm.constants import Flow
 from sdm.core.recap import DailyRecap
 from sdm.services.battery_service import LaptopPower
 from sdm.ui.charts import HistoryChart
-from sdm.ui.pages.laptop_power import LaptopPowerView
+from sdm.ui.pages.laptop_power import DetailsView, LaptopPowerView
 from sdm.ui.power_flow import PowerFlow
 from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, detail_rows,
                                flow_model, header_text)
 from sdm.ui.widgets import box, clear, label
 
 TONE_CLASSES = {TONE_WARNING: "power-warning", TONE_CRITICAL: "power-critical"}
-DETAIL_COLUMNS = 2
 SPACING = 16
 CARD_PADDING = 16     # 與 CSS .card 的 padding 相同
 
@@ -49,14 +48,15 @@ def ellipsized(text, css=None):
 
 class PowerPage(Gtk.Box):
     def __init__(self, points_for, clock=time.time, recap_for=lambda now: DailyRecap(),
-                 unplugged_for=lambda now: None, hidden_fields=lambda: ()):
-        """points_for(range_s, now) 回傳歷史圖表點；其餘回呼只在筆電模式使用：
-        recap_for(now) 今日回顧、unplugged_for(now) 由歷史推算的拔電時間、
-        hidden_fields() 使用者隱藏的詳細資訊欄位。"""
+                 unplugged_for=lambda now: None, hidden_fields=lambda: (),
+                 hidden_flow=lambda: ()):
+        """points_for(range_s, now) 回傳歷史圖表點；recap_for(now) 今日回顧與
+        unplugged_for(now) 由歷史推算的拔電時間只在筆電模式使用；
+        hidden_fields()、hidden_flow() 為使用者隱藏的詳細資訊欄位與電力流向細項。"""
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=SPACING)
         self.points_for, self.clock = points_for, clock
-        self.recap_for, self.unplugged_for, self.hidden_fields = (recap_for, unplugged_for,
-                                                                   hidden_fields)
+        self.recap_for, self.unplugged_for = recap_for, unplugged_for
+        self.hidden_fields, self.hidden_flow = hidden_fields, hidden_flow
         self.power, self.stale = None, True
         self.row_ids, self.row_labels = None, []
         self.laptop = None
@@ -95,15 +95,9 @@ class PowerPage(Gtk.Box):
         self.desktop.pack_start(cards, False, False, 0)
 
     def build_details(self):
-        grid = Gtk.Grid(column_spacing=SPACING, row_spacing=8)
-        self.detail_values = []
-        for index, (name, value) in enumerate(detail_rows(None)):
-            row, column = divmod(index, DETAIL_COLUMNS)
-            text = ellipsized(value)
-            grid.attach(label(name, "muted"), column * 2, row, 1, 1)
-            grid.attach(text, column * 2 + 1, row, 1, 1)
-            self.detail_values.append(text)
-        self.desktop.pack_start(card("詳細資訊", grid), False, False, 0)
+        self.details = DetailsView()
+        self.details.set_rows(detail_rows(None, self.hidden_fields()))
+        self.desktop.pack_start(self.details.container, False, False, 0)
 
     def update(self, power):
         """收到新的 DesktopPower、LaptopPower 或 None；同一份快照不重複處理。"""
@@ -126,6 +120,12 @@ class PowerPage(Gtk.Box):
         if self.laptop is not None:
             self.laptop.set_visible(laptop)
             self.desktop.set_visible(not laptop)
+
+    def settings_changed(self):
+        """隱藏的欄位或細項改變：顯示中立即重畫，否則等下次顯示。"""
+        self.stale = True
+        if self.get_mapped():
+            self.apply()
 
     def history_changed(self):
         if self.get_mapped():
@@ -156,16 +156,14 @@ class PowerPage(Gtk.Box):
                 context.remove_class(name)
             if tone in TONE_CLASSES:
                 context.add_class(TONE_CLASSES[tone])
-        self.flow.set_model(flow_model(power))
-        self.update_rows(power.breakdown if power else None)
-        for widget, (_, value) in zip(self.detail_values, detail_rows(power)):
-            if widget.get_text() != value:
-                widget.set_text(value)
-                widget.set_tooltip_text(value)
+        hidden = self.hidden_flow()
+        self.flow.set_model(flow_model(power, hidden))
+        self.update_rows(power.breakdown if power else None, hidden)
+        self.details.set_rows(detail_rows(power, self.hidden_fields()))
 
-    def update_rows(self, breakdown):
+    def update_rows(self, breakdown, hidden=()):
         """拆解清單：項目組成改變才重建，否則只更新文字。"""
-        rows = breakdown_rows(breakdown) if breakdown else ()
+        rows = breakdown_rows(breakdown, hidden) if breakdown else ()
         set_text(self.message, breakdown.message if breakdown else "")
         ids = [row[0] for row in rows]
         if ids != self.row_ids:

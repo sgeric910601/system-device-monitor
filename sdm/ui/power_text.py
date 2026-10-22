@@ -9,6 +9,7 @@ from typing import Optional
 from sdm.core.fmt import PLACEHOLDER, percent
 from sdm.core.power_breakdown import SOURCE_COMPONENTS, SOURCE_NONE, SOURCE_UPS
 from sdm.services.power_service import supply_label
+from sdm.core.display_items import DESKTOP_DETAIL_FIELDS, flow_hidden, visible_flow_items
 
 TONE_NORMAL = "normal"
 TONE_WARNING = "warning"
@@ -98,11 +99,14 @@ def menu_line(power):
     return text + f"（3 分鐘平均 {watts_short(power.average_w)}）"
 
 
-def breakdown_rows(breakdown):
-    """（id、名稱、瓦數、占整機比例）；只有整機讀值來自不斷電系統時才顯示比例。"""
+def breakdown_rows(breakdown, hidden=()):
+    """（id、名稱、瓦數、占整機比例）；只有整機讀值來自不斷電系統時才顯示比例。
+    hidden 為使用者隱藏的電力流向細項。"""
     system = breakdown.system_w if breakdown.source == SOURCE_UPS else None
     rows = []
     for item in breakdown.items:
+        if hidden and flow_hidden(item.id, hidden):
+            continue
         share = ""
         if system and item.watts is not None:
             share = f"{item.watts / system * 100:.0f}%"
@@ -110,30 +114,36 @@ def breakdown_rows(breakdown):
     return tuple(rows)
 
 
-def flow_model(power) -> Optional[FlowModel]:
-    """沒有任何耗電數字時回傳 None（流向圖隱藏）。"""
+def flow_model(power, hidden=()) -> Optional[FlowModel]:
+    """沒有任何耗電數字時回傳 None（流向圖隱藏）；隱藏的細項不畫，整機瓦數不變。"""
     if power is None or power.system_w is None:
         return None
     total = "整機" if power.source == SOURCE_UPS else "已知元件合計"
     items = tuple((item.id, item.label, item.watts) for item in power.breakdown.items)
-    return FlowModel(supply_label(power.supply), total, power.system_w, items)
+    return FlowModel(supply_label(power.supply), total, power.system_w,
+                     visible_flow_items(items, hidden))
 
 
 def number_text(value, suffix):
     return PLACEHOLDER if value is None else f"{value:.0f}{suffix}"
 
 
-def detail_rows(power):
-    """詳細資訊的八個欄位（兩欄排列）。"""
+def detail_values(power):
     ups = None if power is None else power.ups
     available = ups is not None and not ups.comm_lost
-    return (
-        ("處理器", (power.processor if power else "") or PLACEHOLDER),
-        ("機型", (power.model if power else "") or PLACEHOLDER),
-        ("開機時間", uptime_text(power.uptime_s if power else None)),
-        ("不斷電系統型號", (ups.model if ups else "") or PLACEHOLDER),
-        ("市電電壓", number_text(ups.line_v if available else None, " V")),
-        ("負載", percent(ups.load_pct) if available else PLACEHOLDER),
-        ("額定功率", number_text(ups.nominal_w if available else None, " W")),
-        ("預估續航", duration_text(ups.time_left_min if available else None)),
-    )
+    return dict(
+        processor=(power.processor if power else "") or PLACEHOLDER,
+        model=(power.model if power else "") or PLACEHOLDER,
+        uptime=uptime_text(power.uptime_s if power else None),
+        ups_model=(ups.model if ups else "") or PLACEHOLDER,
+        line_voltage=number_text(ups.line_v if available else None, " V"),
+        ups_load=percent(ups.load_pct) if available else PLACEHOLDER,
+        nominal_power=number_text(ups.nominal_w if available else None, " W"),
+        ups_runtime=duration_text(ups.time_left_min if available else None))
+
+
+def detail_rows(power, hidden=()):
+    """詳細資訊的八個欄位（代號、名稱、值），兩欄排列；略過使用者隱藏的欄位。"""
+    values = detail_values(power)
+    return tuple((field, title, values[field]) for field, title in DESKTOP_DETAIL_FIELDS
+                 if field not in hidden)

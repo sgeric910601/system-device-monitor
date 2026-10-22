@@ -107,15 +107,30 @@ class Breakdown(unittest.TestCase):
 class Details(unittest.TestCase):
     def test_eight_rows_in_order(self):
         self.assertEqual(detail_rows(snapshot()), (
-            ("處理器", "Example CPU"), ("機型", "Example Board"), ("開機時間", "3 天 4 小時"),
-            ("不斷電系統型號", "Example UPS"), ("市電電壓", "118 V"), ("負載", "32%"),
-            ("額定功率", "900 W"), ("預估續航", "44 分")))
+            ("processor", "處理器", "Example CPU"), ("model", "機型", "Example Board"),
+            ("uptime", "開機時間", "3 天 4 小時"), ("ups_model", "不斷電系統型號", "Example UPS"),
+            ("line_voltage", "市電電壓", "118 V"), ("ups_load", "負載", "32%"),
+            ("nominal_power", "額定功率", "900 W"), ("ups_runtime", "預估續航", "44 分")))
 
     def test_without_ups(self):
-        rows = dict(detail_rows(snapshot(ups=None)))
+        rows = {name: value for _, name, value in detail_rows(snapshot(ups=None))}
         self.assertEqual([rows[key] for key in ("不斷電系統型號", "市電電壓", "負載", "額定功率",
                                                 "預估續航")], ["—"] * 5)
-        self.assertEqual(dict(detail_rows(None))["處理器"], "—")
+        self.assertEqual(detail_rows(None)[0][2], "—")
+
+    def test_hidden_fields_are_left_out(self):
+        ids = [row[0] for row in detail_rows(snapshot(), hidden=("uptime", "ups_load"))]
+        self.assertEqual(len(ids), 6)
+        self.assertNotIn("uptime", ids)
+
+
+class HiddenFlowItems(unittest.TestCase):
+    def test_hidden_items_leave_the_flow_and_the_list(self):
+        model = flow_model(snapshot(), hidden=("gpu",))
+        self.assertEqual(model.items, (("other", "其他", 226.5),))
+        self.assertEqual(model.total_w, 288.0)
+        self.assertEqual([row[0] for row in breakdown_rows(snapshot().breakdown, ("other",))],
+                         ["gpu:nvidia:0"])
 
 
 if __name__ == "__main__":

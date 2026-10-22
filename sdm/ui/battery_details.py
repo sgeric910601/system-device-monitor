@@ -8,6 +8,7 @@
 - Linux 沒有設計循環次數，循環次數只顯示數字；健康度與容量推算都來自滿充 ÷ 設計容量。
 """
 from sdm.core.battery import CHARGING, DISCHARGING, round_half_up
+from sdm.core.display_items import DESKTOP_DETAIL_FIELDS
 from sdm.core.fmt import PLACEHOLDER
 from sdm.services.power_profiles import profile_title
 from sdm.ui.battery_text import ESTIMATING, adapter_summary, limit_text
@@ -39,6 +40,11 @@ def available_fields(limit_shown_elsewhere):
         return DETAIL_FIELDS
     kept = tuple(field for field in DETAIL_FIELDS if field[0] not in ("charge_limit", "low_power"))
     return kept + tuple(field for field in DETAIL_FIELDS if field[0] == "low_power")
+
+
+def detail_fields(laptop, limit_shown_elsewhere=False):
+    """「設定 → 顯示項目」列出的欄位（代號、名稱）：依目前是筆電或桌機。"""
+    return available_fields(limit_shown_elsewhere) if laptop else DESKTOP_DETAIL_FIELDS
 
 
 def milliamps(amps):
