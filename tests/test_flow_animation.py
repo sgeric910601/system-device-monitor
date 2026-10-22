@@ -31,6 +31,10 @@ class Gating(unittest.TestCase):
             with self.subTest(blocked):
                 self.assertFalse(should_animate(**state))
 
+    def test_nothing_flowing_means_static_arrows(self):
+        self.assertFalse(should_animate(mapped=True, window_visible=True, iconified=False,
+                                        saving=False, moving=False))
+
     def test_frame_rate_is_at_most_fifteen(self):
         self.assertLessEqual(1000 / Flow.FRAME_MS, 15)
 
@@ -94,6 +98,13 @@ class Animator(unittest.TestCase):
         self.animator.set_running(True)
         self.tick(0.25)
         self.assertAlmostEqual(self.animator.phases["source"], 30.0 % Flow.DASH_PERIOD)
+
+    def test_moving_only_when_some_band_has_a_speed(self):
+        self.assertFalse(self.animator.moving)
+        self.animator.set_speeds({"source": 0, "gpu": 0})
+        self.assertFalse(self.animator.moving)
+        self.animator.set_speeds({"source": 12.0, "gpu": 0})
+        self.assertTrue(self.animator.moving)
 
     def test_stopping_redraws_once_for_the_static_variant(self):
         self.animator.set_running(True)

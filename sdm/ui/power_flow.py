@@ -1,6 +1,7 @@
 """電力流向圖：來源（市電或不斷電系統電池）→ 整機 → 各元件與其他。
 
-流帶寬度與 √W 成正比，最細 2 px。顯示中、視窗看得到、沒有最小化且省電模式沒有生效時，
+流帶寬度與 √W 成正比，最細 2 px。顯示中、視窗看得到（沒有最小化或被完全遮住）、
+省電模式沒有生效且有瓦數時，
 流帶上的虛線依瓦數往右流動（最多每秒 15 格，見 flow_animation）；其他時候是靜態圖，
 在流帶末端畫箭頭，不留任何計時器。
 文字用主題前景色，流帶用既有配色，明暗主題都看得清楚；內容不變時不重畫。
@@ -125,7 +126,8 @@ class PowerFlow(Gtk.DrawingArea):
 
     def update_motion(self, *_):
         running = self.model is not None and should_animate(
-            self.get_mapped(), self.window_visible, self.iconified, self.saving)
+            self.get_mapped(), self.window_visible, self.iconified, self.saving,
+            self.animator.moving)
         self.animator.set_running(running)
 
     def set_model(self, model):

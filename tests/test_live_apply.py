@@ -3,6 +3,10 @@
 from types import SimpleNamespace
 import unittest
 
+import gi
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk
+
 from sdm.constants import Solaar
 from sdm.core.settings import LEGACY_DEFAULTS, Preferences
 from sdm.data.ups import UpsReading
@@ -52,7 +56,8 @@ def monitor(power):
     app.submitted, app.rendered = [], []
     app.submit = app.submitted.append
     app.render_indicator = lambda: app.rendered.append(True)
-    app.detail_timer, app.window_iconified = 0, False
+    app.detail_timer, app.window_iconified, app.window_obscured = 0, False, False
+    app.visibility_changed = lambda *_: None
     app.power = power
     app.current_power = lambda: app.power
     app.store = SettingsStore(LEGACY_DEFAULTS, Preferences.defaults(), None, None,
@@ -104,6 +109,18 @@ class Interval(unittest.TestCase):
         self.app.power_changed()
         self.assertEqual(self.app.timers_fake.intervals()["system"], 2)
         self.assertEqual(self.app.power_page.calls[-1], ("set_motion", True, False, True))
+
+
+class Obscured(unittest.TestCase):
+    def test_fully_covered_window_stops_the_flow_animation(self):
+        app = monitor(desktop())
+        app.apply_modules()
+        covered = SimpleNamespace(state=Gdk.VisibilityState.FULLY_OBSCURED)
+        app.window_visibility_changed(None, covered)
+        self.assertEqual(app.power_page.calls[-1], ("set_motion", False, False, False))
+        shown = SimpleNamespace(state=Gdk.VisibilityState.PARTIAL)
+        app.window_visibility_changed(None, shown)
+        self.assertEqual(app.power_page.calls[-1], ("set_motion", True, False, False))
 
 
 class ModulesLive(unittest.TestCase):

@@ -36,6 +36,7 @@ class MonitorMixin:
     detail_timer = 0
     detail_gate = None
     window_iconified = False
+    window_obscured = False         # 視窗被其他視窗完全遮住（X11 的可見度通知）
     monitor_pages = {}
     seeded = frozenset()
 
@@ -67,12 +68,22 @@ class MonitorMixin:
             scroll.connect("map", self.visibility_changed)
             scroll.connect("unmap", self.visibility_changed)
         self.window.connect("window-state-event", self.window_state_changed)
+        self.window.add_events(Gdk.EventMask.VISIBILITY_NOTIFY_MASK)
+        self.window.connect("visibility-notify-event", self.window_visibility_changed)
 
     def window_state_changed(self, _window, event):
         iconified = bool(event.new_window_state & Gdk.WindowState.ICONIFIED)
         if iconified != self.window_iconified:
             self.window_iconified = iconified
             self.visibility_changed()
+            self.update_motion()
+        return False
+
+    def window_visibility_changed(self, _window, event):
+        """完全被遮住時停止流向動畫；合成式桌面可能永遠不送這個通知，那就維持播放。"""
+        obscured = event.state == Gdk.VisibilityState.FULLY_OBSCURED
+        if obscured != self.window_obscured:
+            self.window_obscured = obscured
             self.update_motion()
         return False
 

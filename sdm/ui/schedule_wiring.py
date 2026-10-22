@@ -5,7 +5,7 @@
 - 系統監控模組全部關閉時一般層（CPU、記憶體、網速、磁碟讀寫）完全不排程。
 - nvidia-smi 串流的間隔只在實際值改變時才重新啟動；耗電服務判斷元件讀值過期的間隔跟著慢速層。
 - 省電模式「只在使用電池時」：每次收到耗電快照時檢查外部電源，有改變才重新計算。
-- 電力流向動畫只在省電模式沒有生效、視窗沒有最小化時播放。
+- 電力流向動畫只在省電模式沒有生效、視窗沒有最小化也沒有被完全遮住時播放。
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
 from gi.repository import GLib
@@ -67,7 +67,8 @@ class ScheduleMixin:
 
     def update_motion(self):
         if self.power_page is not None:
-            self.power_page.set_motion(True, self.window_iconified, self.cadence.saving)
+            self.power_page.set_motion(not self.window_obscured, self.window_iconified,
+                                       self.cadence.saving)
 
     def stop_scheduler(self):
         if self.scheduler is not None:
