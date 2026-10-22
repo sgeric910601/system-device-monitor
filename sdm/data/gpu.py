@@ -109,6 +109,7 @@ class NvidiaStream:
     程序結束後只在 start() 之後、stop() 之前重新啟動，等待時間從 1 秒加倍到 60 秒。
     更新頻率改變時以 set_interval_ms() 換成新的 -lms：只結束目前的程序，
     背景執行緒立即用新的間隔重新啟動（不等待退避時間，介面執行緒也不等它結束）。
+    程序登記時會比對啟動它用的間隔：組好命令列之後才改變的間隔也會立即生效。
     wait(delay) 可替換以便測試：回傳 True 代表停止重啟。
     """
 
@@ -125,11 +126,15 @@ class NvidiaStream:
         self._process = None
         self._started_at = None
 
-    def args(self):
+    def command_line(self):
+        """（命令列、它用的間隔）。"""
         with self._lock:
             interval = self.interval_ms
         return [self.command, "--query-gpu=" + QUERY, "--format=csv,noheader,nounits",
-                "-lms", str(interval)]
+                "-lms", str(interval)], interval
+
+    def args(self):
+        return self.command_line()[0]
 
     def set_interval_ms(self, interval_ms):
         """換成新的輸出間隔；間隔沒有改變時回傳 False（不重新啟動）。"""
@@ -247,19 +252,29 @@ class NvidiaStream:
         except Exception as error:  # 執行緒不能無聲結束
             LOG.warning("NVIDIA stream stopped: %s", type(error).__name__)
 
+    def register(self, process, interval):
+        """登記執行中的程序；啟動它用的間隔已過時就要求重新啟動並回傳 True。"""
+        with self._lock:
+            self._process = process
+            outdated = interval != self.interval_ms
+            if outdated:
+                self._restart.set()
+        return outdated
+
     def _run_once(self):
         """執行一次 nvidia-smi 直到它結束；回傳讀到的行數（無法啟動時為 0）。"""
         lines = 0
+        arguments, interval = self.command_line()
         try:
             process = subprocess.Popen(
-                self.args(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, env={**os.environ, "LC_ALL": "C"},
                 text=True, encoding="utf-8", errors="replace", close_fds=True)
         except OSError as error:
             LOG.warning("Cannot start nvidia-smi: %s", type(error).__name__)
             return lines
-        with self._lock:
-            self._process = process
+        if self.register(process, interval):
+            process.terminate()         # 啟動期間間隔已改變：立即換成新的間隔
         try:
             if not self._stop.is_set():
                 for line in process.stdout:

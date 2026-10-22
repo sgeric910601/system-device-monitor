@@ -299,6 +299,32 @@ class IntervalChange(FakeExecutable):
         time.sleep(0.3)
         self.assertEqual(self.spawns(), 1)
 
+    def test_change_while_the_child_is_being_started_is_not_lost(self):
+        """間隔在組好命令列之後、程序登記之前改變：程序登記時發現不一致，立即換成新的間隔。"""
+        delays = []
+
+        class Racing(NvidiaStream):
+            raced = False
+
+            def command_line(self):
+                line = super().command_line()
+                if not Racing.raced:
+                    Racing.raced = True
+                    self.set_interval_ms(10000)     # 此時還沒有登記中的程序
+                return line
+        stream = Racing(command=self.looping(), interval_ms=2000,
+                        wait=lambda delay: delays.append(delay) or False)
+        stream.start()
+        self.addCleanup(stream.stop)
+        # 第一個程序在登記時就被結束，可能來不及寫下啟動紀錄；只確認最後跑的是新的間隔
+        self.assertTrue(wait_until(lambda: self.spawns() and
+                                   self.arguments()[-1].endswith("-lms 10000")))
+        self.assertTrue(wait_until(lambda: stream.readings()))
+        time.sleep(0.3)
+        self.assertTrue(self.arguments()[-1].endswith("-lms 10000"))
+        self.assertLessEqual(self.spawns(), 2)
+        self.assertEqual(delays, [])
+
     def test_change_before_start_only_updates_the_arguments(self):
         stream = NvidiaStream(command=str(self.dir/"missing"), interval_ms=2000)
         self.assertTrue(stream.set_interval_ms(5000))
