@@ -54,7 +54,7 @@ class Values(unittest.TestCase):
             ("full_charge", "滿充容量", "50.0 Wh（4,329 mAh）"),
             ("design", "設計容量", "55.0 Wh（4,762 mAh）"),
             ("adapter", "變壓器", "未連接"), ("adapter_voltage", "變壓器電壓", "未連接"),
-            ("adapter_current", "變壓器電流", "未連接"), ("low_power", "低耗電模式", "關閉")))
+            ("adapter_current", "變壓器電流", "未連接"), ("low_power", "電源模式", "平衡")))
 
     def test_hidden_preferences_are_respected(self):
         power = laptop_from(sysfs.thinkpad)
@@ -78,8 +78,15 @@ class Values(unittest.TestCase):
                          ("協商 45 W／額定 65 W", "20.00 V（協商）", "2,250 mA（協商）"))
         self.assertNotIn("system_power", rows)
         self.assertEqual(rows["remaining"], "30.4 Wh（1,965 mAh）")
-        self.assertEqual((rows["current"], rows["low_power"]), ("1,500 mA", "開啟"))
+        self.assertEqual((rows["current"], rows["low_power"]), ("1,500 mA", "省電"))
         self.assertNotIn("charge_limit", rows)
+
+    def test_power_mode_names(self):
+        for profile, text in (("balanced", "平衡"), ("performance", "效能"),
+                              ("custom-mode", "custom-mode")):
+            power = laptop_from(sysfs.framework, profile=profile)
+            self.assertEqual(dict((row[0], row[2]) for row in detail_rows(power))["low_power"],
+                             text)
 
     def test_charge_limit_without_a_limit_set(self):
         power = laptop_from(sysfs.thinkpad, charge_control_end_threshold=100)

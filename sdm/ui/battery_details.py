@@ -1,26 +1,27 @@
 """筆電「詳細資訊」的 18 個欄位（參考專案 DetailField 與 DetailsGridView），對應到 Linux：
 
 - 欄位代號同時是設定 hidden_detail_fields 使用的名稱（小寫英文與底線）。
-- 讀不到的欄位不顯示；使用者隱藏的欄位也不顯示（隱藏設定的介面在之後的階段加入）。
-- 有充電上限時上限已顯示在時間卡片，詳細資訊不重複列出，並把低耗電模式移到最後，
+- 讀不到的欄位不顯示；使用者在「設定 → 顯示項目」隱藏的欄位也不顯示。
+- 參考專案的「低耗電模式」在 Linux 改為「電源模式」（省電／平衡／效能），代號仍是 low_power。
+- 有充電上限時上限已顯示在時間卡片，詳細資訊不重複列出，並把電源模式移到最後，
   讓變壓器、變壓器電壓、變壓器電流排在一起（參考 DetailField.available）。
 - Linux 沒有設計循環次數，循環次數只顯示數字；健康度與容量推算都來自滿充 ÷ 設計容量。
 """
 from sdm.core.battery import CHARGING, DISCHARGING, round_half_up
 from sdm.core.fmt import PLACEHOLDER
+from sdm.services.power_profiles import profile_title
 from sdm.ui.battery_text import ESTIMATING, adapter_summary, limit_text
 from sdm.ui.power_text import duration_text, watts_text
 
 MILLI = 1000
 MINUTES_PER_HOUR = 60
-POWER_SAVER = "power-saver"
 UNKNOWN = "Unknown"
 DETAIL_FIELDS = (
     ("voltage", "電池電壓"), ("current", "電池電流"), ("battery_power", "電池功率"),
     ("system_power", "系統耗電"), ("system_estimate", "系統預估"), ("temperature", "電池溫度"),
     ("health", "健康度"), ("computed_health", "容量推算"), ("cycles", "循環次數"),
     ("condition", "電池狀況"), ("remaining", "剩餘容量"), ("full_charge", "滿充容量"),
-    ("design", "設計容量"), ("low_power", "低耗電模式"), ("adapter", "變壓器"),
+    ("design", "設計容量"), ("low_power", "電源模式"), ("adapter", "變壓器"),
     ("charge_limit", "充電上限"), ("adapter_voltage", "變壓器電壓"),
     ("adapter_current", "變壓器電流"),
 )
@@ -120,8 +121,7 @@ def negotiated(text):
 def supply_values(power):
     battery = power.battery
     return dict(
-        low_power=None if power.profile is None else (
-            "開啟" if power.profile == POWER_SAVER else "關閉"),
+        low_power=None if power.profile is None else profile_title(power.profile),
         adapter=adapter(battery, adapter_summary(battery) or "已連接"),
         charge_limit=charge_limit(battery),
         adapter_voltage=adapter(battery, negotiated(None if battery.adapter_v is None
