@@ -7,7 +7,7 @@
 - Linux 沒有設計循環次數，循環次數只顯示數字；健康度與容量推算都來自滿充 ÷ 設計容量。
 """
 from sdm.core.battery import CHARGING, DISCHARGING, round_half_up
-from sdm.ui.battery_text import ESTIMATING, limit_text
+from sdm.ui.battery_text import ESTIMATING, adapter_summary, limit_text
 from sdm.ui.power_text import duration_text, watts_text
 
 MILLI = 1000
@@ -108,17 +108,21 @@ def battery_values(power):
         design=capacity(battery.energy_design_wh, battery.charge_design_ah))
 
 
+def negotiated(text):
+    """變壓器電壓與電流來自 USB-C PD 協商的契約，不是量測值。"""
+    return None if text is None else text + "（協商）"
+
+
 def supply_values(power):
     battery = power.battery
-    rated = battery.adapter_rated_w
     return dict(
         low_power=None if power.profile is None else (
             "開啟" if power.profile == POWER_SAVER else "關閉"),
-        adapter=adapter(battery, "已連接" if rated is None else f"{rated:.0f} W"),
+        adapter=adapter(battery, adapter_summary(battery) or "已連接"),
         charge_limit=charge_limit(battery),
-        adapter_voltage=adapter(battery, None if battery.adapter_v is None
-                                else f"{battery.adapter_v:.2f} V"),
-        adapter_current=adapter(battery, milliamps(battery.adapter_a)))
+        adapter_voltage=adapter(battery, negotiated(None if battery.adapter_v is None
+                                                    else f"{battery.adapter_v:.2f} V")),
+        adapter_current=adapter(battery, negotiated(milliamps(battery.adapter_a))))
 
 
 def detail_rows(power, hidden=()):

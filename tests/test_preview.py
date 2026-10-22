@@ -31,9 +31,9 @@ class Scenarios(unittest.TestCase):
                 self.assertEqual(header(power)[0], big)
                 self.assertEqual(header(power)[2], headline)
 
-    def test_charging_scenario_measures_the_adapter(self):
+    def test_charging_scenario_has_only_a_negotiated_adapter(self):
         power = preview.power_service("laptop-charging").sample()
-        self.assertEqual((power.estimates.adapter_w, power.system_w), (25.0, 7.0))
+        self.assertEqual((power.battery.adapter_negotiated_w, power.system_w), (25.0, None))
 
     def test_desktop(self):
         power = preview.power_service("desktop").sample()
@@ -75,7 +75,9 @@ class DemoHistory(unittest.TestCase):
                          (62, True, True))
         self.assertEqual(preview.demo_history("laptop-limit", NOW)[-1].pct, 80)
         # 最後一筆的整機耗電與目前的讀值相同，圖表與之後的紀錄接得起來
-        self.assertEqual((battery[-1].watts, charging[-1].watts), (6.5, 7.0))
+        self.assertEqual((battery[-1].watts, charging[-1].watts), (6.5, None))
+        # 接電時量不到整機耗電：示範歷史只有用電池的時段有耗電值
+        self.assertTrue(all(row.watts is None for row in charging if row.plugged))
         self.assertIsNone(preview.demo_history("laptop-limit", NOW)[-1].watts)
         self.assertEqual(preview.demo_history("desktop", NOW)[-1].watts, 288.0)
 

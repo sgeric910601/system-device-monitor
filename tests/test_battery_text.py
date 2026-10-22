@@ -19,7 +19,7 @@ ON_BATTERY = BatterySnapshot(percent=82, battery_w=-6.5, current_a=-0.52, voltag
 CHARGING_TO_LIMIT = BatterySnapshot(percent=62, ac_online=True, charging_flag=True, battery_w=18.0,
                                     energy_now_wh=36.0, energy_full_wh=58.0, rate_unit=UNIT_WATTS,
                                     limit=80, limit_start=75, limit_supported=True,
-                                    adapter_w=25.0, adapter_rated_w=65.0)
+                                    adapter_negotiated_w=25.0, adapter_rated_w=65.0)
 
 
 def laptop(snapshot, averages=Averages(), system=SystemTimes(), state=None, **fields):
@@ -70,7 +70,7 @@ class Header(unittest.TestCase):
 
     def test_weak_adapter_is_a_warning_with_remaining_time(self):
         weak = BatterySnapshot(percent=40, ac_online=True, battery_w=-10.0, current_a=-0.833,
-                               adapter_w=5.0, charge_now_ah=2.0, rate_unit=UNIT_AMPS)
+                               adapter_negotiated_w=5.0, charge_now_ah=2.0, rate_unit=UNIT_AMPS)
         power = laptop(weak, Averages(discharge=0.833, unit=UNIT_AMPS))
         self.assertEqual(header(power), ("40%", "接電・未充電", "供電不足・還能用 2 小時 24 分",
                                          TONE_WARNING))
@@ -130,7 +130,7 @@ class Time(unittest.TestCase):
                                    limit_supported=True, adapter_rated_w=65.0)
         card = time_card(laptop(at_limit), NOW)
         self.assertEqual((card.title, card.message), ("電源狀態", "已充到上限，暫停充電，由變壓器供電。"))
-        self.assertEqual(card.rows, (("充電上限", "80%"), ("變壓器", "65 W")))
+        self.assertEqual(card.rows, (("充電上限", "80%"), ("變壓器", "額定 65 W")))
         above = dataclasses.replace(at_limit, percent=83)
         self.assertEqual(time_card(laptop(above), NOW).message,
                          "已超過充電上限，暫停充電；降到 80% 以下才會再充。")
@@ -144,7 +144,7 @@ class Time(unittest.TestCase):
 
     def test_plugged_idle_messages(self):
         weak = BatterySnapshot(percent=40, ac_online=True, battery_w=-10.0, current_a=-0.833,
-                               adapter_w=5.0, charge_now_ah=2.0, rate_unit=UNIT_AMPS)
+                               adapter_negotiated_w=5.0, charge_now_ah=2.0, rate_unit=UNIT_AMPS)
         power = laptop(weak, Averages(discharge=0.833, unit=UNIT_AMPS))
         self.assertEqual(time_card(power, NOW).message,
                          "供電不足，電池仍在放電，預估剩餘 2 小時 24 分。")
@@ -164,29 +164,30 @@ class Flow(unittest.TestCase):
                           model.battery_charging), ("電池放電", "6.5 W", True, False))
         self.assertEqual(model.battery_icon, "battery-level-80-symbolic")
 
-    def test_charging_with_a_measured_adapter(self):
+    def test_charging_with_a_negotiated_usb_pd_contract(self):
         model = flow_model(laptop(CHARGING_TO_LIMIT))
-        self.assertEqual((model.adapter_text, model.adapter_active), ("25.0 W", True))
+        self.assertEqual((model.adapter_text, model.adapter_active), ("協商 25 W", True))
         self.assertEqual((model.system_text, model.battery_title, model.battery_text),
-                         ("7.0 W", "充入電池", "18.0 W"))
+                         ("—", "充入電池", "18.0 W"))
         self.assertTrue(model.battery_charging)
         self.assertEqual(model.battery_icon, "battery-level-60-charging-symbolic")
 
-    def test_unknown_adapter_power_shows_the_rating_or_connected(self):
-        rated = dataclasses.replace(CHARGING_TO_LIMIT, adapter_w=None)
-        model = flow_model(laptop(rated))
-        self.assertEqual((model.adapter_text, model.system_text), ("65 W 額定", "—"))
-        plain = dataclasses.replace(rated, adapter_rated_w=None)
-        self.assertEqual(flow_model(laptop(plain)).adapter_text, "已連接")
+    def test_adapter_without_a_contract_shows_a_dash(self):
+        rated = dataclasses.replace(CHARGING_TO_LIMIT, adapter_negotiated_w=None)
+        self.assertEqual(flow_model(laptop(rated)).adapter_text, "—")
+        measured = dataclasses.replace(CHARGING_TO_LIMIT, adapter_w=25.0)
+        model = flow_model(laptop(measured))
+        self.assertEqual((model.adapter_text, model.system_text), ("25.0 W", "7.0 W"))
 
     def test_idle_and_mixed(self):
         idle = BatterySnapshot(percent=80, ac_online=True, battery_w=0.4, limit=80)
         model = flow_model(laptop(idle))
         self.assertEqual((model.battery_title, model.battery_active), ("電池閒置", False))
-        weak = BatterySnapshot(percent=40, ac_online=True, battery_w=-10.0, adapter_w=5.0)
+        weak = BatterySnapshot(percent=40, ac_online=True, battery_w=-10.0,
+                               adapter_negotiated_w=5.0)
         model = flow_model(laptop(weak))
         self.assertEqual((model.battery_title, model.battery_text, model.system_text),
-                         ("電池放電", "10.0 W", "15.0 W"))
+                         ("電池放電", "10.0 W", "—"))
         self.assertFalse(model.battery_charging)
 
 

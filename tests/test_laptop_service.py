@@ -149,7 +149,8 @@ class Tracking(Base):
         power = self.service.sample()
         self.assertTrue(power.estimates.draining_on_ac)
         self.assertAlmostEqual(power.estimates.battery_w, -0.6 * 16.8)
-        self.assertAlmostEqual(power.system_w, 5.0 + 0.6 * 16.8)
+        self.assertIsNone(power.system_w)        # 協商功率不是實際輸入
+        self.assertEqual(power.battery.adapter_negotiated_w, 5.0)
         self.assertIsNotNone(power.estimates.live_to_empty)
         self.assertEqual(power.estimates.flow_kind, FLOW_MIXED)
 

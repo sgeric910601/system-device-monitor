@@ -5,8 +5,9 @@
 - 多顆電池：能量與功率相加；電量＝能量合計 ÷ 滿充合計，讀不到時改用各顆電量的平均。
   只有一顆電池時以核心回報的 capacity 為準，與系統顯示的電量一致。
 - 判斷規則沿用參考專案：chargingNow（≥3 W 才算充電）、Estimator.state、drainingAboveLimit。
-- 系統耗電：用電池時＝電池放出的功率；接電時只有量得到變壓器輸入（USB-C PD）才算
-  變壓器 − 充入電池，否則未知，不猜測。
+- 系統耗電：用電池時＝電池放出的功率；接電時只有量得到變壓器的實際輸入才算
+  變壓器 − 充入電池，否則未知，不猜測。USB-C PD 的電壓 × 電流是協商的契約，
+  不是實際輸入，只記在 adapter_negotiated_w；目前沒有任何 Linux 來源能填入 adapter_w。
 """
 from dataclasses import dataclass
 import math
@@ -42,9 +43,10 @@ class BatterySnapshot:
     battery_w: Optional[float] = None
     current_a: Optional[float] = None
     voltage_v: Optional[float] = None
-    adapter_w: Optional[float] = None       # 量得到的變壓器輸入功率
+    adapter_w: Optional[float] = None       # 實際量到的變壓器輸入功率（目前沒有來源）
+    adapter_negotiated_w: Optional[float] = None   # USB-C PD 協商的契約功率
     adapter_rated_w: Optional[float] = None
-    adapter_v: Optional[float] = None
+    adapter_v: Optional[float] = None       # 協商的電壓與電流
     adapter_a: Optional[float] = None
     limit: Optional[int] = None             # 充電上限（低於 100% 才算有設定）
     limit_start: Optional[int] = None
@@ -231,13 +233,14 @@ def supply_online(adapters, on_battery, status):
 
 
 def adapter_fields(adapters):
+    """接上的變壓器：協商的契約與額定瓦數；兩者都不是實際輸入，不填 adapter_w。"""
     online = [adapter for adapter in adapters if adapter.online]
-    measured = next((adapter for adapter in online if adapter.measured_w is not None), None)
+    contract = next((adapter for adapter in online if adapter.negotiated_w is not None), None)
     rated = next((adapter.rated_w for adapter in online if adapter.rated_w is not None), None)
-    if measured is None:
+    if contract is None:
         return dict(adapter_rated_w=rated)
-    return dict(adapter_w=measured.measured_w, adapter_rated_w=rated,
-                adapter_v=measured.voltage_v, adapter_a=measured.current_a)
+    return dict(adapter_negotiated_w=contract.negotiated_w, adapter_rated_w=rated,
+                adapter_v=contract.voltage_v, adapter_a=contract.current_a)
 
 
 def limit_fields(batteries):

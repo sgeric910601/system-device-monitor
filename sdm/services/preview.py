@@ -121,11 +121,9 @@ def wave(stamp, period):
     return math.sin(stamp / period)
 
 
-def laptop_watts(stamp, plugged, measured_adapter):
-    """用電池時約 6.5 W；接電時只有量得到變壓器（USB-C PD）才有整機耗電。"""
-    if not plugged:
-        return round(6.5 + 1.5 * wave(stamp, 5400), 2)
-    return round(7 + wave(stamp, 3700), 2) if measured_adapter else None
+def laptop_watts(stamp, plugged):
+    """用電池時約 6.5 W；接電時量不到整機耗電（與實際筆電相同）。"""
+    return None if plugged else round(6.5 + 1.5 * wave(stamp, 5400), 2)
 
 
 def simulate(times, plugged):
@@ -168,8 +166,7 @@ def laptop_history(scenario, now):
     final_start = next(index for index, stamp in enumerate(times)
                        if now - stamp < minutes * SECONDS_PER_MINUTE)
     values = finish_at(simulate(times, plugged), final_start, target)
-    measured = any(adapter.voltage_v for adapter in adapters)
-    watts = [laptop_watts(stamp, flag, measured) for stamp, flag in zip(times, plugged)]
+    watts = [laptop_watts(stamp, flag) for stamp, flag in zip(times, plugged)]
     # 最後一筆用目前的整機耗電，與執行後每分鐘記錄的值接得起來
     current = combine((battery,), adapters, upower.on_battery).system_w
     watts[-1] = None if current is None else round(current, 2)

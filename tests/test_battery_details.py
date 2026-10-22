@@ -75,7 +75,8 @@ class Values(unittest.TestCase):
         power = laptop_from(sysfs.framework, profile="power-saver")
         rows = {row[0]: row[2] for row in detail_rows(power)}
         self.assertEqual((rows["adapter"], rows["adapter_voltage"], rows["adapter_current"]),
-                         ("65 W", "20.00 V", "2,250 mA"))
+                         ("協商 45 W／額定 65 W", "20.00 V（協商）", "2,250 mA（協商）"))
+        self.assertNotIn("system_power", rows)
         self.assertEqual(rows["remaining"], "30.4 Wh（1,965 mAh）")
         self.assertEqual((rows["current"], rows["low_power"]), ("1,500 mA", "開啟"))
         self.assertNotIn("charge_limit", rows)

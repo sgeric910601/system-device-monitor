@@ -48,7 +48,7 @@ class ThinkPad(Tree):
         sysfs.thinkpad(self.root, online=1)
         self.assertEqual(read_adapters(self.root),
                          (AdapterReading(name="AC", kind="Mains", online=True),))
-        self.assertIsNone(read_adapters(self.root)[0].measured_w)
+        self.assertIsNone(read_adapters(self.root)[0].negotiated_w)
 
     def test_serial_number_and_uevent_are_never_opened(self):
         sysfs.thinkpad(self.root)
@@ -85,14 +85,15 @@ class Asus(Tree):
 
 
 class Framework(Tree):
-    def test_usb_pd_adapter_measured_and_rated(self):
+    def test_usb_pd_adapter_negotiated_and_rated(self):
         sysfs.framework(self.root)
         adapters = read_adapters(self.root)
         self.assertEqual([adapter.name for adapter in adapters],
                          ["ACAD", "ucsi-source-psy-USBC000:001", "ucsi-source-psy-USBC000:002"])
         pd = adapters[1]
         self.assertEqual((pd.kind, pd.online, pd.voltage_v, pd.current_a), ("USB", True, 20.0, 2.25))
-        self.assertEqual((pd.measured_w, pd.rated_w), (45.0, 65.0))
+        # ucsi 的電壓 × 電流是協商的契約功率，不是實際輸入
+        self.assertEqual((pd.negotiated_w, pd.rated_w), (45.0, 65.0))
         self.assertFalse(adapters[2].online)
 
     def test_battery(self):

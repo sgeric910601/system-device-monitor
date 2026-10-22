@@ -36,7 +36,7 @@ class Fixtures(unittest.TestCase):
         self.assertEqual((s.energy_now_wh, s.energy_full_wh, s.energy_design_wh), (41.0, 50.0, 55.0))
         self.assertAlmostEqual(s.charge_now_ah, 41 / 11.55)
         self.assertEqual((s.cycles, s.temperature_c, s.rate_unit), (212, 31.4, "W"))
-        self.assertEqual((s.adapter_w, s.count), (None, 1))
+        self.assertEqual((s.adapter_w, s.adapter_negotiated_w, s.count), (None, None, 1))
 
     def test_thinkpad_charging_with_unmeasured_mains_has_unknown_system_power(self):
         s = from_tree(sysfs.thinkpad, online=1, status="Charging", capacity=60,
@@ -53,12 +53,14 @@ class Fixtures(unittest.TestCase):
         self.assertAlmostEqual(s.health_pct, 87.5)
         self.assertAlmostEqual(s.energy_now_wh, 2.688 * 15.4)
 
-    def test_framework_usb_pd_gives_system_power(self):
+    def test_framework_usb_pd_contract_is_not_a_measurement(self):
         s = from_tree(sysfs.framework)
-        self.assertEqual((s.adapter_w, s.adapter_rated_w, s.adapter_v, s.adapter_a),
+        self.assertEqual((s.adapter_negotiated_w, s.adapter_rated_w, s.adapter_v, s.adapter_a),
                          (45.0, 65.0, 20.0, 2.25))
+        # 協商功率只是上限：接電時整機耗電未知，不拿它來推算
+        self.assertIsNone(s.adapter_w)
         self.assertAlmostEqual(s.battery_w, 25.2)
-        self.assertAlmostEqual(s.system_w, 19.8)
+        self.assertIsNone(s.system_w)
         self.assertEqual((s.limit, s.state), (90, CHARGING))
 
     def test_not_charging_at_the_end_threshold(self):
@@ -113,29 +115,36 @@ class Combination(unittest.TestCase):
         self.assertFalse(combine((battery,), ()).ac_online)
 
     def test_inconsistent_adapter_reading_gives_no_system_power(self):
-        battery = BatteryReading(name="BAT0", status="Charging", capacity=50, power_w=30.0)
-        self.assertIsNone(combine((battery,), (usb_adapter(5.0, 1.0),)).system_w)
+        s = BatterySnapshot(percent=50, ac_online=True, battery_w=30.0, adapter_w=5.0)
+        self.assertIsNone(s.system_w)
+
+    def test_usb_pd_adapter_only_reports_the_contract(self):
+        battery = BatteryReading(name="BAT0", status="Charging", capacity=50, power_w=25.0)
+        s = combine((battery,), (usb_adapter(20.0, 2.0),))
+        self.assertEqual((s.adapter_negotiated_w, s.adapter_w, s.system_w), (40.0, None, None))
 
 
 class PowerSourceCases(unittest.TestCase):
-    """參考 PowerSourceTests 的情境，改成 Linux 的讀值：變壓器瓦數只有 USB-C PD 量得到。"""
+    """參考 PowerSourceTests 的情境。Linux 目前沒有任何來源量得到變壓器的實際輸入
+    （USB-C PD 只有協商值），所以量測值（adapter_w）直接放進快照，驗證保留下來的算法。"""
 
     def test_measured_adapter_minus_charge_is_system_power(self):
-        battery = BatteryReading(name="BAT0", status="Charging", capacity=80, power_w=25.0)
-        s = combine((battery,), (usb_adapter(20.0, 2.0),))
+        s = BatterySnapshot(percent=80, ac_online=True, charging_flag=True, battery_w=25.0,
+                            adapter_w=40.0)
         self.assertEqual((s.adapter_w, s.battery_w, s.system_w), (40.0, 25.0, 15.0))
-        s = combine((dataclasses.replace(battery, power_w=26.0),), (usb_adapter(20.0, 2.1),))
-        self.assertAlmostEqual(s.adapter_w, 42.0)
+        s = dataclasses.replace(s, battery_w=26.0, adapter_w=42.0)
         self.assertAlmostEqual(s.system_w, 16.0)
 
     def test_weak_adapter_drains_the_battery(self):
         battery = BatteryReading(name="BAT0", status="Discharging", capacity=40, power_w=10.0,
                                  voltage_v=12.0, charge_now_ah=2.0)
         s = combine((battery,), (usb_adapter(5.0, 1.0),))
-        self.assertEqual((s.ac_online, s.battery_w, s.system_w), (True, -10.0, 15.0))
+        self.assertEqual((s.ac_online, s.battery_w, s.system_w), (True, -10.0, None))
         self.assertTrue(s.draining)
         self.assertEqual(s.state, PLUGGED_IDLE)
-        self.assertAlmostEqual(s.adapter_w - s.system_w - s.battery_w, 0.0)
+        measured = dataclasses.replace(s, adapter_w=5.0)
+        self.assertEqual(measured.system_w, 15.0)
+        self.assertAlmostEqual(measured.adapter_w - measured.system_w - measured.battery_w, 0.0)
 
     def test_mixed_supply_is_not_classified_as_full(self):
         s = BatterySnapshot(percent=100, ac_online=True, full_flag=True, battery_w=-12.0)

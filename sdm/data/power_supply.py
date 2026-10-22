@@ -72,8 +72,9 @@ class AdapterReading:
     rated_w: Optional[float] = None
 
     @property
-    def measured_w(self):
-        """即時輸入功率＝電壓 × 電流；任一讀不到或為 0 時回傳 None。"""
+    def negotiated_w(self):
+        """電壓 × 電流。USB-C PD（ucsi）回報的是與變壓器協商的契約，不是實際用電，
+        只能當成可用上限顯示，不能用來推算整機耗電；任一讀不到或為 0 時回傳 None。"""
         if self.voltage_v is None or self.current_a is None:
             return None
         watts = self.voltage_v * self.current_a

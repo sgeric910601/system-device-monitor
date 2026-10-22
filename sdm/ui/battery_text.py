@@ -228,8 +228,9 @@ def plugged_card(power, now):
         minutes = drain_minutes(power)
         if minutes is not None:
             rows += (("降到上限約需", duration_text(minutes)),)
-    if battery.adapter_rated_w is not None:
-        rows += (("變壓器", f"{battery.adapter_rated_w:.0f} W"),)
+    summary = adapter_summary(battery)
+    if summary is not None:
+        rows += (("變壓器", summary),)
     return TimeCard("電源狀態", message=plugged_message(power, now), rows=rows)
 
 
@@ -243,14 +244,25 @@ def time_card(power, now, unplugged_at=None):
     return plugged_card(power, now)
 
 
+def adapter_summary(battery):
+    """「協商 45 W／額定 65 W」；都讀不到時回傳 None。協商值是契約上限，不是實際輸入。"""
+    parts = []
+    if battery.adapter_negotiated_w is not None:
+        parts.append(f"協商 {battery.adapter_negotiated_w:.0f} W")
+    if battery.adapter_rated_w is not None:
+        parts.append(f"額定 {battery.adapter_rated_w:.0f} W")
+    return "／".join(parts) or None
+
+
 def adapter_text(battery, estimates):
+    """流向圖的變壓器節點：實際量到的瓦數，否則協商功率，再沒有就是「—」。"""
     if not battery.ac_online:
         return "未連接"
     if estimates.adapter_w is not None:
         return watts_text(estimates.adapter_w)
-    if battery.adapter_rated_w is not None:
-        return f"{battery.adapter_rated_w:.0f} W 額定"
-    return "已連接"
+    if battery.adapter_negotiated_w is not None:
+        return f"協商 {battery.adapter_negotiated_w:.0f} W"
+    return PLACEHOLDER
 
 
 def flow_model(power):
