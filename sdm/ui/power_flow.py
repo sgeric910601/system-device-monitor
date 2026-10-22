@@ -1,6 +1,8 @@
 """電力流向圖：來源（市電或不斷電系統電池）→ 整機 → 各元件與其他。
 
-靜態圖（本階段沒有動畫），流帶寬度與 √W 成正比，最細 2 px。
+流帶寬度與 √W 成正比，最細 2 px。顯示中、視窗看得到、沒有最小化且省電模式沒有生效時，
+流帶上的虛線依瓦數往右流動（最多每秒 15 格，見 flow_animation）；其他時候是靜態圖，
+在流帶末端畫箭頭，不留任何計時器。
 文字用主題前景色，流帶用既有配色，明暗主題都看得清楚；內容不變時不重畫。
 """
 import math
@@ -12,6 +14,7 @@ from gi.repository import GLib, Gtk, Pango, PangoCairo
 
 from sdm.constants import Flow
 from sdm.core.chart_layout import flow_geometry, flow_height
+from sdm.ui.flow_animation import FlowAnimator, dash_speed, should_animate
 from sdm.ui.power_text import watts_text
 from sdm.ui.theme import COLORS, WARNING, rgb
 
@@ -23,6 +26,11 @@ NODE_FILL_ALPHA = 0.06
 NODE_STROKE_ALPHA = 0.22
 OTHER_ALPHA = 0.35
 ACCENT_WIDTH = 4
+DASH_ALPHA = 0.55
+DASH_WIDTH_RATIO = 0.35
+DASH_WIDTH_MAX = 4.0
+ARROW_ALPHA = 0.9
+SOURCE_KEY = "source"
 SOURCE_COLORS = {"市電": rgb(COLORS["ram"]), "不斷電系統電池": rgb(WARNING)}
 ITEM_COLORS = {"gpu": rgb(COLORS["gpu"]), "cpu": rgb(COLORS["cpu"])}
 
@@ -44,6 +52,44 @@ def rounded_rectangle(cr, rect, radius):
     cr.close_path()
 
 
+def band_center(cr, band):
+    middle = (band.x0 + band.x1) / 2
+    cr.move_to(band.x0, band.y0)
+    cr.curve_to(middle, band.y0, middle, band.y1, band.x1, band.y1)
+
+
+def draw_dashes(cr, band, color, phase):
+    """沿著流帶中線的虛線；相位越大越往右（流向）移動。"""
+    if band.width <= 0:
+        return
+    cr.save()
+    band_center(cr, band)
+    cr.set_line_width(max(1.0, min(DASH_WIDTH_MAX, band.width * DASH_WIDTH_RATIO)))
+    cr.set_dash([Flow.DASH_LENGTH, Flow.DASH_GAP], Flow.DASH_PERIOD - phase)
+    cr.set_source_rgba(*color, DASH_ALPHA)
+    cr.stroke()
+    cr.restore()
+
+
+def draw_arrow(cr, band, color):
+    """靜態圖：流帶末端的箭頭。"""
+    if band.width <= 0:
+        return
+    size = Flow.ARROW_SIZE
+    tip = band.x1 - 1
+    cr.move_to(tip, band.y1)
+    cr.line_to(tip - size, band.y1 - size / 2)
+    cr.line_to(tip - size, band.y1 + size / 2)
+    cr.close_path()
+    cr.set_source_rgba(*color, ARROW_ALPHA)
+    cr.fill()
+
+
+def remove_source(source):
+    if GLib.MainContext.default().find_source_by_id(source):
+        GLib.source_remove(source)
+
+
 def draw_band(cr, band, color, alpha):
     """兩條三次貝茲曲線圍成的流帶。"""
     if band.width <= 0:
@@ -63,10 +109,24 @@ class PowerFlow(Gtk.DrawingArea):
     def __init__(self):
         super().__init__()
         self.model = None
+        self.window_visible, self.iconified, self.saving = True, False, False
+        self.animator = FlowAnimator(self.queue_draw, GLib.timeout_add, remove_source)
         self.set_size_request(Flow.MIN_WIDTH, Flow.MIN_HEIGHT)
         self.set_hexpand(True)
         self.set_no_show_all(True)   # 沒有資料時保持隱藏，不受 show_all() 影響
         self.connect("draw", self.on_draw)
+        self.connect("map", self.update_motion)
+        self.connect("unmap", self.update_motion)
+
+    def set_motion(self, window_visible, iconified, saving):
+        """視窗是否看得到、是否最小化、省電模式是否生效（由看板設定）。"""
+        self.window_visible, self.iconified, self.saving = window_visible, iconified, saving
+        self.update_motion()
+
+    def update_motion(self, *_):
+        running = self.model is not None and should_animate(
+            self.get_mapped(), self.window_visible, self.iconified, self.saving)
+        self.animator.set_running(running)
 
     def set_model(self, model):
         """model 為 power_text.FlowModel 或 None（隱藏）。"""
@@ -74,10 +134,15 @@ class PowerFlow(Gtk.DrawingArea):
             return
         self.model = model
         if model is None:
+            self.animator.set_speeds({})
             self.hide()
+            self.update_motion()
             return
+        speeds = {item_id: dash_speed(watts) for item_id, _, watts in model.items}
+        self.animator.set_speeds({SOURCE_KEY: dash_speed(model.total_w), **speeds})
         self.set_size_request(Flow.MIN_WIDTH, flow_height(len(model.items)))
         self.show()
+        self.update_motion()
         self.queue_draw()
 
     def on_draw(self, widget, cr):
@@ -88,10 +153,11 @@ class PowerFlow(Gtk.DrawingArea):
                                  tuple(watts for _, _, watts in model.items), model.total_w)
         color = self.get_style_context().get_color(Gtk.StateFlags.NORMAL)
         foreground = (color.red, color.green, color.blue)
-        draw_band(cr, geometry.source_band,
-                  SOURCE_COLORS.get(model.source_label, SOURCE_COLORS["市電"]), BAND_ALPHA)
+        source_color = SOURCE_COLORS.get(model.source_label, SOURCE_COLORS["市電"])
+        draw_band(cr, geometry.source_band, source_color, BAND_ALPHA)
         for band, (item_id, _, _) in zip(geometry.item_bands, model.items):
             draw_band(cr, band, *item_color(item_id, foreground))
+        self.draw_motion(cr, geometry, source_color, foreground)
         layout = self.create_pango_layout("")
         layout.set_ellipsize(Pango.EllipsizeMode.END)
         self.draw_node(cr, layout, geometry.source, model.source_label, None, foreground)
@@ -101,6 +167,18 @@ class PowerFlow(Gtk.DrawingArea):
             accent, _ = item_color(item_id, foreground)
             self.draw_node(cr, layout, rect, label, watts_text(watts), foreground, accent)
         return False
+
+    def draw_motion(self, cr, geometry, source_color, foreground):
+        """動畫時畫流動的虛線，靜態時畫箭頭。"""
+        bands = ((SOURCE_KEY, geometry.source_band, source_color),) + tuple(
+            (item_id, band, item_color(item_id, foreground)[0])
+            for band, (item_id, _, _) in zip(geometry.item_bands, self.model.items))
+        phases = self.animator.phases
+        for key, band, color in bands:
+            if self.animator.running:
+                draw_dashes(cr, band, foreground, phases.get(key, 0.0))
+            else:
+                draw_arrow(cr, band, color)
 
     def draw_node(self, cr, layout, rect, title, value, foreground, accent=None):
         rounded_rectangle(cr, rect, CORNER)

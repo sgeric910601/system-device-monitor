@@ -151,7 +151,7 @@ class Chart:
 
 
 class Flow:
-    """電力流向圖（靜態，無動畫）。"""
+    """電力流向圖：流帶上的虛線依瓦數流動（看得到且沒有省電時），否則畫靜態箭頭。"""
     PADDING = 8
     SOURCE_WIDTH = 92
     TOTAL_WIDTH = 104
@@ -163,6 +163,14 @@ class Flow:
     BAND_MIN = 2                    # 流帶最細 2 px
     BAND_MAX = 44                   # 流帶最粗（整機）
     MIN_WIDTH = 420                 # 兩欄排列時每張卡片的最小內容寬度
+    FRAME_MS = 67                   # 動畫每格間隔：每秒最多 15 格
+    DASH_LENGTH = 6                 # 流動虛線的線段與間隔（px）
+    DASH_GAP = 10
+    DASH_PERIOD = DASH_LENGTH + DASH_GAP
+    DASH_SPEED_MIN = 8              # 流速（px／秒）＝最慢＋係數 × √W，最多 80
+    DASH_SPEED_PER_SQRT_W = 3
+    DASH_SPEED_MAX = 80
+    ARROW_SIZE = 7                  # 靜態箭頭的大小（px）
 
 
 class Counter:

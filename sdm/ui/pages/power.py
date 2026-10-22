@@ -125,6 +125,10 @@ class PowerPage(Gtk.Box):
             self.laptop.set_visible(laptop)
             self.desktop.set_visible(not laptop)
 
+    def set_motion(self, window_visible, iconified, saving):
+        """電力流向動畫的條件（視窗看得到、沒有最小化、省電模式沒有生效）。"""
+        self.flow.set_motion(window_visible, iconified, saving)
+
     def set_detail(self, snapshot):
         """頁面顯示時的詳細取樣：只用各 App 的 CPU（耗電排行）。"""
         apps = snapshot.apps
