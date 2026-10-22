@@ -303,6 +303,8 @@ class Collectors:
                     continue  # 以 Connected 為準，不採用快取的電量紀錄。
                 if not d.get("IsPresent", False) or device_type not in (2, 3, 5, 6):
                     continue
+                if device_type == 2 and d.get("PowerSupply", False):
+                    continue  # 筆電本身的電池由電源頁顯示，不是周邊。
                 supply = Path("/sys/class/power_supply") / native
                 if supply.exists() and read(supply/"online") == "0":
                     continue
