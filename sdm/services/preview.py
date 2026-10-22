@@ -233,6 +233,12 @@ class DemoStream:
     def stop(self, timeout=None):
         return None
 
+    def set_interval_ms(self, interval_ms):
+        return False
+
+    def readings(self, now=None):
+        return ()
+
     def latest(self):
         return ()
 

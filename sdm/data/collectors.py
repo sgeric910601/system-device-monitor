@@ -29,6 +29,8 @@ from sdm.data.upower import UpowerSource, bus_getter
 from sdm.services.power_service import PowerService
 
 GPU_UNAVAILABLE = "GPU 資料暫時無法取得"
+ALL_MODULES = frozenset({"cpu", "memory", "disk", "network"})
+TEMPERATURE_MODULES = frozenset({"cpu", "disk", "network"})   # 需要 hwmon 溫度的模組
 
 def dbus(bus, destination, path, interface, method, args=None):
     if bus is None:
@@ -65,6 +67,7 @@ def cpu_info():
 class Collectors:
     root = Path("/")     # 讀取 /proc 與 /sys 的根目錄；測試時指向假的目錄
     storage_visible = False     # 總覽或磁碟頁顯示中（由介面設定）：lsblk 改為每 30 秒
+    modules = ALL_MODULES       # 開啟中的系統監控模組（由介面設定）；關閉的模組不取樣
 
     def __init__(self):
         self.aliases = load_json(paths.ALIASES)
@@ -94,19 +97,36 @@ class Collectors:
         return self.details.sample(request)
 
     def system(self):
-        now = time.monotonic()
-        stat = read(self.root/"proc/stat").splitlines()
-        cpu = self.cpu.sample([int(x) for x in stat[0].split()[1:]], now)
-        used, total = self.memory_used()
+        """一般層：只取開啟中的模組（CPU、記憶體、網速、磁碟讀寫）。"""
+        now, modules = time.monotonic(), self.modules
+        result = dict(cpu_info=self.cpu_info, stamp=time.time())
+        if "cpu" in modules:
+            stat = read(self.root/"proc/stat").splitlines()
+            result["cpu"] = self.cpu.sample([int(x) for x in stat[0].split()[1:]], now)
+            result.update(self.stream_gpu())
+        if "memory" in modules:
+            used, total = self.memory_used()
+            result.update(ram=used / total * 100 if total else None, ram_used=used,
+                          ram_total=total)
+        if "network" in modules:
+            result.update(self.network_summary(now))
+        if "disk" in modules:
+            result["disks"] = self.disk_rates(now)
+        return result
+
+    def stream_gpu(self):
+        """頂端列的 GPU 使用率直接用 nvidia-smi 串流的最新一行（不另外讀取任何東西）。"""
+        stream = getattr(self, "nvidia", None)
+        gpu = primary_gpu(stream.readings()) if stream is not None else None
+        return {"gpu": gpu} if gpu is not None else {}
+
+    def network_summary(self, now):
         networks = self.network_rates(now)
         physical = [n for n in networks if n["physical"]]
         def net_sum(key):
             known = [n[key] for n in physical if n[key] is not None]
             return sum(known) if known else None
-        return dict(cpu=cpu, cpu_info=self.cpu_info, ram=used / total * 100 if total else None,
-                    ram_used=used, ram_total=total, networks=networks,
-                    rx=net_sum("rx"), tx=net_sum("tx"), disks=self.disk_rates(now),
-                    stamp=time.time())
+        return dict(networks=networks, rx=net_sum("rx"), tx=net_sum("tx"))
 
     def memory_used(self):
         """（已用、總量）位元組；已用＝總量減去 MemAvailable。"""
@@ -151,19 +171,27 @@ class Collectors:
         return dict(power=self.power.sample(), stamp=time.time())
 
     def slow(self):
-        temperatures = hwmon_temperatures()
-        cpu_temp, cpu_temp_label = cpu_temperature(temperatures)
+        """慢速層：耗電一直取樣；溫度、風扇與磁碟清單只在需要它們的模組開啟時讀取。"""
+        modules = self.modules
+        temperatures = hwmon_temperatures() if modules & TEMPERATURE_MODULES else []
+        cpu_temp, cpu_temp_label = (cpu_temperature(temperatures) if "cpu" in modules
+                                    else (None, ""))
         power = self.power.sample()
         gpu = primary_gpu(power.gpus)
         pending = power.breakdown.status == SAMPLING
-        self.refresh_disk_meta()
-        storage, used = self.storage_temperatures(temperatures)
-        network_temperatures, network_used = self.network_temperatures(temperatures)
+        storage, used = [], set()
+        if "disk" in modules:
+            self.refresh_disk_meta()
+            storage, used = self.storage_temperatures(temperatures)
+        network_temperatures, network_used = (self.network_temperatures(temperatures)
+                                              if "network" in modules else ({}, set()))
         used = used | network_used
-        remaining = [s for s in temperatures if id(s) not in used and s["chip"] not in ("k10temp", "coretemp")]
+        remaining = [s for s in temperatures if id(s) not in used
+                     and s["chip"] not in ("k10temp", "coretemp")] if "cpu" in modules else []
         return dict(gpu=gpu, gpus=power.gpus, gpu_error="" if gpu or pending else GPU_UNAVAILABLE,
                     ups=power.ups, power=power, temperatures=remaining, cpu_temp=cpu_temp,
-                    cpu_temp_label=cpu_temp_label, fans=hwmon_fans(), storage=storage,
+                    cpu_temp_label=cpu_temp_label,
+                    fans=hwmon_fans() if "cpu" in modules else [], storage=storage,
                     network_temperatures=network_temperatures, stamp=time.time())
 
     def storage_temperatures(self, temperatures):

@@ -14,7 +14,6 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from sdm.constants import Monitor
 from sdm.core.tiers import (PAGE_CPU, PAGE_DISK, PAGE_MEMORY, PAGE_NETWORK, DetailGate,
                             request_for, storage_visible)
 from sdm.ui.app_names import AppNames
@@ -74,6 +73,7 @@ class MonitorMixin:
         if iconified != self.window_iconified:
             self.window_iconified = iconified
             self.visibility_changed()
+            self.update_motion()
         return False
 
     def visible_pages(self):
@@ -96,8 +96,7 @@ class MonitorMixin:
     def restart_detail_timer(self, request):
         self.stop_detail()
         if request is not None and not self.closing:
-            self.detail_timer = GLib.timeout_add_seconds(Monitor.DETAIL_INTERVAL,
-                                                         self.detail_tick)
+            self.detail_timer = GLib.timeout_add_seconds(self.cadence.detail, self.detail_tick)
             self.submit_detail()
 
     def stop_detail(self):

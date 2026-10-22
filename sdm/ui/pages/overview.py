@@ -45,6 +45,8 @@ class OverviewPage(Gtk.Box):
             self.add_card(key, name, series, clickable)
         self.pack_start(self.flow, False, False, 0)
         self.note = label("曲線顯示最近 5 分鐘 · 點一下卡片可開啟詳細頁面", "muted", True)
+        self.note.show()
+        self.note.set_no_show_all(True)     # 顯示與否只由 set_modules() 決定
         self.pack_start(self.note, False, False, 0)
         self.empty = label(ALL_OFF, "muted", True)
         self.empty.set_no_show_all(True)

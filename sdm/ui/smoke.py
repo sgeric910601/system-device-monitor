@@ -79,9 +79,13 @@ class SmokeMixin:
                 pixbuf.savev(str(self.output_dir/f"{name}.png"), "png", [], [])
 
     def smoke_finish(self):
-        self.smoke_failed = bool(self.errors) or not bool(self.data["system"])
+        # 系統監控模組全部關閉時一般層不取樣，沒有資料是正常的
+        collector = getattr(self, "collector", None)
+        expects_system = collector is None or bool(collector.modules)
+        system_ready = bool(self.data["system"]) or not expects_system
+        self.smoke_failed = bool(self.errors) or not system_ready
         report = dict(ok=not self.smoke_failed, collector_errors=sorted(self.errors),
-                      system_ready=bool(self.data["system"]),
+                      system_ready=system_ready,
                       indicator_count=self.tray.count() if self.tray is not None else 0,
                       pages=list(getattr(self, "smoke_pages", [])))
         if self.output_dir is not None:

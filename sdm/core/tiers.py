@@ -14,6 +14,18 @@ from functools import reduce
 PAGE_POWER, PAGE_OVERVIEW, PAGE_CPU, PAGE_MEMORY, PAGE_DISK, PAGE_NETWORK = (
     "power", "overview", "cpu", "memory", "disk", "network")
 STORAGE_PAGES = (PAGE_OVERVIEW, PAGE_DISK)
+# 系統監控模組 → 它的頁面；模組關閉時頁面隱藏、相關取樣停止
+MODULE_PAGES = {"cpu": PAGE_CPU, "memory": PAGE_MEMORY, "disk": PAGE_DISK,
+                "network": PAGE_NETWORK}
+MODULE_SETTINGS = {"cpu": "monitor_cpu", "memory": "monitor_memory", "disk": "monitor_disk",
+                   "network": "monitor_network"}
+
+
+def enabled_modules(preferences):
+    """開啟中的系統監控模組；總開關關閉時一個都沒有。"""
+    if not preferences.system_monitors:
+        return frozenset()
+    return frozenset(module for module, key in MODULE_SETTINGS.items() if preferences[key])
 
 
 @dataclass(frozen=True)

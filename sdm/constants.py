@@ -41,7 +41,7 @@ class Ups:
 
 class Gpu:
     """顯示卡讀取：NVIDIA 常駐串流與 AMD sysfs。"""
-    STREAM_INTERVAL_MS = Collect.SLOW_INTERVAL * 1000   # nvidia-smi -lms 間隔
+    STREAM_INTERVAL_MS = 2000   # nvidia-smi -lms 預設間隔（更新頻率 2 秒）；之後依設定調整
     BACKOFF_INITIAL = 1         # 串流程序結束後重新啟動的等待（秒），每次加倍
     BACKOFF_MAX = 60
     BACKOFF_RESET_SECONDS = 60  # 程序持續執行超過此秒數，下次重啟從最短等待算起

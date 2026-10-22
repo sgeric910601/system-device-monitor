@@ -31,6 +31,7 @@ class PowerMixin:
             self.refresh_pending = False
             self.submit(POWER_REFRESH)
         self.observe_power()
+        self.power_changed()
     def on_uevent(self, _client, _action, device):
         """裝置事件一律更新設備頁；筆電模式下電源的插拔另外立即重新讀取耗電。"""
         self.device_event()

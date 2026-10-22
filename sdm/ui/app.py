@@ -14,7 +14,8 @@ gi.require_version("GUdev", "1.0")
 from gi.repository import Gtk, Gio, GLib, GUdev
 
 from sdm import paths
-from sdm.constants import Collect, History, Preview, Smoke, Solaar, Ui
+from sdm.constants import Collect, History, Preview, Smoke, Ui
+from sdm.core.schedule import cadence_for
 from sdm.core.settings import load_settings
 from sdm.data.collectors import Collectors
 from sdm.services import preview as demo
@@ -30,6 +31,7 @@ from sdm.ui.pages.devices import DevicesPage
 from sdm.ui.pages.overview import OverviewPage
 from sdm.ui.pages.power import PowerPage
 from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
+from sdm.ui.schedule_wiring import ScheduleMixin
 from sdm.ui.settings_wiring import SettingsMixin
 from sdm.ui.tray_wiring import TrayMixin
 from sdm.ui.smoke import SmokeMixin
@@ -52,7 +54,8 @@ class RunResult(NamedTuple):
     report: Optional[dict]
 
 
-class Monitor(PowerMixin, SettingsMixin, TrayMixin, SmokeMixin, MonitorMixin, Gtk.Application):
+class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
+              Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -115,6 +118,8 @@ class Monitor(PowerMixin, SettingsMixin, TrayMixin, SmokeMixin, MonitorMixin, Gt
             initialize_preferences()
             self.store.autostart = paths.AUTOSTART.exists()   # 首次啟動時剛建立
         self.collector = demo.PreviewCollectors(self.preview) if self.preview else Collectors()
+        # 先換成目前設定的間隔再啟動 nvidia-smi，啟動後不必馬上重新啟動
+        self.collector.nvidia.set_interval_ms(cadence_for(self.preferences, None).nvidia_ms)
         self.collector.nvidia.start()
         self.history = create_history(self.smoke, self.preview)
         self.history.load()
@@ -125,11 +130,8 @@ class Monitor(PowerMixin, SettingsMixin, TrayMixin, SmokeMixin, MonitorMixin, Gt
             self.watch_devices()
         self.start_profiles()
         GLib.idle_add(self.ask_first_run)
-        for kind, interval in (("system", Collect.SYSTEM_INTERVAL), ("slow", Collect.SLOW_INTERVAL),
-                               ("devices", Collect.DEVICES_INTERVAL),
-                               ("logitech", Solaar.INTERVAL)):
-            self.submit(kind)
-            self.timers.append(GLib.timeout_add_seconds(interval, self.tick, kind))
+        self.create_scheduler()
+        self.apply_modules()        # 頁面、取樣層與頂端列；各層立即取樣一次
         self.timers.append(GLib.timeout_add_seconds(History.RECORD_INTERVAL_SECONDS,
                                                     self.record_history))
         self.install_signal_handlers()
@@ -321,6 +323,7 @@ class Monitor(PowerMixin, SettingsMixin, TrayMixin, SmokeMixin, MonitorMixin, Gt
             GLib.source_remove(self.event_timer)
             self.event_timer = 0
         self.stop_detail()
+        self.stop_scheduler()
         if self.power_refresh is not None:
             self.power_refresh.stop()
 

@@ -2,6 +2,7 @@
 import unittest
 
 from sdm.core import tiers
+from sdm.core.settings import Preferences
 from sdm.core.tiers import DetailGate, DetailRequest
 
 
@@ -30,6 +31,19 @@ class Requests(unittest.TestCase):
         self.assertTrue(tiers.storage_visible({"disk"}))
         self.assertFalse(tiers.storage_visible({"cpu", "network"}))
         self.assertFalse(tiers.storage_visible(set()))
+
+
+class Modules(unittest.TestCase):
+    def test_enabled_modules_follow_the_master_switch(self):
+        prefs = Preferences.defaults()
+        self.assertEqual(tiers.enabled_modules(prefs), frozenset({"cpu", "memory", "disk",
+                                                                  "network"}))
+        self.assertEqual(tiers.enabled_modules(prefs.with_changes(monitor_disk=False)),
+                         frozenset({"cpu", "memory", "network"}))
+        self.assertEqual(tiers.enabled_modules(prefs.with_changes(system_monitors=False)),
+                         frozenset())
+        self.assertEqual(tiers.MODULE_PAGES, {"cpu": "cpu", "memory": "memory", "disk": "disk",
+                                              "network": "network"})
 
 
 class Gate(unittest.TestCase):

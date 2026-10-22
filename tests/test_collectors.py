@@ -160,6 +160,46 @@ class SlowSample(Fixture):
                          ["acpitz", "nvme", "nvme"])
 
 
+class Modules(SlowSample):
+    """關閉的系統監控模組不取樣：快速取樣少了它的欄位，慢速取樣不讀溫度、風扇與磁碟清單。"""
+
+    def test_system_skips_turned_off_modules(self):
+        self.collector.modules = frozenset({"memory"})
+        result = self.collector.system()
+        self.assertAlmostEqual(result["ram"], 62.5)
+        for key in ("cpu", "networks", "rx", "disks", "gpu"):
+            self.assertNotIn(key, result)
+        self.assertEqual(result["cpu_info"]["name"], "Example CPU")
+
+    def test_cpu_module_takes_the_gpu_usage_from_the_stream(self):
+        result = self.collector.system()
+        self.assertEqual(result["gpu"].usage, 5.0)
+
+    def test_slow_without_modules_reads_only_power(self):
+        self.collector.modules = frozenset()
+        refused = AssertionError("should not be read")
+        with patch("sdm.data.collectors.hwmon_temperatures", side_effect=refused), \
+                patch("sdm.data.collectors.hwmon_fans", side_effect=refused), \
+                patch.object(self.collector, "refresh_disk_meta", side_effect=refused), \
+                patch("sdm.data.collectors.command", side_effect=OSError("no ups")), \
+                patch("sdm.data.collectors.read_amd_gpus", return_value=()), \
+                patch("sdm.data.collectors.read_batteries", return_value=()), \
+                patch("sdm.data.collectors.read_adapters", return_value=()):
+            result = self.collector.slow()
+        self.assertEqual((result["storage"], result["temperatures"], result["fans"]), ([], [], []))
+        self.assertIsNone(result["cpu_temp"])
+        self.assertIsNotNone(result["power"])
+        self.assertEqual(result["gpu"].name, "Example A")
+
+    def test_disk_module_alone_keeps_storage_temperatures(self):
+        self.collector.modules = frozenset({"disk"})
+        result = self.sample()
+        self.assertEqual([(d["name"], d["temperature"]) for d in result["storage"]],
+                         [("nvme0n1", 41.0)])
+        self.assertIsNone(result["cpu_temp"])
+        self.assertEqual(result["network_temperatures"], {})
+
+
 class FakeSmart:
     def __init__(self, values):
         self.values = values

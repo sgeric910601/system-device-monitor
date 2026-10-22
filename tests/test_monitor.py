@@ -239,6 +239,15 @@ class SmokePages(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(self.stopped, [True])
 
+    def test_no_system_data_is_fine_when_every_monitor_is_off(self):
+        self.monitor.data = {"system": {}}
+        self.monitor.collector = type("Collector", (), {"modules": frozenset()})()
+        self.monitor.smoke_finish()
+        self.assertTrue(self.monitor.smoke_report["ok"])
+        self.monitor.collector.modules = frozenset({"cpu"})
+        self.monitor.smoke_finish()
+        self.assertFalse(self.monitor.smoke_report["ok"])
+
     def test_page_that_was_not_shown_is_left_out(self):
         with patch.object(ui_app.GLib, "timeout_add"):
             self.monitor.stack.set_visible_child_name("overview")
