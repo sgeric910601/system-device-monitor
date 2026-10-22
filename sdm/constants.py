@@ -9,7 +9,6 @@ class Collect:
     SYSTEM_INTERVAL = 2         # CPU／記憶體／網速／磁碟讀寫（秒）
     SLOW_INTERVAL = 5           # GPU／溫度／UPS（秒）
     DEVICES_INTERVAL = 5        # 周邊設備重新確認（秒）
-    DISK_META_INTERVAL = 30     # 磁碟容量與型號（秒）
     WORKERS = 4                 # 背景收集執行緒數
     COMMAND_TIMEOUT = 3         # 外部命令預設逾時（秒）
     NVIDIA_SMI_TIMEOUT = 3
@@ -160,6 +159,59 @@ class Flow:
 class Counter:
     """累計計數器：超過此間隔沒有取樣就重新建立基準（睡眠／喚醒）。"""
     RESET_SECONDS = 15
+
+
+class Monitor:
+    """系統監控頁（CPU／GPU、記憶體、磁碟、網路）：曲線、排行與只在頁面顯示時才做的取樣。"""
+    HISTORY_CAPACITY = 120          # 曲線最多保留的點數（參考專案 MonitorHistory）
+    HISTORY_WINDOW_SECONDS = 120    # 曲線只保留最近 2 分鐘
+    DETAIL_INTERVAL = 2             # 頁面顯示時的詳細取樣間隔（秒）
+    TOP_APPS = 5                    # App 排行的筆數
+    RATE_AXIS_MINIMUM = 1000        # 速率曲線 Y 軸上限至少 1 KB/s
+
+
+class Memory:
+    """記憶體壓力分級：PSI 的 10 秒平均（百分比）或可用記憶體比例，任一項達到門檻就升級。"""
+    WARN_SOME_AVG10 = 10.0          # 有程序等待記憶體的時間比例
+    CRITICAL_FULL_AVG10 = 5.0       # 所有程序都在等待記憶體的時間比例
+    WARN_AVAILABLE_FRACTION = 0.10
+    CRITICAL_AVAILABLE_FRACTION = 0.05
+    KILOBYTE = 1024                 # /proc/meminfo 的 kB 其實是 KiB
+
+
+class Thermal:
+    """溫度分組與風扇：合理範圍（不含兩端）、每個感測器沿用最近有效值的時間。"""
+    MIN_C = 0                       # 0 °C 以下視為讀取失敗
+    MAX_C = 125                     # 125 °C 以上視為讀取失敗
+    HOLD_SECONDS = 120              # 讀不到時沿用最近一次有效值的最長時間（參考專案）
+    INTERVAL = 5                    # CPU／GPU 頁顯示時讀取溫度與風扇的間隔（秒）
+
+
+class Disk:
+    """磁碟頁：容量長條變色、健康度分級、SMART 讀取頻率與 lsblk 更新間隔。"""
+    BAR_CRITICAL = 0.9              # 已用超過 90% 顯示紅色
+    BAR_WARNING = 0.8               # 超過 80% 顯示橘色
+    HEALTH_GOOD = 70                # 健康度 ≥ 70% 綠色，≥ 30% 橘色，其他紅色
+    HEALTH_FAIR = 30
+    DAYS_FROM_HOURS = 48            # 通電時間達 48 小時才加上「約幾天」
+    MODEL_MAX_CHARS = 64
+    BLOCK_NAME_MAX_CHARS = 32
+    KELVIN_OFFSET = 273.15
+    META_VISIBLE_INTERVAL = 30      # 總覽或磁碟頁顯示時，lsblk 每 30 秒更新
+    META_HIDDEN_INTERVAL = 300      # 其他時候每 5 分鐘
+    SMART_PROPERTIES_INTERVAL = 60  # UDisks2 SMART 屬性
+    SMART_ATTRIBUTES_INTERVAL = 600  # NVMe 的 SmartGetAttributes（出廠以來讀寫量、已用壽命）
+    SMART_BACKOFF_SECONDS = 30      # 任何一個呼叫逾時後，這段時間內不再呼叫
+
+
+class Network:
+    """網路頁：主要介面的 IPv4（socket ioctl，不執行外部命令）。"""
+    IPV4_INTERVAL = 30              # IPv4 每 30 秒或主要介面改變時重新讀取
+    SIOCGIFADDR = 0x8915            # Linux 的「取得介面位址」ioctl
+    IFNAMSIZ = 16                   # 介面名稱含結尾 NUL 的長度上限
+    IFREQ_BYTES = 256
+    ADDRESS_OFFSET = 20             # 回應中 IPv4 位址的位置（名稱 16＋family 2＋port 2）
+    ROUTE_UP = 0x1                  # /proc/net/route 的 RTF_UP
 
 
 class Solaar:
