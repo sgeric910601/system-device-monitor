@@ -3,7 +3,8 @@
 用途是截圖與檢查版面，所以：
 - 只存在記憶體，不讀寫任何使用者檔案（設定、歷史、裝置別名、自動啟動）。
 - 不啟動 nvidia-smi、lsblk、Solaar 等外部程序，也不連系統匯流排。
-- 名稱都標明「示範」，不含任何這台電腦的資料。CPU、記憶體與網速仍顯示即時值。
+- 不讀這台電腦的處理器、溫度、風扇、網路介面或磁碟；名稱都標明「示範」，
+  截圖不含任何這台電腦的資料。
 """
 from dataclasses import replace
 from datetime import datetime
@@ -12,11 +13,10 @@ import time
 
 from sdm.constants import History, Preview
 from sdm.core.battery import combine
-from sdm.core.counters import Counters, CpuCounter
 from sdm.core.history import HistorySample
 from sdm.core.settings import LEGACY_DEFAULTS, Preferences, Settings
-from sdm.data.collectors import Collectors, cpu_info
-from sdm.data.gpu import GpuReading
+from sdm.data.collectors import GPU_UNAVAILABLE, Collectors
+from sdm.data.gpu import GpuReading, primary_gpu
 from sdm.data.power_supply import AdapterReading, BatteryReading
 from sdm.data.ups import UpsReading
 from sdm.data.upower import UpowerReading
@@ -78,6 +78,14 @@ DEMO_UPS = UpsReading(status=("ONLINE",), online=True, charge_pct=100.0, load_pc
 DEMO_DISKS = (dict(name="nvme0n1", model="示範固態硬碟", transport="nvme", size=1000 * GIB,
                    volumes=[dict(mount="/", total=900 * GIB, used=320 * GIB,
                                  available=580 * GIB)]),)
+DEMO_CPU_INFO = dict(name=DEMO_PROCESSOR, cores=8, threads=16)
+DEMO_RAM_BYTES = 32 * GIB
+DEMO_SENSORS = (dict(chip="示範感測器", label="主機板", value=38.0, device=""),)
+DEMO_FANS = (dict(name="示範風扇", value=1150.0),)
+DEMO_CPU_TEMP_C = 47.0
+DEMO_DISK_TEMP_C = 41.0
+DEMO_RX = 1_200_000.0       # 位元組／秒
+DEMO_TX = 240_000.0
 
 
 def check(scenario):
@@ -228,15 +236,42 @@ class DemoStream:
         return False
 
 
+def demo_system(now):
+    """總覽頁的即時資料（示範值，隨時間小幅變化，曲線才看得出來）。"""
+    rx, tx = DEMO_RX * (1.1 + wave(now, 13)), DEMO_TX * (1.1 + wave(now, 17))
+    ram_used = int(DEMO_RAM_BYTES * (0.42 + 0.03 * wave(now, 300)))
+    networks = [dict(name="示範有線網路", rx=rx, tx=tx, physical=True, kind="有線網路"),
+                dict(name="示範虛擬網路", rx=0.0, tx=0.0, physical=False, kind="虛擬介面")]
+    return dict(cpu=round(18 + 8 * wave(now, 47), 1), cpu_info=DEMO_CPU_INFO,
+                ram=ram_used / DEMO_RAM_BYTES * 100, ram_used=ram_used,
+                ram_total=DEMO_RAM_BYTES, networks=networks, rx=rx, tx=tx,
+                disks=[dict(name=disk["name"], read=rx / 3, write=tx / 2) for disk in DEMO_DISKS],
+                stamp=now)
+
+
 class PreviewCollectors(Collectors):
-    """不呼叫 Collectors.__init__：不讀裝置別名、不連系統匯流排、不建立 Solaar 查詢。"""
+    """不呼叫 Collectors.__init__：不讀裝置別名、不連系統匯流排、不建立 Solaar 查詢，
+    也不讀這台電腦的 /proc 與 /sys。"""
 
     def __init__(self, scenario):
         self.aliases, self.logitech_battery, self.bus, self.updates = {}, None, None, {}
-        self.cpu_info, self.cpu, self.rates = cpu_info(), CpuCounter(), Counters()
+        self.cpu_info = DEMO_CPU_INFO
         self.disk_meta, self.last_disk_meta = list(DEMO_DISKS), 0
         self.nvidia = DemoStream()
         self.power = power_service(scenario)
+
+    def system(self):
+        return demo_system(time.time())
+
+    def slow(self):
+        power = self.power.sample()
+        gpu = primary_gpu(power.gpus)
+        return dict(gpu=gpu, gpus=power.gpus, gpu_error="" if gpu else GPU_UNAVAILABLE,
+                    ups=power.ups, power=power, temperatures=list(DEMO_SENSORS),
+                    cpu_temp=DEMO_CPU_TEMP_C, cpu_temp_label="示範處理器溫度",
+                    fans=list(DEMO_FANS), storage=[dict(disk, temperature=DEMO_DISK_TEMP_C)
+                                                   for disk in self.disk_meta],
+                    network_temperatures={}, stamp=time.time())
 
     def refresh_disk_meta(self):
         return None

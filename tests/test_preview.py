@@ -106,6 +106,25 @@ class Collectors(unittest.TestCase):
         self.assertEqual([disk["model"] for disk in collector.disk_meta], ["示範固態硬碟"])
         self.assertIsInstance(collector.power_refresh()["power"], LaptopPower)
 
+    def test_overview_data_is_demo_only(self):
+        machine = AssertionError("this machine's data was read")
+        with patch("sdm.data.collectors.read", side_effect=machine), \
+                patch("sdm.data.collectors.hwmon_temperatures", side_effect=machine), \
+                patch("sdm.data.collectors.hwmon_fans", side_effect=machine):
+            collector = preview.PreviewCollectors("desktop")
+            system, slow = collector.system(), collector.slow()
+        self.assertEqual(system["cpu_info"]["name"], "示範處理器")
+        self.assertTrue(system["networks"])
+        self.assertTrue(all(net["name"].startswith("示範") for net in system["networks"]))
+        self.assertTrue(0 <= system["cpu"] <= 100 and 0 <= system["ram"] <= 100)
+        self.assertEqual([disk["name"] for disk in system["disks"]], ["nvme0n1"])
+        self.assertTrue(all(sensor["chip"].startswith("示範") for sensor in slow["temperatures"]))
+        self.assertTrue(all(fan["name"].startswith("示範") for fan in slow["fans"]))
+        self.assertTrue(slow["cpu_temp_label"].startswith("示範"))
+        self.assertEqual(slow["gpu"].name, "示範顯示卡")
+        self.assertEqual(slow["power"].system_w, 288.0)
+        self.assertEqual([disk["model"] for disk in slow["storage"]], ["示範固態硬碟"])
+
     def test_settings_are_defaults(self):
         settings = preview.preview_settings()
         self.assertFalse(settings.first_run)
