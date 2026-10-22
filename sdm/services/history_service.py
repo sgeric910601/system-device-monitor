@@ -4,6 +4,7 @@
 - 檔案完全無法解讀時，先把原始位元組複製成新的 history-<epoch>.json.bak
   （同名已存在就加 -1、-2…，絕不覆寫），原檔留到下次存檔才被取代。
 - 無法讀取、無法備份或來自較新版本時，本次執行停用寫入，原檔不動。
+- 檔案超過 20 MB 時不讀取，比照無法解讀的檔案處理（分段複製成備份）。
 - 個別無效的列（非有限值、超出範圍）在載入時捨棄；時間在未來的列保留。
 - 時鐘落後（現在早於最新一筆）時不修剪；修剪若會刪到既有最新一筆前 24 小時內的
   資料（時鐘大幅往前跳），本次執行第一次發生時先另存備份再修剪。
@@ -18,7 +19,8 @@ from sdm.constants import History
 from sdm.core.history import (NewerFormat, Undecodable, chart_points, decode_history,
                               encode_history, last_unplugged, parse_boot_time, trim,
                               valid_sample)
-from sdm.core.jsonfile import create_backup, remove_stale_temporaries, write_bytes_atomic
+from sdm.core.jsonfile import (create_backup, create_backup_copy, remove_stale_temporaries,
+                               write_bytes_atomic)
 from sdm.data.sources import read
 
 LOG = logging.getLogger(__name__)
@@ -39,8 +41,9 @@ class HistoryService:
     """在主執行緒使用；samples 是不可變的 tuple，每次新增都換成新的 tuple。"""
 
     def __init__(self, path=None, clock=time.time, writer=write_bytes_atomic,
-                 backup=create_backup, memory=False, monotonic=time.monotonic):
-        self.memory, self.monotonic = memory, monotonic
+                 backup=create_backup, memory=False, monotonic=time.monotonic,
+                 copy_backup=create_backup_copy):
+        self.memory, self.monotonic, self.copy_backup = memory, monotonic, copy_backup
         if memory:
             self.path = None
         else:
@@ -62,13 +65,19 @@ class HistoryService:
             return
         remove_stale_temporaries(self.path)
         try:
+            size = self.path.stat().st_size
+            if size > History.MAX_FILE_BYTES:
+                self._recover_oversized()
+                return
             data = self.path.read_bytes()
         except FileNotFoundError:
             return
         except OSError as error:
             self._disable("History file unreadable (%s)", type(error).__name__)
             return
-        now = self.clock()
+        self._decode(data, self.clock())
+
+    def _decode(self, data, now):
         try:
             samples, dropped = decode_history(data)
         except NewerFormat:
@@ -81,6 +90,17 @@ class HistoryService:
             LOG.warning("Dropped %d invalid history rows", dropped)
         newest = samples[-1].t if samples else None
         self.samples = self._trim(samples, newest, now, data)
+
+    def _recover_oversized(self):
+        """太大的檔案不讀進記憶體：分段複製成備份後從空白開始；備份失敗就停用寫入。"""
+        try:
+            backup = self.copy_backup(self.path, int(self.clock()), mode=History.FILE_MODE)
+        except OSError as error:
+            self._disable("History file is too large and could not be backed up (%s)",
+                          type(error).__name__)
+            return
+        LOG.warning("History file exceeds %d bytes; copied to %s and starting empty",
+                    History.MAX_FILE_BYTES, backup.name)
 
     def _disable(self, message, *args):
         self.writable = False

@@ -10,7 +10,8 @@ from unittest.mock import patch
 from sdm import paths
 from sdm.constants import History
 from sdm.core.history import HistorySample, encode_history
-from sdm.core.jsonfile import create_backup, write_bytes_atomic, write_exclusive
+from sdm.core.jsonfile import (create_backup, create_backup_copy, write_bytes_atomic,
+                               write_exclusive)
 from sdm.services.history_service import HistoryService, default_path, read_boot_time
 
 NOW = 1_800_000_000.0
@@ -336,6 +337,49 @@ class SaveBackoff(TempData):
         self.assertFalse(service.save())
         self.assertTrue(service.save(force=True))
         self.assertEqual(len(self.attempts), 2)
+
+
+class SizeCap(TempData):
+    """超過上限的檔案不讀進記憶體：先串流複製成備份，再從空白開始。"""
+    def test_limit_is_twenty_megabytes(self):
+        self.assertEqual(History.MAX_FILE_BYTES, 20 * 1024 * 1024)
+
+    def test_oversized_file_is_backed_up_and_ignored(self):
+        content = encode_history((sample(NOW - 60),)) + b" " * 200
+        self.write_file(content)
+        with patch.object(History, "MAX_FILE_BYTES", len(content) - 1):
+            with self.assertLogs(LOGGER, "WARNING"):
+                service = self.service()
+        self.assertEqual(service.samples, ())
+        self.assertTrue(service.writable)
+        (backup,) = self.backups()
+        self.assertEqual((self.path.parent/backup).read_bytes(), content)
+        self.assertEqual(stat.S_IMODE((self.path.parent/backup).stat().st_mode), 0o600)
+        self.assertEqual(self.path.read_bytes(), content)
+
+    def test_file_at_the_limit_is_read(self):
+        content = encode_history((sample(NOW - 60),))
+        self.write_file(content)
+        with patch.object(History, "MAX_FILE_BYTES", len(content)):
+            self.assertEqual(len(self.service().samples), 1)
+
+    def test_backup_failure_disables_writes(self):
+        self.write_file(b"x" * 50)
+
+        def failing_copy(path, epoch, **options):
+            raise PermissionError("read-only")
+        with patch.object(History, "MAX_FILE_BYTES", 10):
+            with self.assertLogs(LOGGER, "WARNING"):
+                service = self.service(copy_backup=failing_copy)
+        self.assertFalse(service.writable)
+
+    def test_streaming_backup_copies_exact_bytes(self):
+        self.write_file(b"0123456789" * 1000)
+        backup = create_backup_copy(self.path, 7, mode=0o600)
+        self.assertEqual(backup.name, "history-7.json.bak")
+        self.assertEqual(backup.read_bytes(), self.path.read_bytes())
+        second = create_backup_copy(self.path, 7, mode=0o600)
+        self.assertEqual(second.name, "history-7-1.json.bak")
 
 
 class InMemory(TempData):

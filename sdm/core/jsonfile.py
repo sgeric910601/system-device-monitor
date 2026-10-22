@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 
@@ -38,6 +39,7 @@ def temporary_pattern(path):
 def write_exclusive(path, data, mode=DEFAULT_MODE):
     """以獨占方式建立新檔並寫入、fsync。
 
+    data 可以是位元組或可讀取的二進位檔案（分段複製，不整個讀進記憶體）。
     檔案已存在時拋出 FileExistsError，絕不覆寫；建立後任何失敗都會關閉描述子、
     移除這個剛建立的檔案並重新拋出。權限為 mode 扣除 umask（預設與一般寫檔相同）。
     """
@@ -50,7 +52,10 @@ def write_exclusive(path, data, mode=DEFAULT_MODE):
         raise
     try:
         with handle:
-            handle.write(data)
+            if hasattr(data, "read"):
+                shutil.copyfileobj(data, handle)
+            else:
+                handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
@@ -94,6 +99,12 @@ def create_backup(path, data, epoch, mode=DEFAULT_MODE):
         _sync_directory(path.parent)
         return backup
     raise FileExistsError("No free backup name for " + path.name)
+
+
+def create_backup_copy(path, epoch, mode=DEFAULT_MODE):
+    """把 path 目前的內容分段複製成新備份檔（命名規則同 create_backup）並回傳路徑。"""
+    with path.open("rb") as source:
+        return create_backup(path, source, epoch, mode)
 
 
 def remove_stale_temporaries(path, max_age=Storage.STALE_TEMPORARY_SECONDS, now=time.time):

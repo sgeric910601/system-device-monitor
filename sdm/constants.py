@@ -62,6 +62,7 @@ class History:
     FORMAT = 1
     DIRECTORY_MODE = 0o700              # 本程式建立的資料夾
     FILE_MODE = 0o600                   # history.json 與其備份只有本人可讀寫
+    MAX_FILE_BYTES = 20 * 1024 * 1024   # 超過就不讀取（一週約 0.5 MB），先備份再從空白開始
     RETENTION_SECONDS = 7 * 24 * 3600
     SAVE_EVERY = 15                     # 每累積幾筆新紀錄寫檔一次
     SAVE_RETRY_SECONDS = (15 * 60, 30 * 60, 60 * 60)   # 寫檔失敗後的重試間隔，之後維持最後一個
