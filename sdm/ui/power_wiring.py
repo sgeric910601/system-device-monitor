@@ -16,6 +16,21 @@ POWER_REFRESH = "power_refresh"     # 收集器的方法名稱：插拔後只重
 
 
 class PowerMixin:
+    refresh_pending = False     # 重新讀取進行中又收到新的要求，完成後要再讀一次
+
+    def request_power_refresh(self):
+        """插拔後的重新讀取；上一次還在進行時不丟掉，記下來等它完成再補送一次。"""
+        if POWER_REFRESH in self.busy:
+            self.refresh_pending = True
+            return
+        self.submit(POWER_REFRESH)
+
+    def power_received(self, kind):
+        """收到耗電快照（慢速收集或重新讀取）之後：補送被擋下的重新讀取，並觀察插拔。"""
+        if kind == POWER_REFRESH and self.refresh_pending:
+            self.refresh_pending = False
+            self.submit(POWER_REFRESH)
+        self.observe_power()
     def on_uevent(self, _client, _action, device):
         """裝置事件一律更新設備頁；筆電模式下電源的插拔另外立即重新讀取耗電。"""
         self.device_event()

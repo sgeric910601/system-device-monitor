@@ -95,7 +95,7 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         self.power_page = None
         self.scrolls = {}
         self.signal_sources = []   # 不放進 timers：結束流程不移除正在處理中的訊號來源
-        self.power_refresh = PowerRefresh(lambda: self.submit(POWER_REFRESH), self.schedule,
+        self.power_refresh = PowerRefresh(self.request_power_refresh, self.schedule,
                                           self.remove_source)
 
     def do_activate(self):
@@ -194,7 +194,7 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         if kind == "slow" and self.last_recorded is None:
             self.record_history()
         if kind in ("slow", POWER_REFRESH):
-            self.observe_power()
+            self.power_received(kind)
         if kind == "system":
             now = time.monotonic()
             gpu = self.data["slow"].get("gpu")

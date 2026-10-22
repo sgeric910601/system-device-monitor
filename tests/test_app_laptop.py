@@ -95,6 +95,29 @@ class RefreshKind(unittest.TestCase):
         self.assertIsInstance(result["power"], LaptopPower)
 
 
+class LostRefresh(unittest.TestCase):
+    def test_refresh_requested_while_one_runs_is_sent_after_it(self):
+        app = monitor()
+        app.busy, app.errors, app.render, submitted = {ui_app.POWER_REFRESH}, {}, lambda: None, []
+        app.submit = submitted.append
+        app.request_power_refresh()
+        app.request_power_refresh()
+        self.assertEqual(submitted, [])
+        future = Future()
+        future.set_result({"power": laptop_service().sample(), "stamp": 1.0})
+        app.received(ui_app.POWER_REFRESH, future)
+        self.assertEqual(submitted, [ui_app.POWER_REFRESH])
+        app.received(ui_app.POWER_REFRESH, future)
+        self.assertEqual(submitted, [ui_app.POWER_REFRESH])
+
+    def test_idle_refresh_is_sent_at_once(self):
+        app = monitor()
+        app.busy, submitted = set(), []
+        app.submit = submitted.append
+        app.request_power_refresh()
+        self.assertEqual(submitted, [ui_app.POWER_REFRESH])
+
+
 class Events(unittest.TestCase):
     def test_power_supply_events_reach_the_refresh_only_in_laptop_mode(self):
         app = monitor()
