@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 import subprocess
-import threading
 import time
 
 import gi
@@ -66,7 +65,6 @@ def cpu_info():
 class Collectors:
     root = Path("/")     # 讀取 /proc 與 /sys 的根目錄；測試時指向假的目錄
     storage_visible = False     # 總覽或磁碟頁顯示中（由介面設定）：lsblk 改為每 30 秒
-    disk_lock = threading.Lock()
 
     def __init__(self):
         self.aliases = load_json(paths.ALIASES)
@@ -194,17 +192,16 @@ class Collectors:
         return found, used
 
     def refresh_disk_meta(self):
-        """慢速收集與磁碟頁都可能呼叫：用鎖避免同時執行兩次 lsblk。"""
-        with self.disk_lock:
-            now = time.monotonic()
-            last = self.last_disk_meta
-            if last is not None and now - last < meta_interval(self.storage_visible):
-                return
-            self.last_disk_meta = now
-            try:
-                self.disk_meta = parse_lsblk(command(lsblk_command(), Collect.LSBLK_TIMEOUT))
-            except (OSError, subprocess.SubprocessError, ValueError, KeyError):
-                self.disk_meta = []
+        """只由慢速收集呼叫（一次只有一個在執行）；詳細取樣只讀取 disk_meta，不執行 lsblk。"""
+        now = time.monotonic()
+        last = self.last_disk_meta
+        if last is not None and now - last < meta_interval(self.storage_visible):
+            return
+        self.last_disk_meta = now
+        try:
+            self.disk_meta = parse_lsblk(command(lsblk_command(), Collect.LSBLK_TIMEOUT))
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+            self.disk_meta = []
 
     def logitech(self):
         return self.logitech_battery.refresh()
