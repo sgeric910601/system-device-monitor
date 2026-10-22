@@ -32,6 +32,19 @@ class Hwmon(unittest.TestCase):
         self.assertEqual(sensors.hwmon_fans(self.root), [
             dict(name="amdgpu fan1", value=1200.0), dict(name="nct6775 CPU Fan", value=900.0)])
 
+    def test_fans_are_listed_in_file_order(self):
+        # 原本依目錄列出的順序（不固定）；改為依檔名排序，畫面上的順序才不會每次跳動
+        hwmon = self.root/"sys/class/hwmon/hwmon4"
+        (hwmon/"fan3_input").write_text("700\n")
+        (hwmon/"fan2_input").write_text("800\n")
+        names = [fan.name for fan in sensors.read_fans(self.root) if fan.name.startswith("nct")]
+        self.assertEqual(names, ["nct6775 CPU Fan", "nct6775 fan2", "nct6775 fan3"])
+
+    def test_unlabelled_sensors_drop_the_input_suffix(self):
+        # 原本沒有標籤檔時顯示「temp1_input」，現在顯示「temp1」
+        labels = [s["label"] for s in sensors.hwmon_temperatures(self.root) if s["chip"] == "acpitz"]
+        self.assertEqual(labels, ["temp1"])
+
     def test_readings_are_grouped_by_hardware(self):
         temperatures = sensors.hwmon_temperatures(self.root)
         gpus = (GpuReading(vendor="nvidia", index=0, name="Example A", temp_c=45.0, fan_pct=30.0,
