@@ -115,6 +115,33 @@ class Detail(unittest.TestCase):
         self.assertEqual(disks["nvme0n1"].volumes[0].fstype, "ext4")
         self.assertEqual(self.smart.refreshed[-1], (("nvme0n1", "sda"), True))
 
+    def test_slow_smart_calls_do_not_distort_disk_rates(self):
+        """SMART 呼叫卡住 5 秒、期間磁碟仍在讀寫：速率要用讀計數器當下的時間計算。"""
+        root, clock = self.root, self.clock
+        class SlowSmart(FakeSmart):
+            def refresh(self, names, attributes=False):
+                if not self.refreshed:
+                    procfs.write_system(root, step=1)
+                    clock[0] += 5
+                return super().refresh(names, attributes)
+        self.collector.smart = SlowSmart()
+        request = request_for({"disk"})
+        self.collector.sample(request)                 # t=100 讀到第一次的計數器
+        self.clock[0] += 2                             # 第二次取樣在 t=107
+        disks = {disk.name: disk for disk in self.collector.sample(request).disks}
+        self.assertAlmostEqual(disks["nvme0n1"].read_rate, 2 * 512 / 7)
+        self.assertAlmostEqual(disks["nvme0n1"].write_rate, 4 * 512 / 7)
+
+    def test_each_counter_uses_the_time_it_was_read(self):
+        stamps = []
+        clock = self.collector.clock
+        def ticking():
+            stamps.append(clock())
+            return stamps[-1]
+        self.collector.clock = ticking
+        self.collector.sample(request_for({"cpu", "network", "disk"}))
+        self.assertGreaterEqual(len(stamps), 4)    # 開始、CPU、App、網路、磁碟各讀一次時鐘
+
     def test_overview_only_refreshes_smart(self):
         snapshot = self.collector.sample(request_for({"overview"}))
         self.assertIsNone(snapshot.disks)

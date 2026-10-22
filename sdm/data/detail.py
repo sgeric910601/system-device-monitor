@@ -2,6 +2,8 @@
 
 頂端列需要的資料（CPU、記憶體、網速、溫度、耗電）仍由 Collectors.system()／slow() 取樣；
 這裡的追蹤器（各核心、程序群組、主要介面、溫度保留值）與它們分開，互不干擾。
+每個累計計數器都用讀取當下的時鐘計算速率；可能卡住的 SMART 呼叫放在最後，
+不會讓前面讀到的計數器時間失準。
 所有路徑都在 root 之下，測試時指向假的 /proc 與 /sys。
 """
 from pathlib import Path
@@ -41,19 +43,21 @@ class DetailCollector:
     def sample(self, request):
         now = self.clock()
         wants_apps = request.apps_cpu or request.apps_memory
-        return DetailSnapshot(
-            stamp=now, cpu=self.cpu_detail(now) if request.cpu else None,
-            thermal=self.thermal_detail(now) if request.thermal else None,
-            apps=self.apps_detail(request, now) if wants_apps else None,
-            memory=self.memory_detail() if request.memory else None,
-            disks=self.disk_detail(request, now) if request.disks or request.smart else None,
-            network=self.network_detail(now) if request.network else None)
+        cpu = self.cpu_detail() if request.cpu else None
+        thermal = self.thermal_detail(now) if request.thermal else None
+        apps = self.apps_detail(request) if wants_apps else None
+        memory = self.memory_detail() if request.memory else None
+        network = self.network_detail() if request.network else None
+        disks = self.disk_detail(request) if request.disks or request.smart else None
+        return DetailSnapshot(stamp=now, cpu=cpu, thermal=thermal, apps=apps, memory=memory,
+                              disks=disks, network=network)
 
-    def cpu_detail(self, now):
+    def cpu_detail(self):
+        stat = read(self.root/"proc/stat")
+        sample = self.cpu_tracker.sample(stat, self.clock())
         directory = self.root/"sys/devices/system/cpu"
         frequencies = (read(path) for path in sorted(directory.glob(FREQUENCY_GLOB)))
-        return CpuDetail(self.cpu_tracker.sample(read(self.root/"proc/stat"), now),
-                         parse_loadavg(read(self.root/"proc/loadavg")),
+        return CpuDetail(sample, parse_loadavg(read(self.root/"proc/loadavg")),
                          average_mhz(frequencies))
 
     def thermal_detail(self, now):
@@ -89,11 +93,11 @@ class DetailCollector:
                 found[disk["name"]] = value
         return found
 
-    def apps_detail(self, request, now):
+    def apps_detail(self, request):
         readings = cgroups.scan(self.root, self.uid, cpu=request.apps_cpu,
                                 memory=request.apps_memory)
         cores = cgroups.cpu_count()
-        return AppsDetail(self.app_tracker.sample(readings, now, cores), cores,
+        return AppsDetail(self.app_tracker.sample(readings, self.clock(), cores), cores,
                           has_cpu=request.apps_cpu, has_memory=request.apps_memory)
 
     def memory_detail(self):
@@ -101,27 +105,39 @@ class DetailCollector:
         pressure = parse_pressure(read(self.root/"proc/pressure/memory"))
         return MemoryDetail(values, pressure, pressure_level(values, pressure))
 
-    def disk_detail(self, request, now):
-        """SMART 依間隔更新；磁碟頁另外回傳每顆磁碟的讀寫、累計、容量與溫度。"""
+    def disk_detail(self, request):
+        """磁碟頁：先讀計數器並算好速率，再更新 SMART（D-Bus 呼叫可能卡住最多 1.8 秒）；
+        只有總覽頁時只更新 SMART。"""
         meta = tuple(self.disk_meta())
-        names = tuple(disk["name"] for disk in meta)
+        rates = self.disk_rates(meta) if request.disks else {}
         smart = {}
         if request.smart and self.smart is not None:
-            smart = self.smart.refresh(names, attributes=request.smart_attributes)
+            smart = self.smart.refresh(tuple(disk["name"] for disk in meta),
+                                       attributes=request.smart_attributes)
         if not request.disks:
             return None
+        temperatures = hwmon_temperatures(self.root)
+        return tuple(self.disk_status(disk, rates[disk["name"]], smart.get(disk["name"]),
+                                      temperatures) for disk in meta)
+
+    def disk_rates(self, meta):
+        """名稱 →（計數器、讀取速率、寫入速率）；速率用讀到計數器當下的時間。"""
         counters = {counter.name: counter for counter in
                     parse_diskstats(read(self.root/"proc/diskstats"), self.root)}
-        temperatures = hwmon_temperatures(self.root)
-        return tuple(self.disk_status(disk, counters.get(disk["name"]), smart.get(disk["name"]),
-                                      temperatures, now) for disk in meta)
+        now = self.clock()
+        rates = {}
+        for disk in meta:
+            name, counter = disk["name"], counters.get(disk["name"])
+            if counter is None:
+                rates[name] = (None, None, None)
+                continue
+            rates[name] = (counter, self.rates.rate("dr:" + name, counter.read_bytes, now),
+                           self.rates.rate("dw:" + name, counter.write_bytes, now))
+        return rates
 
-    def disk_status(self, disk, counter, smart, temperatures, now):
+    def disk_status(self, disk, rates, smart, temperatures):
         name = disk["name"]
-        read_rate = write_rate = None
-        if counter is not None:
-            read_rate = self.rates.rate("dr:" + name, counter.read_bytes, now)
-            write_rate = self.rates.rate("dw:" + name, counter.write_bytes, now)
+        counter, read_rate, write_rate = rates
         volumes = tuple(VolumeStatus(v["mount"], v.get("fstype", ""), v["total"], v["used"],
                                      v["available"]) for v in disk["volumes"])
         return DiskStatus(
@@ -132,10 +148,12 @@ class DetailCollector:
             write_total=counter.write_bytes if counter else None,
             temperature=self.disk_temperature(temperatures, name, smart), smart=smart)
 
-    def network_detail(self, now):
+    def network_detail(self):
         primary_name = primary_interface(read(self.root/"proc/net/route"))
         primary, others = None, []
-        for counter in parse_net_dev(read(self.root/"proc/net/dev")):
+        counters = parse_net_dev(read(self.root/"proc/net/dev"))
+        now = self.clock()
+        for counter in counters:
             state = interface_state(self.root, counter.name)
             status = InterfaceStatus(
                 counter.name, state.kind, state.physical,
