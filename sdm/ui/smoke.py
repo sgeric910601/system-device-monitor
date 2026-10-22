@@ -4,6 +4,7 @@
 不寫任何檔案（結果只印到標準輸出）。
 """
 import json
+import time
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -18,6 +19,16 @@ SETTINGS_SECTIONS = ("general", "tray", "monitors", "display", "about")
 STEPS = tuple(("page", name) for name in SMOKE_PAGES) + tuple(
     ("settings", name) for name in SETTINGS_SECTIONS)
 LOWER_CAPTURES = ("power", "cpu", "memory", "disk", "general", "tray", "display")
+
+
+def settle():
+    """只在 --capture 時使用：處理事件一小段時間，讓捲動後的畫面確實重畫
+    （電力流向動畫會讓重畫排在下一格，只處理一次事件可能截到舊畫面）。"""
+    deadline = time.monotonic() + Smoke.SETTLE_SECONDS
+    while time.monotonic() < deadline:
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        time.sleep(Smoke.SETTLE_STEP_SECONDS)
 
 
 class SmokeMixin:
@@ -69,8 +80,7 @@ class SmokeMixin:
         toplevel.set_focus(None)
         adjustment = scroll.get_vadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() if bottom else 0)
-        while Gtk.events_pending():
-            Gtk.main_iteration_do(False)
+        settle()
         window = toplevel.get_window()
         if window:
             width, height = window.get_width(), window.get_height()

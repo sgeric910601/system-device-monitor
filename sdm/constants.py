@@ -264,6 +264,8 @@ class Smoke:
     CAPTURE_DELAY_MS = 700      # 切換頁面後等待繪製再確認與截圖
     PAGE_DELAY_MS = 700         # 截圖後再切到下一頁
     FINISH_DELAY_MS = 800       # 最後一頁之後寫出結果
+    SETTLE_SECONDS = 0.3        # --capture：捲動後等畫面重畫完再截圖
+    SETTLE_STEP_SECONDS = 0.01
 
 
 class Preview:
