@@ -222,17 +222,25 @@ def clamp_to_boot(unplugged, boot_time):
     return boot_time
 
 
-def last_unplugged(samples, now, boot_time):
-    """最近一次從接電變成用電池的時間；仍接電或紀錄太舊時回傳 None。"""
-    if not samples:
-        return None
-    last = samples[-1]
-    if last.plugged or now - last.t >= History.UNPLUGGED_MAX_AGE_SECONDS:
-        return None
+def still_unplugged(samples, now):
+    """最後一筆是用電池，而且不超過 10 分鐘前。"""
+    return bool(samples) and not samples[-1].plugged and \
+        now - samples[-1].t < History.UNPLUGGED_MAX_AGE_SECONDS
+
+
+def unplugged_since(samples, boot_time):
+    """最後一次接電之後第一筆用電池的時間（不看紀錄新舊）；從沒接電或仍接電時回傳 None。"""
     plugged = [index for index, item in enumerate(samples) if item.plugged]
-    if not plugged:
+    if not plugged or plugged[-1] + 1 >= len(samples):
         return None
     return clamp_to_boot(samples[plugged[-1] + 1].t, boot_time)
+
+
+def last_unplugged(samples, now, boot_time):
+    """最近一次從接電變成用電池的時間；仍接電或紀錄太舊時回傳 None。"""
+    if not still_unplugged(samples, now):
+        return None
+    return unplugged_since(samples, boot_time)
 
 
 def parse_boot_time(stat_text):

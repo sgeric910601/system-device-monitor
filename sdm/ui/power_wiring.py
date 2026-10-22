@@ -7,7 +7,8 @@ import gi
 gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import AyatanaAppIndicator3, GLib
 
-from sdm.core.recap import DailyRecap, make_recap
+from sdm.core.history import still_unplugged, unplugged_since
+from sdm.core.recap import DailyRecap, day_bounds, make_recap
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import history_sample, newest
 from sdm.ui.power_tray import DESKTOP_ICON, tray_power
@@ -17,6 +18,8 @@ POWER_REFRESH = "power_refresh"     # 收集器的方法名稱：插拔後只重
 
 class PowerMixin:
     refresh_pending = False     # 重新讀取進行中又收到新的要求，完成後要再讀一次
+    recap_cache = None          # （歷史筆數、最後一筆時間、日期）→ 今日回顧
+    unplugged_cache = None      # （歷史筆數、最後一筆時間、開機時間）→ 拔電時間
 
     def request_power_refresh(self):
         """插拔後的重新讀取；上一次還在進行時不丟掉，記下來等它完成再補送一次。"""
@@ -74,12 +77,29 @@ class PowerMixin:
         """電源頁歷史圖的資料來源。"""
         return self.history.points(range_s, now) if self.history is not None else ()
 
+    @staticmethod
+    def history_key(samples, *extra):
+        return (len(samples), samples[-1].t if samples else None) + extra
+
     def today_recap(self, now):
-        return make_recap(self.history.samples, now) if self.history else DailyRecap()
+        """歷史或日期沒變時沿用上次的結果，不必每次更新畫面都重新排序一週的紀錄。"""
+        if not self.history:
+            return DailyRecap()
+        samples = self.history.samples
+        key = self.history_key(samples, day_bounds(now)[0])
+        if self.recap_cache is None or self.recap_cache[0] != key:
+            self.recap_cache = (key, make_recap(samples, now))
+        return self.recap_cache[1]
 
     def history_unplugged(self, now):
         """筆電這次啟動前就拔電時，由歷史紀錄推算拔電時間（關機過則從開機算起）。"""
-        return self.history.last_unplugged(self.boot_time, now) if self.history else None
+        if not self.history or not still_unplugged(self.history.samples, now):
+            return None
+        samples = self.history.samples
+        key = self.history_key(samples, self.boot_time)
+        if self.unplugged_cache is None or self.unplugged_cache[0] != key:
+            self.unplugged_cache = (key, unplugged_since(samples, self.boot_time))
+        return self.unplugged_cache[1]
 
     def render_power_tray(self, power):
         """桌機顯示整機瓦數（選單加上 3 分鐘平均）；筆電顯示電量並換成電池圖示。"""

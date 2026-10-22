@@ -12,10 +12,13 @@ from sdm.constants import Preview
 from sdm.core.settings import Preferences
 from sdm.data.power_supply import BatteryReading
 from sdm.data.ups import UpsReading
+from sdm.core.history import HistorySample
 from sdm.services import preview
+from sdm.services.history_service import HistoryService
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import PowerService
 from sdm.ui import app as ui_app
+from sdm.ui import power_wiring
 
 
 def laptop_service(online=False):
@@ -93,6 +96,49 @@ class RefreshKind(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
         result = submitted[0]()
         self.assertIsInstance(result["power"], LaptopPower)
+
+
+class Caching(unittest.TestCase):
+    """今日回顧與拔電時間只在歷史或日期改變時重算，不在每次更新畫面時重新排序。"""
+
+    def setUp(self):
+        self.now = 1_800_000_000.0
+        rows = [HistorySample(self.now - 600 + 60 * index, 80 - index, 6.0, index < 3, False,
+                              None, None) for index in range(10)]
+        self.app = monitor()
+        self.app.boot_time = None
+        self.app.history = HistoryService.preloaded(rows, clock=lambda: self.now)
+
+    def counting(self, name):
+        original = getattr(power_wiring, name)
+        calls = []
+
+        def wrapper(*args):
+            calls.append(args)
+            return original(*args)
+
+        guard = patch.object(power_wiring, name, side_effect=wrapper)
+        guard.start()
+        self.addCleanup(guard.stop)
+        return calls
+
+    def test_recap_is_cached_until_history_or_day_changes(self):
+        calls = self.counting("make_recap")
+        first = self.app.today_recap(self.now)
+        self.assertIs(self.app.today_recap(self.now + 5), first)
+        self.assertEqual(len(calls), 1)
+        self.app.history.add(HistorySample(self.now + 10, 70, 6.0, False, False, None, None))
+        self.app.today_recap(self.now + 10)
+        self.app.today_recap(self.now + 86400)
+        self.assertEqual(len(calls), 3)
+
+    def test_unplug_time_is_cached_but_still_expires(self):
+        calls = self.counting("unplugged_since")
+        first = self.app.history_unplugged(self.now)
+        self.assertEqual(first, self.now - 600 + 180)
+        self.assertEqual(self.app.history_unplugged(self.now + 5), first)
+        self.assertEqual(len(calls), 1)
+        self.assertIsNone(self.app.history_unplugged(self.now + 3600))   # 紀錄太舊
 
 
 class LostRefresh(unittest.TestCase):
