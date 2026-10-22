@@ -34,7 +34,7 @@ class FakeTimer:
             callback()
 
 
-class Store(unittest.TestCase):
+class StoreBase(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -52,6 +52,8 @@ class Store(unittest.TestCase):
         store.subscribe(lambda changed, current: self.events.append(set(changed)))
         return store
 
+
+class Store(StoreBase):
     def test_preference_is_validated_applied_and_saved_after_the_delay(self):
         store = self.store()
         self.assertEqual(store.update(refresh_interval=5), frozenset({"refresh_interval"}))
@@ -155,6 +157,68 @@ class Store(unittest.TestCase):
         self.assertEqual(self.timer.pending, {})
         self.assertEqual(json.loads(self.prefs_path.read_text())["tray_mode"], "merged")
         store.flush()       # 沒有待寫入的變更時不做任何事
+
+
+class Retry(StoreBase):
+    """寫檔失敗：三個目標各自寫入，失敗的鍵留著重試（15 秒、60 秒），之後這次執行放棄並只警告一次。"""
+
+    def delays(self):
+        return [delay for delay, _ in self.timer.pending.values()]
+
+    def test_targets_are_written_independently(self):
+        store = self.store()
+        store.update(cpu=False, refresh_interval=5, autostart=True)
+        with patch.object(settings_store, "save_legacy", side_effect=OSError("full")):
+            with self.assertLogs("sdm.services.settings_store", "WARNING"):
+                self.timer.fire()
+        self.assertEqual(json.loads(self.prefs_path.read_text())["refresh_interval"], 5)
+        self.assertEqual(self.autostart, [True])
+        self.assertEqual(store.dirty, frozenset({"cpu"}))
+        self.assertEqual(store.problem, SAVE_FAILED)
+        self.assertEqual(self.delays(), [15000])
+        self.timer.fire()                               # 重試成功
+        self.assertFalse(json.loads(self.legacy_path.read_text())["cpu"])
+        self.assertEqual((store.dirty, store.problem, self.timer.pending), (frozenset(), None, {}))
+
+    def test_backs_off_then_gives_up_with_one_warning(self):
+        store = self.store()
+        store.update(power_saving=True)
+        with patch.object(settings_store, "save_preferences", side_effect=OSError("full")):
+            with self.assertLogs("sdm.services.settings_store", "WARNING") as logs:
+                self.timer.fire()
+                self.assertEqual(self.delays(), [15000])
+                self.timer.fire()
+                self.assertEqual(self.delays(), [60000])
+                self.timer.fire()
+        self.assertEqual(self.timer.pending, {})
+        self.assertEqual(sum("Giving up" in line for line in logs.output), 1)
+        self.assertTrue(store.preferences.power_saving)
+        self.assertIn("power_saving", store.dirty)
+        self.assertEqual(store.problem, SAVE_FAILED)
+        store.update(refresh_interval=10)               # 已放棄：仍套用但不再排寫檔
+        self.assertEqual(self.timer.pending, {})
+        self.assertEqual(store.preferences.refresh_interval, 10)
+
+    def test_unexpected_errors_never_escape_the_timer(self):
+        store = self.store()
+        store.update(tray_mode="merged")
+        with patch.object(settings_store, "save_preferences", side_effect=RuntimeError("bug")):
+            with self.assertLogs("sdm.services.settings_store", "WARNING") as logs:
+                self.timer.fire()
+        self.assertTrue(any("RuntimeError" in line for line in logs.output))
+        self.assertEqual(store.problem, SAVE_FAILED)
+        self.assertIn("tray_mode", store.dirty)
+        self.assertEqual(self.delays(), [15000])
+
+    def test_flush_retries_at_once_but_not_after_giving_up(self):
+        store = self.store()
+        store.update(cpu=False)
+        with patch.object(settings_store, "save_legacy", side_effect=OSError("full")):
+            with self.assertLogs("sdm.services.settings_store", "WARNING"):
+                self.timer.fire()
+        store.flush()
+        self.assertFalse(json.loads(self.legacy_path.read_text())["cpu"])
+        self.assertEqual(self.timer.pending, {})
 
 
 if __name__ == "__main__":

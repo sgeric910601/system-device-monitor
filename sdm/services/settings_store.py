@@ -4,7 +4,9 @@
   其他設定寫入 preferences.json；登入自動啟動寫 autostart 桌面檔。
 - 每次變更都立即套用並通知訂閱者（不需重新啟動）；連續調整在最後一次之後 500 毫秒才寫一次檔。
 - preferences.json 唯讀（較新版本建立或無法安全備份）時拒絕變更新設定，舊版項目仍可變更。
-- 寫檔失敗時保留這次執行的選擇，problem 說明原因；示範模式（persist=False）完全不寫檔。
+- 三個檔案各自寫入，互不影響。寫檔失敗（含意外的例外）時保留這次執行的選擇，失敗的項目
+  留著在 15 秒、60 秒後重試，再失敗就在這次執行放棄並只警告一次；problem 說明原因。
+  任何例外都不會離開計時器回呼。示範模式（persist=False）完全不寫檔。
 計時器由外部提供：schedule(毫秒, 回呼) 回傳來源代號、cancel(代號) 取消。
 """
 import logging
@@ -38,6 +40,7 @@ class SettingsStore:
         self.persist, self.write_autostart = persist, write_autostart
         self.problem = READ_ONLY if preferences.read_only else None
         self.dirty, self.timer, self.listeners = frozenset(), None, []
+        self.failures, self.gave_up = 0, False
 
     @property
     def read_only(self):
@@ -78,49 +81,86 @@ class SettingsStore:
         self.notify(changed)
         return changed
 
-    def restart_timer(self):
+    def restart_timer(self, delay_ms=Storage.SAVE_DELAY_MS):
         if not self.persist:
             self.dirty = frozenset()
             return
+        if self.gave_up:
+            return
         if self.timer is not None:
             self.cancel(self.timer)
-        self.timer = self.schedule(Storage.SAVE_DELAY_MS, self.timer_fired)
+        self.timer = self.schedule(delay_ms, self.timer_fired)
 
     def timer_fired(self):
         self.timer = None
-        self.save()
+        try:
+            self.save()
+        except Exception as error:      # 最後一道防線：例外不離開 GLib 回呼
+            LOG.warning("Unexpected error while saving settings: %s", type(error).__name__)
         return False
 
     def flush(self):
-        """結束前立即寫入還沒寫的變更。"""
+        """結束前立即寫入還沒寫的變更（這次執行已放棄寫檔時不再嘗試）。"""
         if self.timer is not None:
             self.cancel(self.timer)
             self.timer = None
-        if self.dirty:
+        if self.dirty and self.persist and not self.gave_up:
             self.save()
+
+    def targets(self, dirty):
+        """（鍵、寫入函式）：舊版設定、登入自啟、新版設定各自獨立。"""
+        legacy = dirty & set(LEGACY_KEYS)
+        return ((legacy, lambda: save_legacy(self.legacy_path, self.legacy)),
+                (dirty & {AUTOSTART}, lambda: self.write_autostart(self.autostart)),
+                (dirty - legacy - {AUTOSTART},
+                 lambda: save_preferences(self.preferences_path, self.preferences)))
 
     def save(self):
         dirty, self.dirty = self.dirty, frozenset()
-        problem = None
+        failed = frozenset()
+        for keys, write in self.targets(dirty):
+            if keys and not self.write(write):
+                failed |= keys
+        self.finish(failed)
+
+    def write(self, action):
+        """寫入成功或設定唯讀（之後也寫不了，原因由 problem 說明）時回傳 True。"""
         try:
-            if dirty & set(LEGACY_KEYS):
-                save_legacy(self.legacy_path, self.legacy)
-            if AUTOSTART in dirty:
-                self.write_autostart(self.autostart)
-            if dirty - set(LEGACY_KEYS) - {AUTOSTART}:
-                save_preferences(self.preferences_path, self.preferences)
+            action()
         except PreferencesReadOnlyError:
-            self.preferences = type(self.preferences)(self.preferences.values,
-                                                      self.preferences.extra,
-                                                      self.preferences.schema, read_only=True)
-            problem = READ_ONLY
+            self.mark_read_only()
         except OSError as error:
             LOG.warning("Cannot save settings: %s", type(error).__name__)
+            return False
+        except Exception as error:
+            LOG.warning("Unexpected error while saving settings: %s", type(error).__name__)
+            return False
+        return True
+
+    def mark_read_only(self):
+        prefs = self.preferences
+        self.preferences = type(prefs)(prefs.values, prefs.extra, prefs.schema, read_only=True)
+
+    def finish(self, failed):
+        if failed:
+            self.dirty = self.dirty | failed
+            self.failures += 1
+            self.schedule_retry()
             problem = SAVE_FAILED
-        problem = problem or (READ_ONLY if self.read_only else None)
+        else:
+            self.failures = 0
+            problem = READ_ONLY if self.read_only else None
         if problem != self.problem:
             self.problem = problem
             self.notify(frozenset({STATUS}))
+
+    def schedule_retry(self):
+        delays = Storage.SAVE_RETRY_SECONDS
+        if self.failures > len(delays):
+            self.gave_up = True
+            LOG.warning("Giving up saving settings for this session")
+            return
+        self.restart_timer(delays[self.failures - 1] * Storage.MILLISECONDS)
 
     def notify(self, changed):
         for listener in tuple(self.listeners):
