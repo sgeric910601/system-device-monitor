@@ -7,14 +7,17 @@
 - 桌機：市電時為插頭；不斷電系統改用電池時改成橘色的不斷電系統圖示並畫出電量，電量低為紅色。
 - IconWriter 把 SVG 寫到執行期目錄（資料夾 0700、檔案 0600），內容改變才寫，並在
   power-a.svg 與 power-b.svg 之間輪替：GNOME 依路徑快取圖示，同一個路徑不會重新載入。
+  寫不出來時只在內容改變或 60 秒後再試，不會每次更新都重試。
 """
 from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
 import stat
+import time
 from typing import Optional
 
+from sdm.constants import Ui
 from sdm.core.battery import CHARGING, DISCHARGING
 from sdm.core.jsonfile import write_bytes_atomic
 from sdm.ui.theme import CRITICAL, GOOD, WARNING
@@ -163,14 +166,17 @@ def render(glyph):
 
 
 class IconWriter:
-    def __init__(self, directory, name="power"):
-        self.directory, self.name = Path(directory), name
+    def __init__(self, directory, name="power", clock=time.monotonic):
+        self.directory, self.name, self.clock = Path(directory), name, clock
         self.content, self.path, self.warned = None, None, False
+        self.failed, self.retry_at = None, None     # 上次寫不出來的內容與再試的時間
 
     def publish(self, content):
         """寫好的檔案路徑（內容沒變時沿用上一個）；無法寫入時回傳 None，之後再試。"""
         if content == self.content and self.path is not None:
             return self.path
+        if content == self.failed and self.clock() < self.retry_at:
+            return None
         letter = "b" if self.path is not None and self.path.stem.endswith("-a") else "a"
         target = self.directory/f"{self.name}-{letter}.svg"
         try:
@@ -180,8 +186,9 @@ class IconWriter:
             if not self.warned:
                 LOG.warning("Cannot write the tray icon: %s", type(error).__name__)
                 self.warned = True
+            self.failed, self.retry_at = content, self.clock() + Ui.ICON_RETRY_SECONDS
             return None
-        self.content, self.path, self.warned = content, target, False
+        self.content, self.path, self.warned, self.failed = content, target, False, None
         return target
 
     def prepare(self):

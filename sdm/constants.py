@@ -255,6 +255,7 @@ class Ui:
     SETTINGS_HEIGHT = 620
     NARROW_WIDTH = 640               # 視窗比這窄時側欄收起，改用標題列的頁面選單
     SIDEBAR_WIDTH = 168
+    ICON_RETRY_SECONDS = 60          # 頂端列圖示寫不出來時，同樣的內容隔這麼久才再試
     DEVICE_POWER_WIDTH = 165
 
 

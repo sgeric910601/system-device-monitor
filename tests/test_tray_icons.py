@@ -8,8 +8,10 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 from xml.etree import ElementTree
 
+from sdm.constants import Ui
 from sdm.core.battery import (CHARGING, DISCHARGING, FULL, LIMIT_REACHED, PLUGGED_IDLE,
                               BatterySnapshot)
 from sdm.core.estimates import Estimates
@@ -138,13 +140,40 @@ class Writer(unittest.TestCase):
         self.assertEqual(list(target.iterdir()), [])
 
     def test_write_failure_returns_none_and_retries_later(self):
+        now = [100.0]
+        writer = IconWriter(self.directory, clock=lambda: now[0])
         self.directory.parent.mkdir(parents=True)
         self.directory.parent.chmod(0o500)
         self.addCleanup(self.directory.parent.chmod, 0o700)
         with self.assertLogs("sdm.ui.tray_icons", "WARNING"):
-            self.assertIsNone(self.writer.publish("<svg/>"))
+            self.assertIsNone(writer.publish("<svg/>"))
         self.directory.parent.chmod(0o700)
-        self.assertEqual(self.writer.publish("<svg/>").name, "power-a.svg")
+        self.assertIsNone(writer.publish("<svg/>"))         # 60 秒內同樣的內容不再試
+        now[0] += Ui.ICON_RETRY_SECONDS
+        self.assertEqual(writer.publish("<svg/>").name, "power-a.svg")
+
+    def test_failure_is_not_retried_on_every_render(self):
+        now = [100.0]
+        writer = IconWriter(self.directory, clock=lambda: now[0])
+        attempts = []
+
+        def broken():
+            attempts.append(True)
+            raise OSError("read-only")
+        with patch.object(writer, "prepare", side_effect=broken):
+            with self.assertLogs("sdm.ui.tray_icons", "WARNING") as logs:
+                for _ in range(5):
+                    self.assertIsNone(writer.publish("<svg>1</svg>"))
+                self.assertEqual(len(attempts), 1)
+                self.assertIsNone(writer.publish("<svg>2</svg>"))   # 內容改變：再試一次
+                self.assertEqual(len(attempts), 2)
+                now[0] += Ui.ICON_RETRY_SECONDS - 1
+                writer.publish("<svg>2</svg>")
+                self.assertEqual(len(attempts), 2)
+                now[0] += 1
+                writer.publish("<svg>2</svg>")
+                self.assertEqual(len(attempts), 3)
+        self.assertEqual(len(logs.output), 1)
 
 
 if __name__ == "__main__":
