@@ -19,6 +19,15 @@ class Collect:
     NVIDIA_SMI = "/usr/bin/nvidia-smi"
 
 
+class Schedule:
+    """更新頻率與省電模式（設定 → 一般）：各取樣層由此算出間隔。"""
+    INTERVALS = (1, 2, 5, 10)   # 可選的更新頻率（秒）
+    DEFAULT_INTERVAL = 2
+    SAVING_MIN_INTERVAL = 2     # 省電模式生效時至少每 2 秒
+    NVIDIA_MIN_MS = 2000        # nvidia-smi -lms 的最短間隔（毫秒）
+    MILLISECONDS = 1000
+
+
 class Ups:
     """apcaccess 數值的合理範圍；超出範圍視為讀不到。"""
     LOAD_MAX_PCT = 150          # 負載百分比上限（過載時可能超過 100）
