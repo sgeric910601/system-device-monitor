@@ -14,7 +14,9 @@ from sdm.constants import Flow
 from sdm.core.recap import DailyRecap
 from sdm.services.battery_service import LaptopPower
 from sdm.ui.charts import HistoryChart
+from sdm.ui.app_names import AppNames
 from sdm.ui.pages.laptop_power import DetailsView, LaptopPowerView
+from sdm.ui.pages.power_extras import RankingCard
 from sdm.ui.power_flow import PowerFlow
 from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, detail_rows,
                                flow_model, header_text)
@@ -49,7 +51,7 @@ def ellipsized(text, css=None):
 class PowerPage(Gtk.Box):
     def __init__(self, points_for, clock=time.time, recap_for=lambda now: DailyRecap(),
                  unplugged_for=lambda now: None, hidden_fields=lambda: (),
-                 hidden_flow=lambda: ()):
+                 hidden_flow=lambda: (), names=None):
         """points_for(range_s, now) 回傳歷史圖表點；recap_for(now) 今日回顧與
         unplugged_for(now) 由歷史推算的拔電時間只在筆電模式使用；
         hidden_fields()、hidden_flow() 為使用者隱藏的詳細資訊欄位與電力流向細項。"""
@@ -68,6 +70,8 @@ class PowerPage(Gtk.Box):
         # 兩種版面的顯示與隱藏由這裡控制：之後視窗的 show_all() 不會把隱藏的版面又顯示出來
         self.desktop.show_all()
         self.desktop.set_no_show_all(True)
+        self.ranking = RankingCard(names or AppNames())
+        self.pack_end(self.ranking.container, False, False, 0)
         self.connect("map", self.on_map)
 
     def build_header(self):
@@ -121,6 +125,15 @@ class PowerPage(Gtk.Box):
             self.laptop.set_visible(laptop)
             self.desktop.set_visible(not laptop)
 
+    def set_detail(self, snapshot):
+        """頁面顯示時的詳細取樣：只用各 App 的 CPU（耗電排行）。"""
+        apps = snapshot.apps
+        if apps is None or not apps.has_cpu:
+            return
+        self.ranking.set_apps(apps)
+        if self.get_mapped():
+            self.ranking.apply()
+
     def settings_changed(self):
         """隱藏的欄位或細項改變：顯示中立即重畫，否則等下次顯示。"""
         self.stale = True
@@ -134,6 +147,7 @@ class PowerPage(Gtk.Box):
     def on_map(self, *_):
         if self.stale:
             self.apply()
+        self.ranking.apply()
         self.refresh_chart()
 
     def apply(self):

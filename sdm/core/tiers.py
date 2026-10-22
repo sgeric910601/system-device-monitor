@@ -1,5 +1,6 @@
 """取樣分層：頂端列需要的資料一直取樣；各頁的詳細資料只在頁面顯示時才取樣。
 
+- 電源：各 App 的 CPU（耗電排行）。
 - 總覽：磁碟 SMART 屬性（補上 SATA 等沒有 hwmon 的磁碟溫度）。
 - CPU／GPU：各核心、平均負載、時脈、溫度分組與風扇、各 App 的 CPU。
 - 記憶體：組成與壓力、各 App 的記憶體。
@@ -10,8 +11,8 @@
 from dataclasses import astuple, dataclass
 from functools import reduce
 
-PAGE_OVERVIEW, PAGE_CPU, PAGE_MEMORY, PAGE_DISK, PAGE_NETWORK = (
-    "overview", "cpu", "memory", "disk", "network")
+PAGE_POWER, PAGE_OVERVIEW, PAGE_CPU, PAGE_MEMORY, PAGE_DISK, PAGE_NETWORK = (
+    "power", "overview", "cpu", "memory", "disk", "network")
 STORAGE_PAGES = (PAGE_OVERVIEW, PAGE_DISK)
 
 
@@ -32,6 +33,7 @@ class DetailRequest:
 
 
 PAGE_REQUESTS = {
+    PAGE_POWER: DetailRequest(apps_cpu=True),
     PAGE_OVERVIEW: DetailRequest(smart=True),
     PAGE_CPU: DetailRequest(cpu=True, thermal=True, apps_cpu=True),
     PAGE_MEMORY: DetailRequest(memory=True, apps_memory=True),

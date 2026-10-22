@@ -138,6 +138,8 @@ class MonitorMixin:
         self.errors.pop(DETAIL, None)
         for page in self.monitor_pages.values():
             page.set_detail(snapshot)
+        if self.power_page is not None:
+            self.power_page.set_detail(snapshot)    # 耗電排行
         return False
 
     def render_monitor_pages(self, fast, slow):

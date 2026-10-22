@@ -15,6 +15,7 @@ class Requests(unittest.TestCase):
                          DetailRequest(disks=True, smart=True, smart_attributes=True))
         self.assertEqual(tiers.request_for({"network"}), DetailRequest(network=True))
         self.assertEqual(tiers.request_for({"overview"}), DetailRequest(smart=True))
+        self.assertEqual(tiers.request_for({"power"}), DetailRequest(apps_cpu=True))
 
     def test_pages_are_combined(self):
         request = tiers.request_for({"overview", "memory"})
@@ -22,7 +23,7 @@ class Requests(unittest.TestCase):
 
     def test_nothing_visible_means_no_detail_sampling(self):
         self.assertIsNone(tiers.request_for(set()))
-        self.assertIsNone(tiers.request_for({"power", "devices", "settings"}))
+        self.assertIsNone(tiers.request_for({"devices"}))
 
     def test_storage_visibility_controls_the_lsblk_cadence(self):
         self.assertTrue(tiers.storage_visible({"overview"}))
