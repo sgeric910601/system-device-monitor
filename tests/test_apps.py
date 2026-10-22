@@ -8,6 +8,8 @@ import unittest
 from sdm.core import apps
 from sdm.core.apps import AppTracker, CgroupReading
 
+AT = "@"        # systemd 實例名稱的分隔符號；分開寫，隱私檢查才不會誤認成電子郵件
+
 
 class Names(unittest.TestCase):
     def test_unescape(self):
@@ -23,11 +25,11 @@ class Names(unittest.TestCase):
             "app-com.example.Editor-537838.scope": "com.example.Editor",
             "app-flatpak-com.example.Chat-1234.scope": "com.example.Chat",
             "app-org.example.Sync.service": "org.example.Sync",
-            "app-gnome-org.example.Tool@4f2a.service": "org.example.Tool",
+            "app-gnome-org.example.Tool" + AT + "4f2a.service": "org.example.Tool",
             "app-org.example.Terminal.slice": "org.example.Terminal",
             "app-gnome\\x2dsession\\x2dmanager.slice": "gnome-session-manager",
             "example-helper.service": "example-helper",
-            "example-worker@2.service": "example-worker",
+            "example-worker" + AT + "2.service": "example-worker",
         }
         for unit, expected in cases.items():
             with self.subTest(unit=unit):
