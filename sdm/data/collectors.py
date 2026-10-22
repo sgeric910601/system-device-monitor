@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
+import threading
 import time
 
 import gi
@@ -14,14 +15,18 @@ from sdm.core.devices import battery, normalize_usb, STATES
 from sdm.core.fmt import number
 from sdm.core.jsonfile import load_json
 from sdm.core.power_breakdown import SAMPLING
+from sdm.data.detail import DetailCollector
 from sdm.data.gpu import NvidiaStream, primary_gpu, read_amd_gpus
 from sdm.data.logitech_battery import SolaarBattery, apply_battery
 from sdm.data.machine import read_model
 from sdm.data.network import interface_state, parse_net_dev
+from sdm.data.sensors import (cpu_temperature, device_temperatures, hwmon_fans,
+                              hwmon_temperatures, storage_temperature)
 from sdm.data.power_supply import read_adapters, read_batteries
 from sdm.data.sources import command, read
-from sdm.data.storage import parse_diskstats, parse_lsblk
+from sdm.data.storage import lsblk_command, meta_interval, parse_diskstats, parse_lsblk
 from sdm.data.ups import read_ups
+from sdm.data.udisks import SmartSource, bus_caller
 from sdm.data.upower import UpowerSource, bus_getter
 from sdm.services.power_service import PowerService
 
@@ -59,56 +64,10 @@ def cpu_info():
     return dict(name=names[0] if names else "CPU", cores=len(cores) or None,
                 threads=threads or os.cpu_count())
 
-def cpu_temperature(temperatures):
-    for chip, prefix in (("k10temp", "Tctl"), ("k10temp", "Tdie"),
-                         ("coretemp", "Package id")):
-        found = [s for s in temperatures if s["chip"] == chip and s["label"].startswith(prefix)]
-        if found:
-            chosen = max(found, key=lambda s: s["value"])
-            return chosen["value"], chosen["label"]
-    return None, "CPU 溫度感測器無法取得"
-
-def device_temperatures(temperatures, device_path):
-    """依 sysfs 祖先路徑配對，絕不依清單順序或猜測的磁碟名稱。"""
-    target = Path(device_path).resolve()
-    matches = []
-    for sensor in temperatures:
-        if not sensor.get("device"):
-            continue
-        source = Path(sensor["device"])
-        if source == target or source in target.parents or target in source.parents:
-            matches.append(sensor)
-    return matches
-
-def storage_temperature(sensors):
-    composite = [s for s in sensors if s["label"].lower() == "composite"]
-    return max((s["value"] for s in (composite or sensors)), default=None)
-
-def hwmon_temperatures():
-    temperatures = []
-    for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
-        chip = read(hw / "name")
-        for path in sorted(hw.glob("temp*_input")):
-            value = number(read(path))
-            if value is not None:
-                label = read(path.with_name(path.name.replace("_input", "_label")), path.stem)
-                temperatures.append(dict(chip=chip, label=label, value=value / 1000,
-                                         device=str((hw/"device").resolve())))
-    return temperatures
-
-def hwmon_fans():
-    fans = []
-    for hw in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
-        for path in hw.glob("fan*_input"):
-            value = number(read(path))
-            if value is not None:
-                fans.append(dict(name=read(hw/"name") + " " + read(
-                    path.with_name(path.name.replace("_input", "_label")), path.stem),
-                    value=value))
-    return fans
-
 class Collectors:
     root = Path("/")     # 讀取 /proc 與 /sys 的根目錄；測試時指向假的目錄
+    storage_visible = False     # 總覽或磁碟頁顯示中（由介面設定）：lsblk 改為每 30 秒
+    disk_lock = threading.Lock()
 
     def __init__(self):
         self.aliases = load_json(paths.ALIASES)
@@ -125,6 +84,16 @@ class Collectors:
         self.last_disk_meta = 0
         self.nvidia = NvidiaStream()  # 由 App 在啟動時 start()、結束時 stop()
         self.power = self.make_power_service()
+        self.smart = SmartSource(bus_getter(self.bus), bus_caller(self.bus))
+        self.details = DetailCollector(root=self.root, smart=self.smart,
+                                       disk_meta=lambda: self.disk_meta, gpus=self.all_gpus)
+
+    def all_gpus(self):
+        return tuple(self.nvidia.latest()) + tuple(read_amd_gpus())
+
+    def detail(self, request):
+        """頁面顯示時才排程的詳細取樣（見 sdm.core.tiers）。"""
+        return self.details.sample(request)
 
     def system(self):
         now = time.monotonic()
@@ -200,13 +169,16 @@ class Collectors:
                     network_temperatures=network_temperatures, stamp=time.time())
 
     def storage_temperatures(self, temperatures):
-        """每顆磁碟加上依硬體路徑配對的溫度；同時回傳已配對感測器的 id。"""
+        """每顆磁碟加上依硬體路徑配對的溫度（沒有時用 SMART 快取）；同時回傳已配對感測器的 id。"""
         storage, used = [], set()
+        smart = getattr(self, "smart", None)
         for disk in self.disk_meta:
             matched = device_temperatures(temperatures,
                                           self.root/"sys/class/block"/disk["name"]/"device")
             used.update(id(s) for s in matched)
-            storage.append(dict(disk, temperature=storage_temperature(matched)))
+            value = storage_temperature(matched)
+            cached = smart.cached(disk["name"]) if value is None and smart is not None else None
+            storage.append(dict(disk, temperature=value if cached is None else cached.temperature_c))
         return storage, used
 
     def network_temperatures(self, temperatures):
@@ -222,14 +194,16 @@ class Collectors:
         return found, used
 
     def refresh_disk_meta(self):
-        if time.monotonic() - self.last_disk_meta < Collect.DISK_META_INTERVAL:
-            return
-        self.last_disk_meta = time.monotonic()
-        try:
-            self.disk_meta = parse_lsblk(command(["/usr/bin/lsblk", "-J", "-b",
-                "-o", "NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL"], Collect.LSBLK_TIMEOUT))
-        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
-            self.disk_meta = []
+        """慢速收集與磁碟頁都可能呼叫：用鎖避免同時執行兩次 lsblk。"""
+        with self.disk_lock:
+            interval = meta_interval(self.storage_visible)
+            if time.monotonic() - self.last_disk_meta < interval:
+                return
+            self.last_disk_meta = time.monotonic()
+            try:
+                self.disk_meta = parse_lsblk(command(lsblk_command(), Collect.LSBLK_TIMEOUT))
+            except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+                self.disk_meta = []
 
     def logitech(self):
         return self.logitech_battery.refresh()

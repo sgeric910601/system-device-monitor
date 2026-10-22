@@ -10,6 +10,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+from sdm.core.disk_health import ATA, DiskSmart
+from sdm.core.tiers import DetailRequest
 from sdm.data.collectors import Collectors
 from sdm.data.gpu import GpuReading
 from tests.fixtures import procfs
@@ -141,6 +143,14 @@ class SlowSample(Fixture):
         self.assertEqual(result["gpu"].name, "Example A")
         self.assertEqual(result["fans"], [])
 
+    def test_smart_temperature_fills_the_gap(self):
+        self.collector.disk_meta = [dict(name="sda", model="Example HDD", transport="sata",
+                                         size=GIB, volumes=[])]
+        self.collector.smart = FakeSmart({"sda": DiskSmart(kind=ATA, temperature_c=37.0)})
+        result = self.sample()
+        self.assertEqual([(d["name"], d["temperature"]) for d in result["storage"]],
+                         [("sda", 37.0)])
+
     def test_disk_without_a_sensor_has_no_temperature(self):
         self.collector.disk_meta = [dict(name="sda", model="Example HDD", transport="sata",
                                          size=GIB, volumes=[])]
@@ -149,6 +159,30 @@ class SlowSample(Fixture):
                          [("sda", None)])
         self.assertEqual(sorted(s["chip"] for s in result["temperatures"]),
                          ["acpitz", "nvme", "nvme"])
+
+
+class FakeSmart:
+    def __init__(self, values):
+        self.values = values
+    def cached(self, name):
+        return self.values.get(name)
+
+
+class DetailMethod(Fixture):
+    def test_detail_samples_the_requested_pages(self):
+        from sdm.data.detail import DetailCollector
+        self.collector.details = DetailCollector(root=self.root, uid=1000)
+        snapshot = self.collector.detail(DetailRequest(memory=True))
+        self.assertEqual(snapshot.memory.composition.total, 16 * GIB)
+        self.assertIsNone(snapshot.cpu)
+
+    def test_collector_builds_its_detail_sampler(self):
+        from gi.repository import GLib
+        with patch("sdm.data.collectors.Gio.bus_get_sync", side_effect=GLib.Error("none")), \
+                patch("sdm.data.collectors.load_json", return_value={}):
+            collector = Collectors()
+        self.assertIs(collector.details.smart, collector.smart)
+        self.assertEqual(collector.details.root, collector.root)
 
 
 class StatvfsResult:
@@ -175,9 +209,25 @@ class DiskMeta(unittest.TestCase):
                 patch("sdm.data.collectors.os.statvfs", return_value=StatvfsResult()):
             collector.refresh_disk_meta()
         self.assertIn("/usr/bin/lsblk", run.call_args.args[0])
+        self.assertIn("NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL,RM,HOTPLUG",
+                      run.call_args.args[0])
         self.assertEqual(collector.disk_meta, [dict(
             name="nvme0n1", model="Example SSD", transport="nvme", size=2 * GIB,
-            volumes=[dict(mount="/", total=4096000, used=2457600, available=1228800)])])
+            connection="NVMe", external=False,
+            volumes=[dict(mount="/", fstype="ext4", total=4096000, used=2457600,
+                          available=1228800)])])
+
+    def test_cadence_depends_on_whether_disks_are_shown(self):
+        collector = Collectors.__new__(Collectors)
+        collector.last_disk_meta = time.monotonic() - 60
+        with patch("sdm.data.collectors.command", return_value=self.lsblk()) as run, \
+                patch("sdm.data.collectors.os.statvfs", return_value=StatvfsResult()):
+            collector.storage_visible = False
+            collector.refresh_disk_meta()
+            run.assert_not_called()             # 沒有顯示磁碟時每 5 分鐘
+            collector.storage_visible = True
+            collector.refresh_disk_meta()
+            run.assert_called_once()            # 總覽或磁碟頁顯示時每 30 秒
 
     def test_failure_clears_the_list_and_cadence_is_respected(self):
         collector = Collectors.__new__(Collectors)
