@@ -98,6 +98,25 @@ class Address(unittest.TestCase):
         self.assertIsNone(cache.get(None))
 
 
+class MissingAddress(unittest.TestCase):
+    def test_missing_address_is_retried_after_5_seconds(self):
+        answers, reads, clock = [None, "192.0.2.20"], [], [100.0]
+        def read(name):
+            reads.append(name)
+            return answers[min(len(reads), len(answers)) - 1]
+        cache = network.AddressCache(read, lambda: clock[0])
+        self.assertIsNone(cache.get("enp1s0"))          # 例如 DHCP 還沒拿到位址
+        clock[0] += Network.IPV4_RETRY_SECONDS - 1
+        self.assertIsNone(cache.get("enp1s0"))
+        self.assertEqual(len(reads), 1)
+        clock[0] += 1
+        self.assertEqual(cache.get("enp1s0"), "192.0.2.20")
+        clock[0] += Network.IPV4_RETRY_SECONDS
+        cache.get("enp1s0")
+        self.assertEqual(len(reads), 2)                 # 有位址後回到 30 秒一次
+        self.assertEqual((Network.IPV4_RETRY_SECONDS, Network.IPV4_INTERVAL), (5, 30))
+
+
 class PrimaryRate(unittest.TestCase):
     def test_baseline_resets_when_the_primary_interface_changes(self):
         rates = PrimaryRates()

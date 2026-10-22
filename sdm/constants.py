@@ -207,6 +207,7 @@ class Disk:
 class Network:
     """網路頁：主要介面的 IPv4（socket ioctl，不執行外部命令）。"""
     IPV4_INTERVAL = 30              # IPv4 每 30 秒或主要介面改變時重新讀取
+    IPV4_RETRY_SECONDS = 5          # 讀不到位址時（例如還在取得 DHCP）5 秒後再試
     SIOCGIFADDR = 0x8915            # Linux 的「取得介面位址」ioctl
     IFNAMSIZ = 16                   # 介面名稱含結尾 NUL 的長度上限
     IFREQ_BYTES = 256

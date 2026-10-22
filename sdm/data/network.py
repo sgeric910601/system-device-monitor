@@ -104,7 +104,7 @@ def ipv4_address(name, ioctl=fcntl.ioctl):
 
 
 class AddressCache:
-    """主要介面的 IPv4：每 30 秒或介面改變時才重新讀取。"""
+    """主要介面的 IPv4：每 30 秒或介面改變時才重新讀取；讀不到位址時 5 秒後再試。"""
 
     def __init__(self, read=ipv4_address, clock=time.monotonic):
         self.read, self.clock = read, clock
@@ -115,6 +115,7 @@ class AddressCache:
             self.name, self.address, self.stamp = None, None, None
             return None
         now = self.clock()
-        if name != self.name or self.stamp is None or now - self.stamp >= Network.IPV4_INTERVAL:
+        interval = Network.IPV4_INTERVAL if self.address else Network.IPV4_RETRY_SECONDS
+        if name != self.name or self.stamp is None or now - self.stamp >= interval:
             self.name, self.address, self.stamp = name, self.read(name), now
         return self.address
