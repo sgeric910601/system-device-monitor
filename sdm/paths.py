@@ -30,5 +30,8 @@ PREFERENCES = CONFIG.parent / "preferences.json"
 ALIASES = CONFIG.parent / "device-aliases.json"
 AUTOSTART = CONFIG_HOME / "autostart" / (APP_NAME + ".desktop")
 CACHE = CACHE_HOME / APP_NAME
+# 頂端列的動態圖示：放在執行期目錄（登出就清掉）；沒有時改放快取目錄。
+_RUNTIME = os.environ.get("XDG_RUNTIME_DIR")
+ICONS = (Path(_RUNTIME) / APP_NAME / "icons") if _RUNTIME else CACHE / "icons"
 DATA = DATA_HOME / APP_NAME
 STATE = STATE_HOME / APP_NAME
