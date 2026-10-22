@@ -393,6 +393,19 @@ class Devices(unittest.TestCase):
             devices = self.collector.devices()["devices"]
         self.assertEqual([d["name"] for d in devices if d["kind"] != "USB"], ["Example Mouse"])
 
+    def test_peripheral_battery_of_type_battery_is_still_listed(self):
+        def bus(_bus, dest, path, iface, method, args=None):
+            if method == "GetManagedObjects": return ({},)
+            if method == "EnumerateDevices": return (["/battery_hidpp_battery_0"],)
+            return (dict(NativePath="hidpp_battery_0", Type=2, PowerSupply=False,
+                         UpdateTime=123, BatteryLevel=1, Percentage=55, IsPresent=True,
+                         State=2, Model="Example Pad"),)
+        with patch("sdm.data.collectors.dbus", side_effect=bus):
+            devices = self.collector.devices()["devices"]
+        listed = [d for d in devices if d["kind"] != "USB"]
+        self.assertEqual([(d["name"], d["kind"], d["percent"]) for d in listed],
+                         [("Example Pad", "無線周邊", 55)])
+
     def test_bluetooth_disconnected_cached_battery_hidden(self):
         def bus(_bus, dest, path, iface, method, args=None):
             if method == "GetManagedObjects":
