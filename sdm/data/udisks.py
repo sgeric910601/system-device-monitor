@@ -39,7 +39,14 @@ MAX_COUNTER = 2 ** 63
 MAX_BYTE_VALUE = 255
 MAX_HOURS = 10 ** 7
 
-__all__ = ("SmartSource", "DiskSmart", "bus_getter", "bus_caller")
+__all__ = ("SmartSource", "DiskSmart", "bus_getter", "bus_caller", "object_name")
+
+
+def object_name(name):
+    """區塊裝置名稱 → UDisks2 物件路徑的最後一段：英數字與底線以外的字元寫成「_十六進位」
+    （與 UDisks2 相同，例如 dm-0 → dm_2d0）。"""
+    return "".join(char if char.isascii() and (char.isalnum() or char == "_")
+                   else f"_{ord(char):02x}" for char in name)
 
 
 class Timeout(Exception):
@@ -156,7 +163,7 @@ class SmartSource:
         return smart if not fields or smart.kind != NVME else replace(smart, **fields)
 
     def drive_path(self, name):
-        path = self.optional(BLOCK_PATH + name, BLOCK_INTERFACE, "Drive")
+        path = self.optional(BLOCK_PATH + object_name(name), BLOCK_INTERFACE, "Drive")
         return path if isinstance(path, str) and path.startswith("/") and path != NO_DRIVE \
             else None
 

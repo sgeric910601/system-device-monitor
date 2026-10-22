@@ -134,6 +134,13 @@ class Reading(unittest.TestCase):
         self.assertEqual(sorted(result), ["sda"])
         self.assertIsNone(self.source.cached("nvme0n1"))
 
+    def test_object_paths_escape_like_udisks(self):
+        self.assertEqual(udisks.object_name("sda"), "sda")
+        self.assertEqual(udisks.object_name("dm-0"), "dm_2d0")
+        self.assertEqual(udisks.object_name("cciss!c0d0"), "cciss_21c0d0")
+        self.source.refresh(("cciss!c0d0",))
+        self.assertEqual(self.bus.gets[0][0], BLOCK + "cciss_21c0d0")
+
     def test_invalid_names_are_never_sent(self):
         result = self.source.refresh(("../sda", "sd a", ""))
         self.assertEqual((result, self.bus.gets), ({}, []))

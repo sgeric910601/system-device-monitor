@@ -21,7 +21,7 @@ EXTERNAL_LABEL = "外接磁碟"
 EXTERNAL_TRANSPORTS = ("usb", "mmc")
 CONNECTIONS = {"nvme": "NVMe", "sata": "SATA", "ata": "SATA", "usb": "USB", "mmc": "SD"}
 OTHER_CONNECTION = "其他"
-BLOCK_NAME = re.compile(r"[a-z0-9]+")
+BLOCK_NAME = re.compile(r"[A-Za-z0-9!._-]+")    # 核心把名稱裡的「/」寫成「!」（例如 cciss!c0d0）
 STRIPPED_CATEGORIES = ("Cc", "Cf")      # 控制字元與雙向文字等格式字元
 HOURS_PER_DAY = 24
 PERCENT = 100
@@ -37,9 +37,11 @@ def sanitize_model(raw, fallback=EXTERNAL_LABEL):
 
 
 def valid_block_name(name):
-    """核心的區塊裝置名稱（sda、nvme0n1）：只接受 ASCII 小寫英數字，避免路徑穿越。"""
-    return isinstance(name, str) and len(name) <= Disk.BLOCK_NAME_MAX_CHARS and \
-        name.isascii() and bool(BLOCK_NAME.fullmatch(name))
+    """核心的區塊裝置名稱（sda、nvme0n1、dm-0、cciss!c0d0）：ASCII 英數字與 ! - _ .，
+    不接受「/」「..」與開頭的「.」，避免路徑穿越。"""
+    if not isinstance(name, str) or not name.isascii() or len(name) > Disk.BLOCK_NAME_MAX_CHARS:
+        return False
+    return bool(BLOCK_NAME.fullmatch(name)) and ".." not in name and not name.startswith(".")
 
 
 def is_external(rm, hotplug, tran):

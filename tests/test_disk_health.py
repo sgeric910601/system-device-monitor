@@ -40,10 +40,12 @@ class Names(unittest.TestCase):
         self.assertEqual(health.sanitize_model(None, fallback="磁碟"), "磁碟")
 
     def test_block_device_names(self):
-        # 對應參考專案 isValidDeviceNode：只接受 ASCII 英數字的核心裝置名稱
-        for name in ("sda", "nvme0n1", "mmcblk0", "vdb"):
+        # 對應參考專案 isValidDeviceNode：核心的區塊裝置名稱（ASCII 英數字與 ! - _ .），
+        # 不接受「/」與「..」，避免路徑穿越
+        for name in ("sda", "nvme0n1", "mmcblk0", "vdb", "cciss!c0d0", "dm-0", "xvd_a", "nbd0.1"):
             self.assertTrue(health.valid_block_name(name), name)
-        for name in ("", "../sda", "sda/..", "sd a", "sda;rm", "sd٥", "x" * 40, None):
+        for name in ("", "../sda", "sda/..", "sd a", "sda;rm", "sd\u0665", "x" * 40, None,
+                     ".", "..", "a..b", ".hidden", "cciss/c0d0"):
             self.assertFalse(health.valid_block_name(name), name)
 
 

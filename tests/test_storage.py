@@ -60,6 +60,11 @@ class Lsblk(unittest.TestCase):
         disk = self.parse(text)[0]
         self.assertEqual((disk["model"], disk["connection"], disk["external"]), ("磁碟", "其他", False))
 
+    def test_kernel_names_with_punctuation_are_kept(self):
+        text = json.dumps({"blockdevices": [
+            {"name": "cciss!c0d0", "type": "disk", "size": 5, "model": "Example Array"}]})
+        self.assertEqual([disk["name"] for disk in self.parse(text)], ["cciss!c0d0"])
+
     def test_invalid_names_are_skipped(self):
         text = json.dumps({"blockdevices": [{"name": "../sda", "type": "disk", "size": 5}]})
         self.assertEqual(self.parse(text), [])
