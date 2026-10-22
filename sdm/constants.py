@@ -249,6 +249,10 @@ class Ui:
     GRAPH_HEIGHT = 78
     WINDOW_WIDTH = 1040
     WINDOW_HEIGHT = 770
+    SETTINGS_WIDTH = 760             # 設定視窗的預設大小
+    SETTINGS_HEIGHT = 620
+    NARROW_WIDTH = 640               # 視窗比這窄時側欄收起，改用標題列的頁面選單
+    SIDEBAR_WIDTH = 168
     DEVICE_POWER_WIDTH = 165
 
 

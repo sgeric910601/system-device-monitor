@@ -24,6 +24,7 @@ SEGMENT_HEX = (("app", COLORS["cpu"] + "ff"), ("shared", COLORS["gpu"] + "ff"),
 BASE_CSS = """
         window { font-family: "Noto Sans CJK TC", "Ubuntu", sans-serif; }
         .page { padding: 22px; }
+        .narrow .page { padding: 12px; }
         .card { border-radius: 14px; border: 1px solid alpha(@theme_fg_color, .12);
                 background-color: alpha(@theme_fg_color, .025); padding: 16px; }
         .value { font-size: 29px; font-weight: 700; }

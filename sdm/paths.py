@@ -35,3 +35,5 @@ _RUNTIME = os.environ.get("XDG_RUNTIME_DIR")
 ICONS = (Path(_RUNTIME) / APP_NAME / "icons") if _RUNTIME else CACHE / "icons"
 DATA = DATA_HOME / APP_NAME
 STATE = STATE_HOME / APP_NAME
+# 視窗狀態（最後顯示的頁面），不是設定。
+STATE_FILE = STATE / "state.json"

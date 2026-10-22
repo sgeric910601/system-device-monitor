@@ -1,7 +1,6 @@
 """GTK 看板應用程式：所有視圖共用同一份資料快照。"""
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-import json
 import logging
 from pathlib import Path
 import signal
@@ -13,12 +12,12 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("GUdev", "1.0")
 gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
+from gi.repository import Gtk, Gio, GLib, GUdev, AyatanaAppIndicator3
 
 from sdm import paths
 from sdm.constants import Collect, History, Preview, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
-from sdm.core.fmt import percent, size, age, temperature, value_text
+from sdm.core.fmt import percent, size, temperature, value_text
 from sdm.core.settings import (LEGACY_KEYS, PreferencesReadOnlyError, load_settings,
                                save_legacy, save_preferences)
 from sdm.data.collectors import Collectors
@@ -27,13 +26,19 @@ from sdm.services import preview as demo
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.services.history_service import HistoryService, read_boot_time
 from sdm.services.power_refresh import PowerRefresh
-from sdm.ui.monitor_wiring import OVERVIEW_TARGETS, MonitorMixin
+from sdm.services.ui_state import PageMemory
+from sdm.ui.app_names import AppNames
+from sdm.ui.main_window import PAGES, MainWindow
+from sdm.ui.monitor_wiring import MonitorMixin
+from sdm.ui.pages.devices import DevicesPage
+from sdm.ui.pages.overview import OverviewPage
 from sdm.ui.pages.power import PowerPage
 from sdm.ui.power_text import menu_line
 from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
 from sdm.ui.smoke import SMOKE_PAGES, SmokeMixin
-from sdm.ui.theme import GRAPH_COLORS, css_data
-from sdm.ui.widgets import label, box, clear, Graph
+from sdm.ui.widgets import label
+
+PAGE_TITLES = dict(PAGES)
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 MENU_INDENT = "    "
@@ -58,6 +63,9 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
+    window = None
+    main = None             # 主視窗外殼（MainWindow）
+    page_memory = None      # 最後顯示的頁面；示範模式與模擬測試為 None
 
     def __init__(self, background=False, smoke=False, output_dir=None, capture=False,
                  preview=None):
@@ -86,11 +94,11 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         self.preferences = loaded.preferences  # 新版設定：後續階段才使用
         self.first_run = loaded.first_run
         self.timers, self.subscriptions = [], []
-        self.cards = {}
-        self.card_titles = {}
         self.graphs = []
-        self.device_fingerprint = None
         self.event_timer = 0
+        # 示範模式與模擬測試不讀寫視窗狀態
+        self.page_memory = None if (smoke or preview) else PageMemory(paths.STATE_FILE,
+                                                                       PAGE_TITLES)
         self.history = None
         self.last_recorded = None
         self.power_page = None
@@ -124,6 +132,7 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         self.timers.append(GLib.timeout_add_seconds(History.RECORD_INTERVAL_SECONDS,
                                                     self.record_history))
         self.install_signal_handlers()
+        self.restore_page()
         if not self.background:
             self.window.show_all()
         if self.smoke:
@@ -206,113 +215,41 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         return False
 
     def build_window(self):
-        settings = Gtk.Settings.get_default()
-        theme = settings.get_property("gtk-theme-name") or ""
-        self.dark = "dark" in theme.lower() or settings.get_property("gtk-application-prefer-dark-theme")
-        css = Gtk.CssProvider()
-        css.load_from_data(css_data())
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css,
-                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        self.window = Gtk.ApplicationWindow(application=self)
-        self.window.set_title("系統與裝置監看")
-        self.window.set_default_size(Ui.WINDOW_WIDTH, Ui.WINDOW_HEIGHT)
-        self.window.set_icon_name("utilities-system-monitor")
-        self.window.connect("delete-event", self.hide_window)
-        header = Gtk.HeaderBar(title="系統與裝置", subtitle="本機即時監看")
-        header.set_show_close_button(True)
-        self.window.set_titlebar(header)
-        refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
-        refresh.set_tooltip_text("更新所有資料")
-        refresh.connect("clicked", lambda *_: [self.submit(k) for k in self.data] +
-                        [self.submit_detail()])
-        header.pack_end(refresh)
-        root = box(spacing=0)
-        self.window.add(root)
-        self.stack = Gtk.Stack()
-        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        switcher = Gtk.StackSwitcher(stack=self.stack)
-        switcher.set_halign(Gtk.Align.CENTER)
-        switcher.set_margin_top(12)
-        switcher.set_margin_bottom(8)
-        root.pack_start(switcher, False, False, 0)
-        root.pack_start(self.stack, True, True, 0)
-        self.footer = label("正在讀取本機資料…", "footnote")
-        root.pack_end(self.footer, False, False, 0)
+        self.main = MainWindow(self, self.refresh_all, self.open_settings, self.hide_window)
+        self.window, self.stack = self.main.window, self.main.stack
+        self.scrolls, self.footer = self.main.scrolls, self.main.footer
+        self.app_names = AppNames()
         self.build_power()
-        self.build_overview()
+        overview = OverviewPage(self.series, self.clickable)
+        self.overview = overview
+        self.graphs = overview.graphs
+        self.page("overview", PAGE_TITLES["overview"]).pack_start(overview, False, False, 0)
         self.build_monitor_pages()
-        self.build_devices()
+        self.devices_page = DevicesPage()
+        self.page("devices", PAGE_TITLES["devices"]).pack_start(self.devices_page, False, False, 0)
         self.build_settings()
         self.watch_visibility()
 
     def page(self, key, title):
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        content = box(spacing=16)
-        content.get_style_context().add_class("page")
-        scroll.add(content)
-        self.stack.add_titled(scroll, key, title)
-        self.scrolls[key] = scroll
-        return content
+        return self.main.page(key, title)
+
+    def refresh_all(self):
+        for kind in self.data:
+            self.submit(kind)
+        self.submit_detail()
 
     def build_power(self):
         """「電源」頁放在第一頁。"""
-        content = self.page("power", "電源")
+        content = self.page("power", PAGE_TITLES["power"])
         self.power_page = PowerPage(self.history_points, recap_for=self.today_recap,
                                     unplugged_for=self.history_unplugged,
-                                    hidden_fields=lambda: self.preferences.hidden_detail_fields)
+                                    hidden_fields=lambda: self.preferences.hidden_detail_fields,
+                                    hidden_flow=lambda: self.preferences.hidden_flow_items,
+                                    names=self.app_names)
         content.pack_start(self.power_page, False, False, 0)
 
-    def build_overview(self):
-        page = self.page("overview", "系統總覽")
-        intro = label("工作站即時狀態", "section")
-        page.pack_start(intro, False, False, 0)
-        grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
-        names = (("cpu", "CPU"), ("temperature", "CPU 溫度"),
-                 ("ram", "記憶體"), ("gpu", "GPU"),
-                 ("network", "網路 · 實體介面合計"), ("ups", "APC UPS"))
-        for i, (key, name) in enumerate(names):
-            card = box()
-            card.get_style_context().add_class("card")
-            card.get_style_context().add_class("accent-" + key)
-            title = label(name, "muted", True)
-            self.card_titles[key] = title
-            card.pack_start(title, False, False, 0)
-            value = label("—", "value")
-            sub = label("正在讀取…", "muted", True)
-            card.pack_start(value, False, False, 0)
-            if key in self.series:
-                color = GRAPH_COLORS[key]
-                graph = Graph(self.series[key], color)
-                self.graphs.append(graph)
-                card.pack_start(graph, True, True, 0)
-            card.pack_start(sub, False, False, 0)
-            self.cards[key] = (value, sub)
-            grid.attach(self.clickable(card, OVERVIEW_TARGETS[key]), i%3, i//3, 1, 1)
-        page.pack_start(grid, False, False, 0)
-        page.pack_start(label("曲線顯示最近 5 分鐘 · 點一下卡片可開啟詳細頁面", "muted"), False, False, 0)
-        page.pack_start(label("磁碟與儲存空間", "section"), False, False, 0)
-        self.storage_box = box(spacing=10)
-        page.pack_start(self.clickable(self.storage_box, "disk"), False, False, 0)
-        page.pack_start(label("網路介面", "section"), False, False, 0)
-        self.network_box = box(spacing=8)
-        page.pack_start(self.clickable(self.network_box, "network"), False, False, 0)
-        page.pack_start(label("其他感測器與風扇", "section"), False, False, 0)
-        self.sensor_label = label("讀取中…", "muted", True)
-        page.pack_start(self.sensor_label, False, False, 0)
-
-    def build_devices(self):
-        page = self.page("devices", "連線設備")
-        top = box(False)
-        self.device_heading = label("目前連線設備", "section")
-        top.pack_start(self.device_heading, True, True, 0)
-        page.pack_start(top, False, False, 0)
-        page.pack_start(label("電量依設備回報更新；接收器存在與無線端連線狀態分別顯示。", "muted", True), False, False, 0)
-        self.device_notice = label("", "muted", True)
-        page.pack_start(self.device_notice, False, False, 0)
-        self.device_box = box(spacing=0)
-        page.pack_start(self.device_box, False, False, 0)
-        self.age_labels = []
+    def open_settings(self):
+        self.open_page(None, "settings")
 
     def build_settings(self):
         page = self.page("settings", "設定")
@@ -429,138 +366,40 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         self.power_indicator.set_menu(self.menu)
 
     def open_page(self, widget, page):
-        self.stack.set_visible_child_name(page)
         self.window.show_all()
+        if page is not None:
+            self.main.show_page(page)
         self.window.present()
 
     def hide_window(self, *_):
-        """關閉視窗只是隱藏（仍在頂端列運作）；示範模式沒有頂端列，關閉就結束。"""
+        """關閉視窗只是隱藏（仍在頂端列運作）並記住目前的頁面；示範模式沒有頂端列，關閉就結束。"""
         if self.preview:
             self.stop()
         else:
+            self.remember_page()
             self.window.hide()
         return True
 
+    def remember_page(self):
+        if self.page_memory is not None and self.window is not None:
+            self.page_memory.save(self.main.current_page())
+
+    def restore_page(self):
+        """上次關閉視窗時的頁面；示範模式與模擬測試一律從「電源」開始。"""
+        page = self.page_memory.load() if self.page_memory is not None else None
+        if page is not None:
+            self.main.show_page(page)
+
     def render(self):
         fast, slow = self.data["system"], self.data["slow"]
-        gpu, ups = slow.get("gpu"), slow.get("ups") or UpsReading()
         self.power_page.update(self.current_power())
-        self.cards["cpu"][0].set_text(percent(fast.get("cpu")))
-        info = fast.get("cpu_info", {})
-        self.card_titles["cpu"].set_text(info.get("name", "CPU") + " · " + temperature(slow.get("cpu_temp")))
-        self.cards["cpu"][1].set_text(
-            f"{info.get('cores') or '—'} 核心 · {info.get('threads') or '—'} 執行緒 · 全機使用率")
-        self.card_titles["gpu"].set_text((gpu.name if gpu else "GPU") + " · " +
-                                         temperature(gpu.temp_c if gpu else None))
-        self.cards["gpu"][0].set_text(percent(gpu.usage if gpu else None))
-        self.cards["gpu"][1].set_text(
-            f"顯示記憶體 {size(gpu.vram_used)} / {size(gpu.vram_total)}\n"
-            f"{value_text(gpu.watts, ' W')} · 風扇 {percent(gpu.fan_pct)}"
-            if gpu else slow.get("gpu_error") or "正在讀取…")
-        self.cards["ram"][0].set_text(percent(fast.get("ram")))
-        self.cards["ram"][1].set_text(f"{size(fast.get('ram_used'))} / {size(fast.get('ram_total'))}\n依系統可用記憶體計算")
-        self.cards["network"][0].set_text("↓ " + size(fast.get("rx"), True))
-        self.cards["network"][1].set_text("↑ " + size(fast.get("tx"), True) + " · 虛擬網路獨立列出")
-        self.cards["temperature"][0].set_text(temperature(slow.get("cpu_temp")))
-        self.cards["temperature"][1].set_text(slow.get("cpu_temp_label", "讀取中…"))
-        mode = "市電供電" if ups.online else ("電池供電" if ups.on_battery else "通訊暫時無法取得")
-        self.cards["ups"][0].set_text(percent(ups.charge_pct))
-        self.cards["ups"][1].set_text(
-            f"{mode} · 負載 {percent(ups.load_pct)}\n"
-            f"預估續航 {value_text(ups.time_left_min, ' 分鐘')}")
-        for graph in self.graphs:
-            graph.queue_draw()
+        self.overview.render(fast, slow)
         self.render_monitor_pages(fast, slow)
-        self.render_storage()
-        clear(self.network_box)
-        for net in fast.get("networks", []):
-            self.network_box.pack_start(label(
-                f"{net['name']} · {net['kind']}" +
-                (" · " + temperature(slow["network_temperatures"][net["name"]])
-                 if net["name"] in slow.get("network_temperatures", {}) else "") +
-                f"     ↓ {size(net['rx'], True)}     ↑ {size(net['tx'], True)}",
-                "muted"), False, False, 0)
-        self.network_box.show_all()
-        sensors = [f"{s['chip']} {s['label']}  {temperature(s['value'])}" for s in slow.get("temperatures", [])]
-        sensors += [f"{f['name']}  {f['value']:.0f} RPM" for f in slow.get("fans", [])]
-        if not slow.get("fans"):
-            sensors.append("CPU／機殼風扇轉速：無法取得")
-        self.sensor_label.set_text("   ·   ".join(sensors))
-        self.render_devices()
+        self.devices_page.render(self.data["devices"])
         self.render_indicator()
         errors = list(self.errors.values()) + self.data["devices"].get("errors", [])
-        self.footer.set_text(" · ".join(errors) if errors else "更新於 " + time.strftime("%H:%M:%S") + "  ·  本機唯讀監看")
-
-    def render_storage(self):
-        clear(self.storage_box)
-        rates = {d["name"]: d for d in self.data["system"].get("disks", [])}
-        for disk in self.data["slow"].get("storage", []):
-            container = box(spacing=6)
-            container.get_style_context().add_class("card")
-            container.get_style_context().add_class("accent-" + {"sda": "gpu", "sdb": "network"}.get(disk["name"], "ram"))
-            rates_for_disk = rates.get(disk["name"], {})
-            heading = f"{disk['name']} · {disk['model']} · {size(disk['size'])} · " + (
-                temperature(disk["temperature"]) if disk.get("temperature") is not None else "溫度未回報")
-            container.pack_start(label(heading, "device-name"), False, False, 0)
-            container.pack_start(label(
-                f"讀取 {size(rates_for_disk.get('read'), True)}    寫入 {size(rates_for_disk.get('write'), True)}",
-                "muted"), False, False, 0)
-            for volume in disk["volumes"]:
-                used, total = volume["used"], volume["total"]
-                container.pack_start(label(f"{volume['mount']}  ·  已用 {size(used)} / {size(total)}", "muted"), False, False, 0)
-                bar = Gtk.ProgressBar()
-                bar.set_fraction(max(0, min(1, used/total)) if total else 0)
-                container.pack_start(bar, False, False, 0)
-            self.storage_box.pack_start(container, False, False, 0)
-        self.storage_box.show_all()
-
-    def render_devices(self):
-        data = self.data["devices"]
-        devices = data.get("devices", [])
-        fingerprint = json.dumps(devices, sort_keys=True, ensure_ascii=False)
-        self.device_heading.set_text(f"目前連線設備 · {len(devices)}")
-        self.device_notice.set_text(" · ".join(data.get("errors", [])))
-        if fingerprint != self.device_fingerprint:
-            self.device_fingerprint = fingerprint
-            clear(self.device_box)
-            self.age_labels = []
-            if not devices:
-                self.device_box.pack_start(label("目前沒有可顯示的連線設備。", "muted"), False, False, 0)
-            for d in devices:
-                row = box(False, 16)
-                row.get_style_context().add_class("device-row")
-                accent = ("ups" if d["kind"] == "UPS" else
-                          "cpu" if "K73R" in d["name"] else
-                          "ram" if "Mouse" in d["name"] else
-                          "gpu" if "Razer" in d["name"] else
-                          "network" if d["kind"] == "藍牙" else "temperature")
-                row.get_style_context().add_class("accent-" + accent)
-                icon = "battery-symbolic" if d["kind"] == "UPS" else (
-                    "bluetooth-symbolic" if d["kind"] == "藍牙" else
-                    "input-keyboard-symbolic" if "鍵盤" in d["name"] else
-                    "input-mouse-symbolic" if "Mouse" in d["name"] else
-                    "audio-headphones-symbolic" if "Razer" in d["name"] else "drive-removable-media-symbolic")
-                row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.DND), False, False, 0)
-                description = box(spacing=4)
-                description.pack_start(label(d["name"], "device-name", True), False, False, 0)
-                description.pack_start(label(d["status"], "muted", True), False, False, 0)
-                description.pack_start(label(d["detail"], "muted", True), False, False, 0)
-                row.pack_start(description, True, True, 0)
-                power = box(spacing=4)
-                power.set_size_request(Ui.DEVICE_POWER_WIDTH, -1)
-                power.pack_start(label(d["battery"], "device-power", True), False, False, 0)
-                stamp_label = label(age(d["stamp"]) if d["stamp"] else d["kind"], "muted")
-                power.pack_start(stamp_label, False, False, 0)
-                if d["percent"] is not None:
-                    progress = Gtk.ProgressBar()
-                    progress.set_fraction(d["percent"]/100)
-                    power.pack_start(progress, False, False, 0)
-                self.age_labels.append((stamp_label, d["stamp"], d["kind"]))
-                row.pack_end(power, False, False, 0)
-                self.device_box.pack_start(row, False, False, 0)
-            self.device_box.show_all()
-        for item, stamp, kind in self.age_labels:
-            item.set_text(age(stamp) if stamp else kind)
+        self.footer.set_text(" · ".join(errors) if errors else
+                             "更新於 " + time.strftime("%H:%M:%S") + "  ·  本機唯讀監看")
 
     def render_indicator(self):
         if not hasattr(self, "indicator"):
@@ -624,7 +463,8 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
             return
         self.closing = True
         try:
-            for name, action in (("history", self.save_history), ("sources", self.remove_sources),
+            for name, action in (("history", self.save_history), ("page", self.remember_page),
+                                 ("sources", self.remove_sources),
                                  ("subscriptions", self.unsubscribe_all),
                                  ("indicators", self.hide_indicators),
                                  ("workers", lambda: self.pool.shutdown(wait=False,
