@@ -56,6 +56,39 @@ class Power:
     COMPONENT_MAX_W = 1000      # 單一元件合理上限（不含）
 
 
+class Battery:
+    """筆電電池：sysfs power_supply 讀值範圍，以及沿用參考專案的判斷門檻。"""
+    SUPPLY_DIR = "sys/class/power_supply"
+    TEXT_MAX_CHARS = 64         # 廠商、型號等文字
+    STATUS_MAX_CHARS = 32
+    MAX_WH = 1000               # 能量讀值上限（瓦時）
+    MAX_AH = 100                # 電量讀值上限（安培小時）
+    MAX_V = 60                  # 電壓上限（伏特，含 USB-PD 48 V）
+    MAX_A = 20                  # 電流上限（安培）
+    MAX_W = 500                 # 功率上限（瓦，與參考專案 applyLivePower 相同）
+    TEMP_MIN_C = -40
+    TEMP_MAX_C = 100
+    CYCLES_MAX = 100000
+    CHARGING_MIN_W = 3.0        # 充入電池至少 3 W 才算充電（參考 chargingNow）
+    IDLE_MAX_W = 0.5            # 低於 0.5 W 不算充電；介於兩者之間看核心的狀態旗標
+    DRAIN_W = -0.5              # 接電時電池功率低於此值，視為電池仍在放電
+    DRAIN_A = -0.05             # 沒有功率讀值時改看電流（參考專案的 -50 mA）
+    LIMIT_MARGIN = 1            # 電量 ≥ 上限 − 1 視為已達上限
+    FULL_PERCENT = 100
+    FULL_RELEASE_PERCENT = 98   # 已充飽的狀態維持到電量低於 98%
+    CONFIRM_SECONDS = 10        # 接電中的狀態變化要持續 10 秒才切換顯示
+    FLOW_HOLD_W = 2.0           # 接電未充電時 ±2 W 內視為由變壓器直接供電
+    FLOW_ACTIVE_W = 0.05
+    FLOW_SWING_W = 5.0          # 方向明顯相反（超過 5 W）時立即切換流向圖
+    JUST_PLUGGED_SECONDS = 30   # 剛插電 30 秒內電池仍在放電不算供電不足
+    CHARGE_WARMUP_SECONDS = 60  # 開始充電後頭 60 秒的電流不納入平均
+    LIVE_MIN_W = 0.1            # 平均功率或電流超過此值才推算剩餘時間
+    LIVE_MIN_A = 0.010
+    RESERVE_PERCENT = 10        # 「到 10%」的保留電量
+    RECAP_GAP_SECONDS = 30 * 60  # 今日回顧：兩筆紀錄間隔最多算 30 分鐘
+    REFRESH_DELAYS = (1, 3, 6)  # 插拔電源後再重新讀取的時間（秒），與參考專案相同
+
+
 class History:
     """耗電與電量歷史（XDG 資料目錄下的 history.json）。"""
     FILE_NAME = "history.json"
