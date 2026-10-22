@@ -26,6 +26,20 @@ class Details(unittest.TestCase):
         self.assertEqual(fmt.memory(1024), "1.0 KB")
         self.assertEqual(fmt.rate(0), "0 B/s")
 
+    def test_rounding_carries_into_the_next_unit(self):
+        # 四捨五入後達到 1000 就改用下一個單位；小於 10 但進位成 10 時不留小數
+        self.assertEqual(fmt.size(999_960), "1.0 MB")
+        self.assertEqual(fmt.size(999_499), "999 KB")
+        self.assertEqual(fmt.size(9_960), "10 KB")
+        self.assertEqual(fmt.size(9_940), "9.9 KB")
+        self.assertEqual(fmt.size(999_999_999_999_999), "1000 TB")     # 已是最大單位
+        self.assertEqual(fmt.rate(999_960), "1.0 MB/s")
+        self.assertEqual(fmt.rate(9_960), "10 KB/s")
+        self.assertEqual(fmt.rate(999.6), "1.0 KB/s")
+        self.assertEqual(fmt.memory(1023 * 1024 ** 2), "1.0 GB")
+        self.assertEqual(fmt.memory(int(9.97 * 1024 ** 2)), "10 MB")
+        self.assertEqual(fmt.memory(512 * 1024 ** 2), "512 MB")
+
     def test_negative_and_invalid_values(self):
         self.assertEqual(fmt.size(-5), "0 B")
         self.assertEqual(fmt.compact_rate(-1), "0K")
