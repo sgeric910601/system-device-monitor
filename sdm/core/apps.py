@@ -102,8 +102,10 @@ class AppTracker:
         self.previous, self.stamp = {}, None
 
     def sample(self, readings, now, cores):
+        """ready 只在至少一個程序群組算得出差值時為 True：上一次只讀了記憶體（沒有 CPU 時間）
+        或間隔太久時，這次只是 CPU 基準。完全沒有可讀的 CPU 時間時不必等基準。"""
         elapsed = None if self.stamp is None else now - self.stamp
-        ready = elapsed is not None and 0 < elapsed <= Counter.RESET_SECONDS
+        in_window = elapsed is not None and 0 < elapsed <= Counter.RESET_SECONDS
         deltas, memory, order = {}, {}, []
         for reading in readings:
             if reading.app_id not in memory:
@@ -111,12 +113,14 @@ class AppTracker:
                 memory[reading.app_id] = None
             memory[reading.app_id] = merge_memory(memory[reading.app_id], reading.memory)
             old = self.previous.get(reading.key)
-            if ready and old is not None and reading.usage_usec is not None \
+            if in_window and old is not None and reading.usage_usec is not None \
                     and reading.usage_usec >= old:
                 deltas[reading.app_id] = deltas.get(reading.app_id, 0) + reading.usage_usec - old
         self.previous = {reading.key: reading.usage_usec for reading in readings
                          if reading.usage_usec is not None}
         self.stamp = now
+        measurable = any(reading.usage_usec is not None for reading in readings)
+        ready = bool(deltas) or (in_window and not measurable)
         return AppsSample(tuple(self.usage(app_id, deltas.get(app_id), memory[app_id],
                                            elapsed, cores) for app_id in order), ready)
 

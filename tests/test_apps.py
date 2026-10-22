@@ -100,6 +100,28 @@ class Deltas(unittest.TestCase):
         self.assertIsNone(usages["org.example.C"])
         self.assertIsNone(usages["org.example.D"])
 
+    def test_memory_only_sample_is_not_a_cpu_baseline(self):
+        # 記憶體頁只讀記憶體；不到 15 秒內換到 CPU 頁時，第一次 CPU 取樣仍然只是基準
+        tracker = AppTracker()
+        tracker.sample((reading("a-1", "org.example.A", None, 300),), 0.0, 1)
+        result = tracker.sample((reading("a-1", "org.example.A", 100_000, 300),), 2.0, 1)
+        self.assertFalse(result.ready)
+        result = tracker.sample((reading("a-1", "org.example.A", 300_000, 300),), 4.0, 1)
+        self.assertTrue(result.ready)
+        self.assertAlmostEqual(result.usages[0].core_percent, 10.0)
+
+    def test_idle_apps_still_count_as_measured(self):
+        tracker = AppTracker()
+        tracker.sample((reading("a-1", "org.example.A", 500),), 0.0, 1)
+        result = tracker.sample((reading("a-1", "org.example.A", 500),), 2.0, 1)
+        self.assertTrue(result.ready)
+        self.assertEqual(result.usages[0].core_percent, 0.0)
+
+    def test_nothing_to_measure_is_not_left_calculating(self):
+        tracker = AppTracker()
+        tracker.sample((), 0.0, 1)
+        self.assertTrue(tracker.sample((), 2.0, 1).ready)
+
     def test_a_long_gap_starts_a_new_baseline(self):
         tracker = AppTracker()
         tracker.sample((reading("a-1", "org.example.A", 0),), 0.0, 1)
