@@ -163,7 +163,7 @@ def chunk_size(groups, budget):
 
 
 def plan_buckets(selected, budget):
-    """區間數不超過 budget；沒有空白時與參考專案相同（每區間 ceil(n / budget) 筆）。"""
+    """區間數不超過 budget；沒有空白時每區間 ceil(n / budget) 筆，與參考專案的切法一樣。"""
     groups = merge_oldest(split_runs(selected), budget)
     size = chunk_size(groups, budget)
     return [group[start:start + size] for group in groups
@@ -200,7 +200,8 @@ def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
     分段、斷線與複製點的規則沿用參考專案 HistoryStore.points()，但分區間刻意不同：
     區間不跨越超過 600 秒的空白（參考的作法在 7 天範圍會讓耗電線畫不出來，
     空白也會被平均掉），空白太多時從最舊的資料開始合併；複製點也計入點數，
-    超過時縮小區間預算重算。每區間一筆時結果與參考相同。
+    超過時縮小區間預算重算。只有在每區間一筆、且樣本加複製點不超過 max_points 時，
+    結果才與參考相同。
     """
     selected = [item for item in samples if item.t >= now - range_s]
     if not selected:

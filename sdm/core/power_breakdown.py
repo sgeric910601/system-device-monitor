@@ -2,8 +2,9 @@
 
 整機耗電來自不斷電系統輸出（含螢幕等所有插在上面的設備）；沒有不斷電系統時，
 只能把已知元件相加。CPU 欄位先保留，第 6 階段才有可信的 CPU 功耗。
-狀態與訊息對應參考專案 PowerBreakdown 的 available／sampling／incomplete／
-inconsistent／stale。
+狀態名稱沿用參考專案 PowerBreakdown（available／sampling／incomplete／
+inconsistent／stale），但判斷規則與訊息依 Linux 的資料來源改寫：沒有取樣窗對齊的概念，
+上下限不同，缺少的元件一律算進「其他」並標為資料不完整。
 """
 from dataclasses import dataclass
 import math

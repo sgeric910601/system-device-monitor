@@ -1,4 +1,7 @@
-"""近 3 分鐘平均：指數移動平均，τ = 180 秒，與參考專案 BatteryStore.ema 相同。"""
+"""近 3 分鐘平均：指數移動平均，τ = 180 秒，公式與參考專案 BatteryStore.ema 相同。
+
+何時歸零重算由呼叫端決定（電源服務在拆解來源改變時重算，參考專案沒有這種情況）。
+"""
 import math
 
 from sdm.constants import Power
