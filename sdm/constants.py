@@ -284,3 +284,4 @@ class Storage:
     """設定檔寫入與保護。"""
     STALE_TEMPORARY_SECONDS = 3600  # 超過 1 小時的本程式暫存檔視為殘留，載入時清理
     BACKUP_NAME_ATTEMPTS = 100      # 同一秒內備份檔名加序號的嘗試上限
+    SAVE_DELAY_MS = 500             # 設定變更後延遲寫檔（連續調整只寫一次）
