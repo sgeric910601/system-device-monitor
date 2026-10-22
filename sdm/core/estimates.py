@@ -1,7 +1,9 @@
 """剩餘時間與充電時間（分鐘），移植參考專案 Estimator 與 BatteryStore 的平均規則。
 
 - 系統預估來自 UPower：TimeToEmpty／TimeToFull 為 0 代表還在估算（None，畫面顯示「計算中…」）；
-  UPower 有回報這顆電池時，充滿時間絕不改用直線推算（80% 以上充電會變慢，直線推算太樂觀）。
+  UPower 有回報這顆電池時，充滿時間不馬上改用直線推算（80% 以上充電會變慢，直線推算太樂觀）。
+  刻意與參考專案不同：Linux 有許多驅動的 TimeToFull 永遠是 0，所以 0 持續 2 分鐘後
+  （SystemWatch）改用依平均的直線推算，並標示為約略值（to_full_approx）。
 - 依近 3 分鐘平均：充電與放電分開平均（τ = 180 秒），狀態一改變就重算；App 執行中才開始充電時，
   頭 60 秒的電流還在爬升，不納入平均。平均電流超過 10 mA（或功率超過 0.1 W）才推算。
 - 「到 10%」＝ 總時間 ×（電量 − 10）÷ 電量。
@@ -23,10 +25,14 @@ HOLDING_STATES = (FULL, LIMIT_REACHED, PLUGGED_IDLE)
 
 @dataclass(frozen=True)
 class SystemTimes:
-    """系統（UPower）預估；reports 為 False 代表沒有系統預估來源。"""
+    """系統（UPower）預估；reports 為 False 代表沒有系統預估來源。
+
+    *_stalled：UPower 一直回報 0（還在估算）已超過 2 分鐘，視為不會給出預估。"""
     reports: bool = False
     to_empty_min: Optional[int] = None
     to_full_min: Optional[int] = None
+    empty_stalled: bool = False
+    full_stalled: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,8 @@ class Estimates:
     averages: Averages = field(default_factory=Averages)
     draining_on_ac: bool = False            # 接著電源但供電不足，電池仍在放電
     system_reports: bool = False
+    system_stalled: bool = False            # UPower 有回報這顆電池，但一直給不出時間
+    to_full_approx: bool = False            # 充滿時間是 UPower 給不出時的直線推算
     display_flow: Optional[str] = None      # 經過顯示濾波的流向（沒有時依瓦數判斷）
 
     @property
@@ -103,14 +111,22 @@ def to_empty_fields(snapshot, averages, system):
     return fields
 
 
-def to_full_minutes(snapshot, averages, system):
-    """UPower 有回報就只用它（還在估算為 None）；沒有系統預估時才依平均直線推算。"""
-    if system.reports:
-        return system.to_full_min
+def straight_line_to_full(snapshot, averages):
     remaining, full = capacities(snapshot, averages.unit)
     if full is None or remaining is None or not usable_rate(averages.charge, averages.unit):
         return None
     return round_half_up(max(0.0, full - remaining) / averages.charge * MINUTES)
+
+
+def to_full_minutes(snapshot, averages, system):
+    """（分鐘, 是否約略）。UPower 有回報就用它；還在估算時等 2 分鐘，之後才改用直線推算。
+    沒有系統預估來源時直接直線推算（與參考相同，不標示約略）。"""
+    if not system.reports:
+        return straight_line_to_full(snapshot, averages), False
+    if system.to_full_min is not None or not system.full_stalled:
+        return system.to_full_min, False
+    minutes = straight_line_to_full(snapshot, averages)
+    return minutes, minutes is not None
 
 
 def minutes_to_charge(target, snapshot, estimates):
@@ -142,16 +158,45 @@ def estimate(snapshot, averages=Averages(), display_state=None, system=SystemTim
                   health_pct=snapshot.health_pct, averages=averages, draining_on_ac=draining,
                   system_reports=system.reports)
     if state == DISCHARGING or draining:
-        fields.update(to_empty_fields(snapshot, averages, system))
+        fields.update(to_empty_fields(snapshot, averages, system),
+                      system_stalled=system.reports and system.empty_stalled)
     result = Estimates(**fields)
     if state == CHARGING:
-        result = replace(result, to_full=to_full_minutes(snapshot, averages, system))
+        minutes, approx = to_full_minutes(snapshot, averages, system)
+        result = replace(result, to_full=minutes, to_full_approx=approx,
+                         system_stalled=system.reports and system.full_stalled)
         if snapshot.limit is not None:
             result = replace(result, to_limit=minutes_to_charge(snapshot.limit, snapshot, result))
     # 剛插電 30 秒內電池還在放電是充電器還沒開始充電，不算供電不足（時間值照算，與參考相同）
     if just_plugged and result.draining_on_ac:
         result = replace(result, draining_on_ac=False)
     return result
+
+
+class SystemWatch:
+    """記錄 UPower 從何時開始一直回報 0；充電時看充滿時間，用電池（或供電不足）時看剩餘時間。"""
+
+    def __init__(self):
+        self.full_since = None
+        self.empty_since = None
+
+    @staticmethod
+    def since(previous, waiting, now):
+        if not waiting:
+            return None
+        return now if previous is None else previous
+
+    def update(self, system, state, draining, now):
+        """回傳加上 *_stalled 的 SystemTimes；state 為顯示狀態、now 為單調時鐘秒數。"""
+        full_waiting = system.reports and system.to_full_min is None and state == CHARGING
+        empty_waiting = (system.reports and system.to_empty_min is None
+                         and (state == DISCHARGING or (state == PLUGGED_IDLE and draining)))
+        self.full_since = self.since(self.full_since, full_waiting, now)
+        self.empty_since = self.since(self.empty_since, empty_waiting, now)
+        limit = Battery.UPOWER_STALL_SECONDS
+        return replace(system,
+                       full_stalled=full_waiting and now - self.full_since >= limit,
+                       empty_stalled=empty_waiting and now - self.empty_since >= limit)
 
 
 class LiveAverages:

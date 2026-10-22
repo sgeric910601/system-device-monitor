@@ -8,8 +8,9 @@ import unittest
 
 from sdm.core.battery import (CHARGING, DISCHARGING, FULL, LIMIT_REACHED, PLUGGED_IDLE,
                               UNIT_AMPS, UNIT_WATTS, BatterySnapshot)
-from sdm.core.estimates import (Averages, LiveAverages, SystemTimes, estimate,
+from sdm.core.estimates import (Averages, LiveAverages, SystemTimes, SystemWatch, estimate,
                                 minutes_to_charge)
+from sdm.constants import Battery
 from sdm.core.presentation import FLOW_ADAPTER, FLOW_BATTERY, FLOW_CHARGING, FLOW_MIXED
 
 UPOWER_ESTIMATING = SystemTimes(reports=True)
@@ -84,6 +85,26 @@ class SystemEstimate(unittest.TestCase):
         e = estimate(self.charging, amps(charge=3.166), display_state=CHARGING,
                      system=SystemTimes(reports=True, to_full_min=80))
         self.assertEqual(e.to_full, 80)
+
+    def test_upower_that_never_estimates_falls_back_to_an_approximate_time(self):
+        # 刻意與參考不同：Linux 許多驅動的 TimeToFull 一直是 0，等滿 2 分鐘才改用平均推算並標示「約」
+        waiting = estimate(self.charging, amps(charge=3.166), display_state=CHARGING,
+                           system=SystemTimes(reports=True, full_stalled=False))
+        self.assertEqual((waiting.to_full, waiting.to_full_approx), (None, False))
+        stalled = estimate(self.charging, amps(charge=3.166), display_state=CHARGING,
+                           system=SystemTimes(reports=True, full_stalled=True))
+        self.assertEqual((stalled.to_full, stalled.to_full_approx), (34, True))
+        no_average = estimate(self.charging, display_state=CHARGING,
+                              system=SystemTimes(reports=True, full_stalled=True))
+        self.assertEqual((no_average.to_full, no_average.to_full_approx), (None, False))
+        upower = estimate(self.charging, amps(charge=3.166), display_state=CHARGING,
+                          system=SystemTimes(reports=True, to_full_min=80, full_stalled=True))
+        self.assertEqual((upower.to_full, upower.to_full_approx), (80, False))
+
+    def test_stalled_time_to_empty_is_marked(self):
+        e = estimate(self.discharging, amps(discharge=2.0),
+                     system=SystemTimes(reports=True, empty_stalled=True))
+        self.assertEqual((e.system_to_empty, e.system_stalled, e.headline_to_empty), (None, True, 90))
 
     def test_minutes_to_charge_without_a_system_estimate(self):
         e = estimate(self.charging, amps(charge=3.166), display_state=CHARGING)
@@ -183,6 +204,30 @@ class PowerSourceCases(unittest.TestCase):
     def test_health_is_full_over_design(self):
         e = estimate(BatterySnapshot(energy_full_wh=50.0, energy_design_wh=55.0))
         self.assertAlmostEqual(e.health_pct, 90.909, places=3)
+
+
+class Watch(unittest.TestCase):
+    """UPower 回報 0 的時間：充電時看充滿、用電池時看剩餘；狀態改變或有值就重新計時。"""
+
+    def test_full_window(self):
+        watch, waiting = SystemWatch(), SystemTimes(reports=True)
+        stall = Battery.UPOWER_STALL_SECONDS
+        self.assertFalse(watch.update(waiting, CHARGING, False, 100.0).full_stalled)
+        self.assertFalse(watch.update(waiting, CHARGING, False, 100.0 + stall - 1).full_stalled)
+        self.assertTrue(watch.update(waiting, CHARGING, False, 100.0 + stall).full_stalled)
+        given = SystemTimes(reports=True, to_full_min=40)
+        self.assertFalse(watch.update(given, CHARGING, False, 100.0 + stall + 5).full_stalled)
+        self.assertFalse(watch.update(waiting, CHARGING, False, 100.0 + stall + 10).full_stalled)
+
+    def test_empty_window_and_state_changes(self):
+        watch, waiting = SystemWatch(), SystemTimes(reports=True)
+        stall = Battery.UPOWER_STALL_SECONDS
+        watch.update(waiting, DISCHARGING, False, 0.0)
+        self.assertTrue(watch.update(waiting, DISCHARGING, False, stall).empty_stalled)
+        self.assertFalse(watch.update(waiting, CHARGING, False, stall + 1).empty_stalled)
+        self.assertFalse(watch.update(waiting, PLUGGED_IDLE, True, stall + 2).empty_stalled)
+        self.assertTrue(watch.update(waiting, PLUGGED_IDLE, True, 2 * stall + 2).empty_stalled)
+        self.assertEqual(watch.update(SystemTimes(), DISCHARGING, False, 9e9), SystemTimes())
 
 
 class Averaging(unittest.TestCase):

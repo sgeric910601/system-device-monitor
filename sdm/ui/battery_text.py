@@ -17,6 +17,7 @@ TONE_NORMAL = "normal"
 TONE_WARNING = "warning"
 TONE_CRITICAL = "critical"
 ESTIMATING = "計算中…"
+APPROX = "約 "                # UPower 給不出時間、改用平均推算的約略值
 BELOW_RESERVE = f"已低於 {Battery.RESERVE_PERCENT}%"
 MILLI = 1000
 MINUTES_PER_HOUR = 60
@@ -80,12 +81,14 @@ def remaining_phrase(minutes):
 
 def charging_headline(power):
     battery, estimates = power.battery, power.estimates
+    prefix = ""
     if battery.limit is not None and battery.level < battery.limit:
         minutes = estimates.to_limit
         suffix = f"後到 {battery.limit}%"
     else:
         minutes, suffix = estimates.to_full, "後充滿"
-    return ESTIMATING if minutes is None else minutes_phrase(minutes) + suffix
+        prefix = APPROX if estimates.to_full_approx else ""
+    return ESTIMATING if minutes is None else prefix + minutes_phrase(minutes) + suffix
 
 
 def headline_text(power):
@@ -132,10 +135,11 @@ def limit_text(battery):
     return f"{battery.limit}%（{battery.limit_start}% 以下才重新充電）"
 
 
-def system_cell(minutes, reports):
+def system_cell(minutes, reports, stalled=False):
+    """UPower 的時間；還在估算為「計算中…」，超過 2 分鐘都給不出或沒有 UPower 為「—」。"""
     if minutes is not None:
         return duration_text(minutes)
-    return ESTIMATING if reports else PLACEHOLDER
+    return ESTIMATING if reports and not stalled else PLACEHOLDER
 
 
 def reserve_cell(power, minutes, system):
@@ -143,7 +147,8 @@ def reserve_cell(power, minutes, system):
     if power.battery.level <= Battery.RESERVE_PERCENT:
         return BELOW_RESERVE
     if system:
-        return system_cell(minutes, power.estimates.system_reports)
+        e = power.estimates
+        return system_cell(minutes, e.system_reports, e.system_stalled)
     return duration_text(minutes)
 
 
@@ -159,7 +164,7 @@ def average_note(power):
 
 def discharging_card(power, now, unplugged_at):
     e = power.estimates
-    table = (("到 0%", system_cell(e.system_to_empty, e.system_reports),
+    table = (("到 0%", system_cell(e.system_to_empty, e.system_reports, e.system_stalled),
               duration_text(e.live_to_empty)),
              (f"到 {Battery.RESERVE_PERCENT}%", reserve_cell(power, e.system_to_10, True),
               reserve_cell(power, e.live_to_10, False)))
@@ -185,7 +190,8 @@ def charging_card(power):
         target = (f"充到上限（{battery.limit}%）", e.to_limit)
     else:
         target = ("充滿（100%）", e.to_full)
-    rows = ((target[0], ESTIMATING if target[1] is None else duration_text(target[1])),
+    approx = APPROX if e.to_full_approx and battery.limit is None else ""
+    rows = ((target[0], ESTIMATING if target[1] is None else approx + duration_text(target[1])),
             ("近 3 分鐘平均充電", average_rate_text(power)),
             ("充入功率", watts_text(max(0.0, e.battery_w or 0.0))))
     return TimeCard("充電預估", rows=rows)

@@ -7,6 +7,7 @@
 - Linux 沒有設計循環次數，循環次數只顯示數字；健康度與容量推算都來自滿充 ÷ 設計容量。
 """
 from sdm.core.battery import CHARGING, DISCHARGING, round_half_up
+from sdm.core.fmt import PLACEHOLDER
 from sdm.ui.battery_text import ESTIMATING, adapter_summary, limit_text
 from sdm.ui.power_text import duration_text, watts_text
 
@@ -63,12 +64,15 @@ def system_estimate(power):
     battery, e = power.battery, power.estimates
     if not e.system_reports:
         return None
+    waiting = PLACEHOLDER if e.system_stalled else ESTIMATING
     if e.state == DISCHARGING:
-        return ESTIMATING if e.system_to_empty is None else duration_text(e.system_to_empty)
+        return waiting if e.system_to_empty is None else duration_text(e.system_to_empty)
     if e.state == CHARGING:
         if battery.limit is not None:
             return ESTIMATING if e.to_limit is None else f"到 {battery.limit}% {clock(e.to_limit)}"
-        return ESTIMATING if e.to_full is None else f"充滿 {clock(e.to_full)}"
+        if e.to_full is None or e.to_full_approx:     # 約略值不是系統預估
+            return waiting
+        return f"充滿 {clock(e.to_full)}"
     return "接電中"
 
 

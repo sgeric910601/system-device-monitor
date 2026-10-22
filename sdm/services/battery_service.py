@@ -10,7 +10,7 @@ from typing import Optional
 
 from sdm.constants import Battery, Power
 from sdm.core.battery import CHARGING, DISCHARGING, BatterySnapshot
-from sdm.core.estimates import HOLDING_STATES, Estimates, LiveAverages, estimate
+from sdm.core.estimates import HOLDING_STATES, Estimates, LiveAverages, SystemWatch, estimate
 from sdm.core.history import HistorySample
 from sdm.core.power_breakdown import Breakdown
 from sdm.core.presentation import ChargingPresentation, PowerFlowPresentation
@@ -57,6 +57,7 @@ class BatteryTracker:
         self.presentation = ChargingPresentation()
         self.flow = PowerFlowPresentation()
         self.averages = LiveAverages()
+        self.watch = SystemWatch()
         self.previous_online = None
         self.last_state = None
         self.plugged_in_mono = None
@@ -85,6 +86,7 @@ class BatteryTracker:
         state = self.presentation.state(snapshot, now)
         self.track_plug(snapshot.ac_online, state, now, wall)
         averages = self.averages.update(state, snapshot, now)
+        system = self.watch.update(system, state, snapshot.draining, now)
         result = estimate(snapshot, averages, state, system, self.just_plugged(now))
         holding = (state in HOLDING_STATES and not result.draining_on_ac
                    and not snapshot.draining_above_limit)

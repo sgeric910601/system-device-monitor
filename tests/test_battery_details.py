@@ -110,6 +110,10 @@ class Values(unittest.TestCase):
                                charge_control_end_threshold=100)
         values = {row[0]: row[2] for row in detail_rows(no_limit)}
         self.assertEqual(values["system_estimate"], "充滿 1:36")
+        stalled = laptop_from(sysfs.asus, SystemTimes(reports=True, full_stalled=True),
+                              charge_control_end_threshold=100)
+        values = {row[0]: row[2] for row in detail_rows(stalled)}
+        self.assertEqual(values["system_estimate"], "—")
         plugged = laptop_from(sysfs.not_charging_at_limit, SystemTimes(reports=True))
         values = {row[0]: row[2] for row in detail_rows(plugged)}
         self.assertEqual(values["system_estimate"], "接電中")

@@ -58,6 +58,14 @@ class Header(unittest.TestCase):
         self.assertEqual(header(power)[1:3], ("充電中", "35 分鐘後到 80%"))
         self.assertEqual(header(laptop(CHARGING_TO_LIMIT, system=UPOWER))[2], "計算中…")
 
+    def test_approximate_time_to_full(self):
+        to_full = dataclasses.replace(CHARGING_TO_LIMIT, limit=None)
+        power = laptop(to_full, Averages(charge=18.0, unit=UNIT_WATTS),
+                       SystemTimes(reports=True, full_stalled=True))
+        self.assertEqual(header(power)[2], "約 1 小時 13 分後充滿")
+        self.assertEqual(time_card(power, NOW).rows[0], ("充滿（100%）", "約 1 小時 13 分"))
+        self.assertEqual(menu_line(power), "電池：62%・約 1 小時 13 分後充滿")
+
     def test_plugged_states(self):
         at_limit = BatterySnapshot(percent=80, ac_online=True, battery_w=0.0, limit=80)
         self.assertEqual(header(laptop(at_limit))[1:3], ("已達上限 80%", "暫停充電"))
@@ -92,6 +100,12 @@ class Time(unittest.TestCase):
                                       ("到 10%", "計算中…", "6 小時 35 分")))
         self.assertEqual(card.rows, (("已使用電池", "2 小時 15 分"),))
         self.assertEqual(card.note, "近 3 分鐘平均放電 520 mA（約 6.5 W）")
+
+    def test_upower_that_never_estimates_shows_a_dash_after_the_window(self):
+        power = laptop(ON_BATTERY, Averages(discharge=0.52, unit=UNIT_AMPS),
+                       SystemTimes(reports=True, empty_stalled=True))
+        self.assertEqual(time_card(power, NOW).table, (("到 0%", "—", "7 小時 30 分"),
+                                                       ("到 10%", "—", "6 小時 35 分")))
 
     def test_without_upower_and_with_history_unplug_time(self):
         power = laptop(ON_BATTERY)

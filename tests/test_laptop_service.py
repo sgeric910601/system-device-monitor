@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from sdm.constants import Battery
 from sdm.core.battery import CHARGING, DISCHARGING, LIMIT_REACHED, PLUGGED_IDLE
 from sdm.core.presentation import FLOW_BATTERY, FLOW_MIXED
 from sdm.data.power_supply import read_adapters, read_batteries
@@ -92,6 +93,17 @@ class Mode(Base):
         self.assertEqual((power.battery.battery_w, power.state), (15.0, CHARGING))
         self.upower = UpowerReading(on_battery=False, is_battery=False, state=1)
         self.assertEqual(self.service.sample().battery.battery_w, 0.0)
+
+    def test_charge_time_becomes_approximate_after_two_minutes_of_zero(self):
+        sysfs.asus(self.root, charge_control_end_threshold=100)
+        self.upower = UpowerReading(on_battery=False, is_battery=True, state=1)
+        self.assertIsNone(self.service.sample().estimates.to_full)
+        self.advance(Battery.UPOWER_STALL_SECONDS - 5)
+        self.assertIsNone(self.service.sample().estimates.to_full)
+        self.advance(5)
+        estimates = self.service.sample().estimates
+        self.assertTrue(estimates.to_full_approx)
+        self.assertIsNotNone(estimates.to_full)
 
     def test_upower_still_estimating(self):
         sysfs.thinkpad(self.root)
