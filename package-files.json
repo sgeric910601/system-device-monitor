@@ -320,6 +320,7 @@
     "tests/test_udisks.py",
     "tests/test_ui_state.py",
     "tests/test_upower.py",
-    "tests/test_ups.py"
+    "tests/test_ups.py",
+    "tests/test_widgets.py"
   ]
 }

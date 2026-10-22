@@ -11,7 +11,7 @@ from gi.repository import Gtk
 from sdm.services.power_profiles import profile_title
 from sdm.ui.monitor_widgets import TopList, card, set_text
 from sdm.ui.ranking import power_ranking
-from sdm.ui.widgets import box, label
+from sdm.ui.widgets import box, discard, label
 
 MODE_NOTE = "與 GNOME 快速設定裡的電源模式相同，由系統的電源模式服務切換。"
 
@@ -42,8 +42,7 @@ class PowerModeCard:
 
     def rebuild(self, available):
         self.available = available
-        for button, _ in self.buttons.values():
-            self.row.remove(button)
+        discard(self.row, [button for button, _ in self.buttons.values()])
         self.buttons, group = {}, None
         for name in available:
             button = Gtk.RadioButton.new_with_label_from_widget(group, profile_title(name))

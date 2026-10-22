@@ -11,6 +11,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from sdm.services.power_profiles import profile_title
+from sdm.ui.widgets import discard
 
 MENU_INDENT = "    "
 LINE_KEYS = ("power", "cpu", "temperature", "ram", "gpu", "network", "ups")
@@ -33,9 +34,7 @@ class BatteryRows:
         self.rows = rows
 
     def rebuild(self, rows):
-        for item in self.items:
-            self.menu.remove(item)
-            item.destroy()
+        discard(self.menu, self.items)
         start = self.menu.get_children().index(self.header) + 1
         self.items = []
         for offset, (key, text) in enumerate(rows):
@@ -100,9 +99,7 @@ class TrayMenu:
         self.mode_item.set_visible(bool(state.available))
 
     def rebuild_profiles(self, available):
-        for item, _ in self.profiles.values():
-            self.mode_menu.remove(item)
-            item.destroy()
+        discard(self.mode_menu, [item for item, _ in self.profiles.values()])
         self.profiles, group = {}, None
         for name in available:
             item = Gtk.RadioMenuItem.new_with_label_from_widget(group, profile_title(name))

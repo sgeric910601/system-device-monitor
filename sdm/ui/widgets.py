@@ -28,6 +28,13 @@ def clear(widget):
         widget.remove(child)
 
 
+def discard(container, widgets):
+    """重建時移除並銷毀舊的元件（只移除不銷毀，GTK 會一直留著它們的資源與訊號）。"""
+    for widget in widgets:
+        container.remove(widget)
+        widget.destroy()
+
+
 class Graph(Gtk.DrawingArea):
     def __init__(self, series, color):
         super().__init__()
