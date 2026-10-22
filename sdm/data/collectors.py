@@ -1,5 +1,4 @@
 """唯讀資料來源轉接；不做任何裝置控制，也不存取 SMTP。"""
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,15 +10,17 @@ from gi.repository import Gio, GLib, GUdev
 from sdm import paths
 from sdm.constants import Collect
 from sdm.core.counters import Counters, CpuCounter
-from sdm.core.devices import battery, normalize_usb, STATES, disk_is_physical
+from sdm.core.devices import battery, normalize_usb, STATES
 from sdm.core.fmt import number
 from sdm.core.jsonfile import load_json
 from sdm.core.power_breakdown import SAMPLING
 from sdm.data.gpu import NvidiaStream, primary_gpu, read_amd_gpus
 from sdm.data.logitech_battery import SolaarBattery, apply_battery
 from sdm.data.machine import read_model
+from sdm.data.network import interface_state, parse_net_dev
 from sdm.data.power_supply import read_adapters, read_batteries
 from sdm.data.sources import command, read
+from sdm.data.storage import parse_diskstats, parse_lsblk
 from sdm.data.ups import read_ups
 from sdm.data.upower import UpowerSource, bus_getter
 from sdm.services.power_service import PowerService
@@ -106,27 +107,9 @@ def hwmon_fans():
                     value=value))
     return fans
 
-def disk_entry(device):
-    """lsblk 的一個實體磁碟：型號、介面、容量與已掛載的分割區用量。"""
-    volumes = []
-    def visit(node):
-        for mount in node.get("mountpoints") or []:
-            if mount and not mount.startswith("/snap/"):
-                try:
-                    s = os.statvfs(mount)
-                    capacity = s.f_blocks * s.f_frsize
-                    volumes.append(dict(mount=mount, total=capacity,
-                        used=(s.f_blocks - s.f_bfree) * s.f_frsize,
-                        available=s.f_bavail * s.f_frsize))
-                except OSError:
-                    pass
-        for child in node.get("children", []):
-            visit(child)
-    visit(device)
-    return dict(name=device["name"], model=(device.get("model") or "").strip(),
-                transport=device.get("tran") or "", size=device.get("size", 0), volumes=volumes)
-
 class Collectors:
+    root = Path("/")     # 讀取 /proc 與 /sys 的根目錄；測試時指向假的目錄
+
     def __init__(self):
         self.aliases = load_json(paths.ALIASES)
         self.logitech_battery = SolaarBattery()
@@ -145,47 +128,45 @@ class Collectors:
 
     def system(self):
         now = time.monotonic()
-        cpu_values = [int(x) for x in read("/proc/stat").splitlines()[0].split()[1:]]
-        cpu = self.cpu.sample(cpu_values, now)
-        memory = {}
-        for line in read("/proc/meminfo").splitlines():
-            key, value = line.split(":", 1)
-            memory[key] = int(value.split()[0]) * 1024
-        total = memory.get("MemTotal", 0)
-        used = total - memory.get("MemAvailable", memory.get("MemFree", 0))
-        networks = []
-        for line in read("/proc/net/dev").splitlines()[2:]:
-            name, values = line.split(":", 1)
-            name = name.strip()
-            if name == "lo":
-                continue
-            values = [int(x) for x in values.split()]
-            root = Path("/sys/class/net") / name
-            operstate = read(root / "operstate")
-            physical = (root / "device").exists()
-            active = operstate == "up" or (not physical and operstate == "unknown")
-            rx = self.rates.rate("rx:" + name, values[0], now)
-            tx = self.rates.rate("tx:" + name, values[8], now)
-            if active:
-                networks.append(dict(name=name, rx=rx, tx=tx, physical=physical,
-                                     kind="Wi-Fi" if (root / "wireless").exists() else
-                                          ("有線網路" if physical else "虛擬介面")))
+        stat = read(self.root/"proc/stat").splitlines()
+        cpu = self.cpu.sample([int(x) for x in stat[0].split()[1:]], now)
+        used, total = self.memory_used()
+        networks = self.network_rates(now)
         physical = [n for n in networks if n["physical"]]
         def net_sum(key):
             known = [n[key] for n in physical if n[key] is not None]
             return sum(known) if known else None
-        disks = []
-        for line in read("/proc/diskstats").splitlines():
-            fields = line.split()
-            name = fields[2]
-            root = Path("/sys/class/block") / name
-            if (root / "partition").exists() or not disk_is_physical(name):
-                continue
-            disks.append(dict(name=name, read=self.rates.rate("dr:" + name, int(fields[5]) * 512, now),
-                              write=self.rates.rate("dw:" + name, int(fields[9]) * 512, now)))
         return dict(cpu=cpu, cpu_info=self.cpu_info, ram=used / total * 100 if total else None,
                     ram_used=used, ram_total=total, networks=networks,
-                    rx=net_sum("rx"), tx=net_sum("tx"), disks=disks, stamp=time.time())
+                    rx=net_sum("rx"), tx=net_sum("tx"), disks=self.disk_rates(now),
+                    stamp=time.time())
+
+    def memory_used(self):
+        """（已用、總量）位元組；已用＝總量減去 MemAvailable。"""
+        memory = {}
+        for line in read(self.root/"proc/meminfo").splitlines():
+            key, value = line.split(":", 1)
+            memory[key] = int(value.split()[0]) * 1024
+        total = memory.get("MemTotal", 0)
+        return total - memory.get("MemAvailable", memory.get("MemFree", 0)), total
+
+    def network_rates(self, now):
+        """連線中的介面（不含 lo）與各自的收送速率；計數器每次都更新，介面恢復連線時才有基準。"""
+        networks = []
+        for counter in parse_net_dev(read(self.root/"proc/net/dev")):
+            state = interface_state(self.root, counter.name)
+            rx = self.rates.rate("rx:" + counter.name, counter.rx_bytes, now)
+            tx = self.rates.rate("tx:" + counter.name, counter.tx_bytes, now)
+            if state.active:
+                networks.append(dict(name=counter.name, rx=rx, tx=tx, physical=state.physical,
+                                     kind=state.kind))
+        return networks
+
+    def disk_rates(self, now):
+        return [dict(name=counter.name,
+                     read=self.rates.rate("dr:" + counter.name, counter.read_bytes, now),
+                     write=self.rates.rate("dw:" + counter.name, counter.write_bytes, now))
+                for counter in parse_diskstats(read(self.root/"proc/diskstats"), self.root)]
 
     def make_power_service(self, model=None):
         """各讀取函式都在呼叫時才查模組層級名稱，測試可替換；UPower 只在筆電模式讀取。"""
@@ -209,34 +190,44 @@ class Collectors:
         gpu = primary_gpu(power.gpus)
         pending = power.breakdown.status == SAMPLING
         self.refresh_disk_meta()
-        storage, used = [], set()
-        for disk in self.disk_meta:
-            matched = device_temperatures(temperatures, f"/sys/class/block/{disk['name']}/device")
-            used.update(id(s) for s in matched)
-            storage.append(dict(disk, temperature=storage_temperature(matched)))
-        network_temperatures = {}
-        for interface in Path("/sys/class/net").glob("*"):
-            if not (interface/"device").exists():
-                continue
-            matched = device_temperatures(temperatures, interface/"device")
-            if matched:
-                network_temperatures[interface.name] = max(s["value"] for s in matched)
-                used.update(id(s) for s in matched)
+        storage, used = self.storage_temperatures(temperatures)
+        network_temperatures, network_used = self.network_temperatures(temperatures)
+        used = used | network_used
         remaining = [s for s in temperatures if id(s) not in used and s["chip"] not in ("k10temp", "coretemp")]
         return dict(gpu=gpu, gpus=power.gpus, gpu_error="" if gpu or pending else GPU_UNAVAILABLE,
                     ups=power.ups, power=power, temperatures=remaining, cpu_temp=cpu_temp,
                     cpu_temp_label=cpu_temp_label, fans=hwmon_fans(), storage=storage,
                     network_temperatures=network_temperatures, stamp=time.time())
 
+    def storage_temperatures(self, temperatures):
+        """每顆磁碟加上依硬體路徑配對的溫度；同時回傳已配對感測器的 id。"""
+        storage, used = [], set()
+        for disk in self.disk_meta:
+            matched = device_temperatures(temperatures,
+                                          self.root/"sys/class/block"/disk["name"]/"device")
+            used.update(id(s) for s in matched)
+            storage.append(dict(disk, temperature=storage_temperature(matched)))
+        return storage, used
+
+    def network_temperatures(self, temperatures):
+        """實體網路介面的 PHY 溫度（取最高）；同時回傳已配對感測器的 id。"""
+        found, used = {}, set()
+        for interface in (self.root/"sys/class/net").glob("*"):
+            if not (interface/"device").exists():
+                continue
+            matched = device_temperatures(temperatures, interface/"device")
+            if matched:
+                found[interface.name] = max(s["value"] for s in matched)
+                used.update(id(s) for s in matched)
+        return found, used
+
     def refresh_disk_meta(self):
         if time.monotonic() - self.last_disk_meta < Collect.DISK_META_INTERVAL:
             return
         self.last_disk_meta = time.monotonic()
         try:
-            root = json.loads(command(["/usr/bin/lsblk", "-J", "-b",
+            self.disk_meta = parse_lsblk(command(["/usr/bin/lsblk", "-J", "-b",
                 "-o", "NAME,TYPE,TRAN,SIZE,FSTYPE,MOUNTPOINTS,MODEL"], Collect.LSBLK_TIMEOUT))
-            self.disk_meta = [disk_entry(device) for device in root["blockdevices"]
-                              if device.get("type") == "disk" and disk_is_physical(device["name"])]
         except (OSError, subprocess.SubprocessError, ValueError, KeyError):
             self.disk_meta = []
 
@@ -244,10 +235,21 @@ class Collectors:
         return self.logitech_battery.refresh()
 
     def devices(self):
-        devices, errors = [], []
         logitech = getattr(self, "logitech_battery", None)
         if logitech is not None:
             logitech.observe()
+        usb = self.usb_devices()
+        bluez, errors = self.bluez_devices()
+        # 藍牙無線電屬於連線基礎設施，不列入周邊清單。
+        devices, error = self.upower_devices(usb, bluez, logitech)
+        errors += [error] if error else []
+        devices.extend(bluez.values())
+        devices.extend(usb.values())
+        devices.sort(key=lambda d: ({"UPS": 0, "無線周邊": 1, "藍牙": 2, "USB": 3}.get(d["kind"], 4), d["name"]))
+        return dict(devices=devices, errors=errors, stamp=time.time())
+
+    def usb_devices(self):
+        """sysfs 的 USB 終端裝置（不含集線器），以實際路徑為鍵。"""
         usb = {}
         for path in sorted(Path("/sys/bus/usb/devices").glob("*")):
             if not (path / "idVendor").exists() or ":" in path.name:
@@ -262,6 +264,10 @@ class Collectors:
                 kind="USB", status=status, battery=power, percent=None, stamp=0,
                 source="USB", detail=f"{vendor}:{product} · {raw_name}",
                 vendor=vendor, product=product)
+        return usb
+
+    def bluez_devices(self):
+        """BlueZ 確認已連線的裝置；服務無法取得時回傳錯誤訊息。"""
         bluez = {}
         try:
             objects = dbus(self.bus, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager",
@@ -281,8 +287,12 @@ class Collectors:
                     battery=label, percent=value, stamp=self.updates[key][1] if b is not None else 0,
                     source="BlueZ", detail="藍牙電量最後觀測時間", native=path)
         except GLib.Error:
-            errors.append("藍牙服務暫時無法取得")
-        # 藍牙無線電屬於連線基礎設施，不列入周邊清單。
+            return bluez, ["藍牙服務暫時無法取得"]
+        return bluez, []
+
+    def upower_devices(self, usb, bluez, logitech):
+        """UPower 的周邊與不斷電系統；中途失敗時保留已讀到的部分並回傳錯誤訊息。"""
+        devices = []
         try:
             power_paths = dbus(self.bus, "org.freedesktop.UPower", "/org/freedesktop/UPower",
                                "org.freedesktop.UPower", "EnumerateDevices")[0]
@@ -290,38 +300,42 @@ class Collectors:
                 d = dbus(self.bus, "org.freedesktop.UPower", path,
                          "org.freedesktop.DBus.Properties", "GetAll",
                          GLib.Variant("(s)", ("org.freedesktop.UPower.Device",)))[0]
-                native = d.get("NativePath", "")
-                device_type = d.get("Type", 0)
-                stamp = d.get("UpdateTime", 0)
-                label, value = battery(d.get("BatteryLevel", 0), d.get("Percentage"),
-                                       bool(stamp) and d.get("IsPresent", True))
-                if native.startswith("/org/bluez/"):
-                    if native in bluez:
-                        item = bluez[native]
-                        if item["percent"] is None:
-                            item.update(battery=label, percent=value, stamp=stamp, source="UPower")
-                    continue  # 以 Connected 為準，不採用快取的電量紀錄。
-                if not d.get("IsPresent", False) or device_type not in (2, 3, 5, 6):
+                item = self.upower_item(path, d, usb, bluez)
+                if item is None:
                     continue
-                if device_type == 2 and d.get("PowerSupply", False):
-                    continue  # 筆電本身的電池由電源頁顯示，不是周邊。
-                supply = Path("/sys/class/power_supply") / native
-                if supply.exists() and read(supply/"online") == "0":
-                    continue
-                parent = usb_parent(native) if native.startswith("/sys/") else (
-                    usb_parent(supply) if supply.exists() else None)
-                if parent:
-                    usb.pop(parent, None)
-                devices.append(dict(id="power:" + path, name=d.get("Model") or "電池裝置",
-                    kind="UPS" if device_type == 3 else "無線周邊", battery=label, percent=value,
-                    status=STATES.get(d.get("State"), "已偵測"),
-                    stamp=stamp, source="UPower", detail="USB 電源資料" if device_type == 3 else "接收器回報",
-                    native=native))
-                if parent and logitech is not None and device_type != 3:
-                    apply_battery(devices[-1], logitech.sample(parent))
+                devices.append(item[0])
+                if item[1] and logitech is not None and d.get("Type", 0) != 3:
+                    apply_battery(devices[-1], logitech.sample(item[1]))
         except GLib.Error:
-            errors.append("電池資料服務暫時無法取得")
-        devices.extend(bluez.values())
-        devices.extend(usb.values())
-        devices.sort(key=lambda d: ({"UPS": 0, "無線周邊": 1, "藍牙": 2, "USB": 3}.get(d["kind"], 4), d["name"]))
-        return dict(devices=devices, errors=errors, stamp=time.time())
+            return devices, "電池資料服務暫時無法取得"
+        return devices, None
+
+    def upower_item(self, path, d, usb, bluez):
+        """一個 UPower 裝置 →（設備資料、USB 父裝置路徑）；不列入時回傳 None。"""
+        native = d.get("NativePath", "")
+        device_type = d.get("Type", 0)
+        stamp = d.get("UpdateTime", 0)
+        label, value = battery(d.get("BatteryLevel", 0), d.get("Percentage"),
+                               bool(stamp) and d.get("IsPresent", True))
+        if native.startswith("/org/bluez/"):
+            if native in bluez:
+                item = bluez[native]
+                if item["percent"] is None:
+                    item.update(battery=label, percent=value, stamp=stamp, source="UPower")
+            return None  # 以 Connected 為準，不採用快取的電量紀錄。
+        if not d.get("IsPresent", False) or device_type not in (2, 3, 5, 6):
+            return None
+        if device_type == 2 and d.get("PowerSupply", False):
+            return None  # 筆電本身的電池由電源頁顯示，不是周邊。
+        supply = Path("/sys/class/power_supply") / native
+        if supply.exists() and read(supply/"online") == "0":
+            return None
+        parent = usb_parent(native) if native.startswith("/sys/") else (
+            usb_parent(supply) if supply.exists() else None)
+        if parent:
+            usb.pop(parent, None)
+        return dict(id="power:" + path, name=d.get("Model") or "電池裝置",
+            kind="UPS" if device_type == 3 else "無線周邊", battery=label, percent=value,
+            status=STATES.get(d.get("State"), "已偵測"),
+            stamp=stamp, source="UPower", detail="USB 電源資料" if device_type == 3 else "接收器回報",
+            native=native), parent
