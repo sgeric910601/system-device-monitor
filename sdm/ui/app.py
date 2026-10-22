@@ -29,7 +29,7 @@ from sdm.services.history_service import HistoryService, read_boot_time
 from sdm.services.power_refresh import PowerRefresh
 from sdm.ui.pages.power import PowerPage
 from sdm.ui.power_text import menu_line
-from sdm.ui.power_wiring import PowerMixin
+from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
 from sdm.ui.smoke import SMOKE_PAGES, SmokeMixin
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
@@ -95,7 +95,7 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         self.power_page = None
         self.scrolls = {}
         self.signal_sources = []   # 不放進 timers：結束流程不移除正在處理中的訊號來源
-        self.power_refresh = PowerRefresh(lambda: self.submit("power"), self.schedule,
+        self.power_refresh = PowerRefresh(lambda: self.submit(POWER_REFRESH), self.schedule,
                                           self.remove_source)
 
     def do_activate(self):
@@ -193,7 +193,7 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
             self.data[kind] = {} if kind != "devices" else {"devices": [], "errors": ["設備資料暫時無法取得"]}
         if kind == "slow" and self.last_recorded is None:
             self.record_history()
-        if kind in ("slow", "power"):
+        if kind in ("slow", POWER_REFRESH):
             self.observe_power()
         if kind == "system":
             now = time.monotonic()

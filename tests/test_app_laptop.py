@@ -12,6 +12,7 @@ from sdm.constants import Preview
 from sdm.core.settings import Preferences
 from sdm.data.power_supply import BatteryReading
 from sdm.data.ups import UpsReading
+from sdm.services import preview
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import PowerService
 from sdm.ui import app as ui_app
@@ -66,10 +67,10 @@ class CurrentPower(unittest.TestCase):
         app = monitor()
         older, newer = service.sample(), service.sample()
         app.data["slow"] = {"power": newer}
-        app.data["power"] = {"power": older}
+        app.data[ui_app.POWER_REFRESH] = {"power": older}
         self.assertIs(app.current_power(), newer)
-        app.data["power"] = {"power": service.sample()}
-        self.assertIs(app.current_power(), app.data["power"]["power"])
+        app.data[ui_app.POWER_REFRESH] = {"power": service.sample()}
+        self.assertIs(app.current_power(), app.data[ui_app.POWER_REFRESH]["power"])
         self.assertIsNone(monitor().current_power())
 
     def test_laptop_history_row(self):
@@ -78,6 +79,20 @@ class CurrentPower(unittest.TestCase):
         app.record_history()
         row = app.history.added[0]
         self.assertEqual((row.pct, row.watts, row.plugged), (82, 15.0, False))
+
+
+class RefreshKind(unittest.TestCase):
+    def test_refresh_submits_a_collector_method(self):
+        app = ui_app.Monitor.__new__(ui_app.Monitor)
+        app.busy, app.closing, submitted = set(), False, []
+        app.collector = preview.PreviewCollectors("laptop-battery")
+        app.pool = type("Pool", (), {"submit": staticmethod(
+            lambda function: submitted.append(function) or Future())})()
+        refresh = ui_app.PowerRefresh(lambda: app.submit(ui_app.POWER_REFRESH), None, None)
+        refresh.on_event("Battery", "")
+        self.assertEqual(len(submitted), 1)
+        result = submitted[0]()
+        self.assertIsInstance(result["power"], LaptopPower)
 
 
 class Events(unittest.TestCase):
@@ -95,12 +110,12 @@ class Events(unittest.TestCase):
 
     def test_received_laptop_snapshots_are_observed(self):
         app = monitor()
-        app.busy, app.errors, app.render = {"power"}, {}, lambda: None
+        app.busy, app.errors, app.render = {ui_app.POWER_REFRESH}, {}, lambda: None
         future = Future()
         future.set_result({"power": laptop_service().sample(), "stamp": 1.0})
-        app.received("power", future)
+        app.received(ui_app.POWER_REFRESH, future)
         self.assertEqual(app.power_refresh.observed, [False])
-        self.assertIsInstance(app.data["power"]["power"], LaptopPower)
+        self.assertIsInstance(app.data[ui_app.POWER_REFRESH]["power"], LaptopPower)
 
     def test_stop_cancels_pending_refreshes_and_tolerates_missing_indicators(self):
         app = monitor()

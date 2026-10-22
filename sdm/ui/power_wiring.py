@@ -12,6 +12,8 @@ from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import history_sample, newest
 from sdm.ui.power_tray import DESKTOP_ICON, tray_power
 
+POWER_REFRESH = "power_refresh"     # 收集器的方法名稱：插拔後只重新讀取耗電快照
+
 
 class PowerMixin:
     def on_uevent(self, _client, _action, device):
@@ -38,7 +40,8 @@ class PowerMixin:
 
     def current_power(self):
         """慢速收集與插拔後重新讀取兩者中較新的耗電快照。"""
-        return newest(self.data["slow"].get("power"), self.data.get("power", {}).get("power"))
+        refreshed = self.data.get(POWER_REFRESH, {}).get("power")
+        return newest(self.data["slow"].get("power"), refreshed)
 
     def record_history(self):
         """每分鐘把最新的耗電快照記入歷史；第一次收到快照時也記一筆，同一快照不重複記。"""
