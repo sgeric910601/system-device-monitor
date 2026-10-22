@@ -83,7 +83,8 @@ class PowerService:
         adapters, upower = tuple(self.read_adapters()), self.read_upower()
         profile, ups, gpus = self.read_profile(), self.read_ups(), tuple(self.read_gpus())
         now, wall = self.clock(), self.wall()
-        snapshot = combine(batteries, adapters, upower.on_battery if upower else None)
+        state = upower.state if upower is not None and upower.is_battery else None
+        snapshot = combine(batteries, adapters, upower.on_battery if upower else None, state)
         if self.tracker is None:
             self.tracker = BatteryTracker()
         times = upower.times() if upower else SystemTimes()

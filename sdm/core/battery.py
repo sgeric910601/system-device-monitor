@@ -1,7 +1,8 @@
 """筆電電池快照（純邏輯）：把 sysfs 讀值合併成一個不可變的 BatterySnapshot。
 
 - 方向：驅動對電流與功率的正負號不一致，一律依狀態決定；Charging 為充入（正），
-  Discharging 為放出（負），其他狀態接著電源時視為閒置（0），沒接電源時視為放出。
+  Discharging 為放出（負）。其他狀態（Unknown、Not charging、Full）接著電源時先看
+  UPower 的狀態（充電中／放電中），仍無法判斷才視為閒置（0）；沒接電源時視為放出。
 - 多顆電池：能量與功率相加；電量＝能量合計 ÷ 滿充合計，讀不到時改用各顆電量的平均。
   只有一顆電池時以核心回報的 capacity 為準，與系統顯示的電量一致。
 - 判斷規則沿用參考專案：chargingNow（≥3 W 才算充電）、Estimator.state、drainingAboveLimit。
@@ -142,12 +143,16 @@ def round_half_up(value):
     return int(math.floor(value + 0.5)) if value >= 0 else -int(math.floor(-value + 0.5))
 
 
-def direction(status, ac_online):
+def direction(status, ac_online, upower_state=None):
     if status == STATUS_CHARGING:
         return 1
     if status == STATUS_DISCHARGING:
         return -1
-    return 0 if ac_online else -1
+    if not ac_online:
+        return -1
+    if upower_state == Battery.UPOWER_CHARGING:
+        return 1
+    return -1 if upower_state == Battery.UPOWER_DISCHARGING else 0
 
 
 def conversion_volts(reading):
@@ -180,9 +185,9 @@ def charge_values(reading):
     return tuple(values)
 
 
-def signed_flow(reading, ac_online):
+def signed_flow(reading, ac_online, upower_state=None):
     """（功率 W、電流 A），依狀態加上方向；兩者可互相以電壓換算。"""
-    sign = direction(reading.status, ac_online)
+    sign = direction(reading.status, ac_online, upower_state)
     watts, amps, volts = reading.power_w, reading.current_a, reading.voltage_v
     if watts is None and amps is not None and volts:
         watts = amps * volts
@@ -283,14 +288,17 @@ def describe(first, batteries):
                 behaviour=first.behaviour, count=len(batteries))
 
 
-def combine(batteries, adapters=(), on_battery=None):
-    """合併所有系統電池與變壓器讀值；沒有系統電池時回傳 None（桌機）。"""
+def combine(batteries, adapters=(), on_battery=None, upower_state=None):
+    """合併所有系統電池與變壓器讀值；沒有系統電池時回傳 None（桌機）。
+
+    on_battery 與 upower_state 來自 UPower（沒有時為 None），只在 sysfs 無法判斷時採用。
+    """
     batteries = tuple(batteries)
     if not batteries:
         return None
     status = combined_status([battery.status for battery in batteries])
     online = supply_online(tuple(adapters), on_battery, status)
-    flows = [signed_flow(battery, online) for battery in batteries]
+    flows = [signed_flow(battery, online, upower_state) for battery in batteries]
     battery_w, current_a = known_sum(f[0] for f in flows), known_sum(f[1] for f in flows)
     energies = [energy_values(battery) for battery in batteries]
     energy = summed(energies, ENERGY_NAMES)

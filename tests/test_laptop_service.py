@@ -85,6 +85,14 @@ class Mode(Base):
         second = self.service.sample()
         self.assertLess(first.sequence, second.sequence)
 
+    def test_upower_state_is_passed_to_the_snapshot(self):
+        sysfs.unknown_status(self.root, power_now=15_000_000)
+        self.upower = UpowerReading(on_battery=False, is_battery=True, state=1)
+        power = self.service.sample()
+        self.assertEqual((power.battery.battery_w, power.state), (15.0, CHARGING))
+        self.upower = UpowerReading(on_battery=False, is_battery=False, state=1)
+        self.assertEqual(self.service.sample().battery.battery_w, 0.0)
+
     def test_upower_still_estimating(self):
         sysfs.thinkpad(self.root)
         self.upower = ESTIMATING

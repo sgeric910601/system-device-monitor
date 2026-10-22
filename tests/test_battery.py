@@ -10,11 +10,11 @@ from sdm.data.power_supply import AdapterReading, BatteryReading, read_adapters,
 from tests.fixtures import sysfs
 
 
-def from_tree(builder, on_battery=None, **options):
+def from_tree(builder, on_battery=None, upower_state=None, **options):
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         builder(root, **options)
-        return combine(read_batteries(root), read_adapters(root), on_battery)
+        return combine(read_batteries(root), read_adapters(root), on_battery, upower_state)
 
 
 def usb_adapter(volts, amps, online=True):
@@ -72,6 +72,21 @@ class Fixtures(unittest.TestCase):
         s = from_tree(sysfs.unknown_status)
         self.assertEqual((s.percent, s.battery_w, s.state), (91, 0.0, PLUGGED_IDLE))
         self.assertFalse(s.limit_supported)
+
+    def test_upower_state_breaks_the_tie_for_an_unknown_status(self):
+        charging = from_tree(sysfs.unknown_status, upower_state=1, power_now=15_000_000)
+        self.assertEqual((charging.battery_w, charging.charging, charging.state),
+                         (15.0, True, CHARGING))
+        draining = from_tree(sysfs.unknown_status, upower_state=2, power_now=15_000_000)
+        self.assertEqual((draining.battery_w, draining.state), (-15.0, PLUGGED_IDLE))
+        idle = from_tree(sysfs.unknown_status, upower_state=4, power_now=15_000_000)
+        self.assertEqual((idle.battery_w, idle.state), (0.0, PLUGGED_IDLE))
+        not_charging = from_tree(sysfs.not_charging_at_limit, upower_state=1, power_now=500_000)
+        self.assertEqual(not_charging.battery_w, 0.5)
+
+    def test_upower_state_never_overrides_a_definite_status(self):
+        s = from_tree(sysfs.thinkpad, online=1, upower_state=1)
+        self.assertEqual(s.battery_w, -15.0)
 
     def test_no_thresholds(self):
         s = from_tree(sysfs.no_thresholds)

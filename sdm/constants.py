@@ -88,6 +88,8 @@ class Battery:
     RECAP_GAP_SECONDS = 30 * 60  # 今日回顧：兩筆紀錄間隔最多算 30 分鐘
     REFRESH_DELAYS = (1, 3, 6)  # 插拔電源後再重新讀取的時間（秒），與參考專案相同
     TIME_MAX_SECONDS = 10 * 24 * 3600   # UPower 剩餘時間的合理上限
+    UPOWER_CHARGING = 1         # UPower 裝置狀態：充電中
+    UPOWER_DISCHARGING = 2      # UPower 裝置狀態：放電中
     PROFILE_MAX_CHARS = 32
 
 
