@@ -131,7 +131,7 @@ Piper 可能辨識滑鼠，卻對作用中的設定檔或 DPI／回報率呈現�
     system-device-monitor --smoke-test --output-dir /tmp/monitor-check
 
 約 20 秒後結束。只產生簡短的 smoke.json（含依序顯示過的頁面名稱），
-不列硬體、主機名稱或裝置識別碼。
+不列硬體、主機名稱或裝置識別碼。耗電歷史只存在記憶體，不讀也不寫 history.json。
 應用程式必須在有顯示器及 D-Bus 的桌面工作階段執行。
 如需自行檢視畫面，可額外加 --capture，只截取應用程式視窗，
 不截整個桌面。截圖可能含私人裝置名稱或掛載路徑，勿直接上傳。

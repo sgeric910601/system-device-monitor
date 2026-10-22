@@ -243,6 +243,14 @@ class SmokePages(unittest.TestCase):
             self.monitor.smoke_capture(1)
         self.assertEqual(self.monitor.smoke_pages, [])
 
+class SmokeHistory(unittest.TestCase):
+    def test_smoke_test_uses_an_in_memory_history(self):
+        self.assertIsNone(ui_app.create_history(smoke=True).path)
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(ui_app.paths, "DATA", Path(temp)):
+                self.assertEqual(ui_app.create_history(smoke=False).path,
+                                 Path(temp)/"history.json")
+
 class Signals(unittest.TestCase):
     """登出或 kill 送來的 SIGTERM／SIGINT 走正常結束流程（存歷史、停止 nvidia-smi）。"""
     def test_signal_runs_the_normal_stop_and_removes_its_source(self):

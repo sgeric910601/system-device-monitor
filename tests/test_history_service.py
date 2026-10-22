@@ -276,6 +276,33 @@ class AtomicBytes(TempData):
         self.assertEqual([p.name for p in self.path.parent.iterdir()], ["history.json"])
 
 
+class InMemory(TempData):
+    """模擬測試用的歷史：可以新增與畫圖，但完全不讀寫檔案。"""
+    def test_no_file_io(self):
+        writer = Writer()
+        self.write_file(b"real history must stay untouched")
+        with patch.object(paths, "DATA", self.path.parent):
+            service = HistoryService.in_memory(clock=self.clock, writer=writer)
+            service.load()
+            self.assertIsNone(service.path)
+            for index in range(20):
+                service.add(sample(NOW - 100 + index))
+            self.assertFalse(service.save())
+        self.assertEqual(writer.calls, [])
+        self.assertEqual(len(service.samples), 20)
+        self.assertEqual(len(service.points(3600)), 20)
+        self.assertEqual(self.path.read_bytes(), b"real history must stay untouched")
+        self.assertEqual(self.backups(), [])
+
+    def test_forward_jump_trims_without_a_backup(self):
+        service = HistoryService.in_memory(clock=self.clock)
+        service.add(sample(NOW))
+        jumped = NOW + 10 * 86400
+        service.clock = lambda: jumped
+        service.add(sample(jumped))
+        self.assertEqual([s.t for s in service.samples], [jumped])
+
+
 class Permissions(TempData):
     def test_writers_accept_a_mode(self):
         self.path.parent.mkdir(parents=True)

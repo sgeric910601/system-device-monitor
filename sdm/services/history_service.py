@@ -39,15 +39,26 @@ class HistoryService:
     """在主執行緒使用；samples 是不可變的 tuple，每次新增都換成新的 tuple。"""
 
     def __init__(self, path=None, clock=time.time, writer=write_bytes_atomic,
-                 backup=create_backup):
-        self.path = Path(path) if path is not None else default_path()
+                 backup=create_backup, memory=False):
+        self.memory = memory
+        if memory:
+            self.path = None
+        else:
+            self.path = Path(path) if path is not None else default_path()
         self.clock, self.writer, self.backup = clock, writer, backup
         self.samples = ()
         self.unsaved = 0
         self.writable = True
         self.jump_backup_done = False
 
+    @classmethod
+    def in_memory(cls, **options):
+        """模擬測試用：只存在記憶體，不讀取也不寫入任何檔案。"""
+        return cls(memory=True, **options)
+
     def load(self):
+        if self.memory:
+            return
         remove_stale_temporaries(self.path)
         try:
             data = self.path.read_bytes()
@@ -111,7 +122,7 @@ class HistoryService:
 
     def _backup_before_jump(self, data, now):
         """每次執行只備份一次；備份失敗時不修剪，並停用寫入，原檔保持不變。"""
-        if self.jump_backup_done:
+        if self.jump_backup_done or self.memory:
             return True
         try:
             backup = self.backup(self.path, data, int(now), mode=History.FILE_MODE)
@@ -125,7 +136,7 @@ class HistoryService:
 
     def save(self):
         """有未存的紀錄且允許寫入時原子寫檔；失敗時保留紀錄，下次再試。"""
-        if not self.writable or not self.unsaved:
+        if self.memory or not self.writable or not self.unsaved:
             return False
         try:
             self._ensure_directory()

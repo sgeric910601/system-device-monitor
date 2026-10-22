@@ -38,6 +38,11 @@ READ_ONLY_TIP = "設定檔目前無法寫入（可能由較新版本建立），
 SAVE_FAILED_TIP = "無法儲存設定：這次執行期間仍會套用，重新啟動後恢復原本的選擇"
 
 
+def create_history(smoke):
+    """模擬測試只用記憶體中的歷史，絕不讀寫使用者的 history.json。"""
+    return HistoryService.in_memory() if smoke else HistoryService()
+
+
 class RunResult(NamedTuple):
     """執行結果：程序結束碼，以及 smoke test 的摘要（一般執行為 None）。"""
     code: int
@@ -86,8 +91,7 @@ class Monitor(Gtk.Application):
             initialize_preferences()
         self.collector = Collectors()
         self.collector.nvidia.start()
-        # 模擬測試也照常讀寫：XDG 資料目錄在測試時指向暫存資料夾
-        self.history = HistoryService()
+        self.history = create_history(self.smoke)
         self.history.load()
         self.build_window()
         self.build_indicator()
