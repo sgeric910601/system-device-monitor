@@ -11,6 +11,7 @@ from sdm.core.settings import LEGACY_KEYS
 from sdm.data.power_supply import read_batteries
 from sdm.services.battery_service import LaptopPower
 from sdm.services.preview import DESKTOP
+from sdm.ui.first_run import FirstRunWindow, should_ask
 from sdm.ui.settings_window import SettingsContext, SettingsWindow
 
 TRAY_KEYS = frozenset(LEGACY_KEYS) | {"tray_mode", "tray_display", "tray_power",
@@ -42,6 +43,12 @@ class SettingsMixin:
         if self.preview:
             return self.preview != DESKTOP
         return bool(read_batteries())
+
+    def ask_first_run(self):
+        """首次啟動（舊版設定檔原本不存在）時詢問監控範圍；模擬測試與示範模式不問。"""
+        if should_ask(self.first_run, self.smoke, self.preview):
+            FirstRunWindow(self, self.store, self.is_laptop()).present()
+        return False
 
     def open_settings(self, section=None):
         if self.settings_window is None:

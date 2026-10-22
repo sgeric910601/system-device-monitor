@@ -124,6 +124,7 @@ class Monitor(PowerMixin, SettingsMixin, TrayMixin, SmokeMixin, MonitorMixin, Gt
             self.build_tray()
             self.watch_devices()
         self.start_profiles()
+        GLib.idle_add(self.ask_first_run)
         for kind, interval in (("system", Collect.SYSTEM_INTERVAL), ("slow", Collect.SLOW_INTERVAL),
                                ("devices", Collect.DEVICES_INTERVAL),
                                ("logitech", Solaar.INTERVAL)):
