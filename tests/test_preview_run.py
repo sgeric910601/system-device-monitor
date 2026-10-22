@@ -55,7 +55,8 @@ class PreviewRun(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])
             report = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertEqual((report["ok"], report["indicator_count"]), (True, 0))
-            self.assertEqual(report["pages"], ["power", "overview", "devices", "settings"])
+            self.assertEqual(report["pages"], ["power", "overview", "cpu", "memory", "disk",
+                                               "network", "devices", "settings"])
             written = sorted(str(path.relative_to(base)) for directory in directories.values()
                              for path in directory.rglob("*"))
             self.assertEqual(written, [])

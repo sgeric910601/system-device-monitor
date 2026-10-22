@@ -9,7 +9,17 @@ GRAPH_COLORS = {"cpu": (.39, .66, 1), "gpu": (.74, .57, 1), "ram": (.33, .79, .5
 # 改由不斷電系統電池供電（警告）與電池電量低（嚴重）的文字顏色，明暗主題都看得清楚。
 WARNING = "#e8913a"
 CRITICAL = "#e5534b"
+GOOD = "#3fb27f"                # 健康度良好、記憶體壓力正常
 HEX_DIGITS = 6
+
+# 系統監控頁 2 分鐘曲線的顏色（第一條線、第二條線）
+SERIES = {"cpu": COLORS["cpu"], "gpu": COLORS["gpu"], "memory": COLORS["ram"],
+          "read": COLORS["ram"], "write": COLORS["temperature"],
+          "down": COLORS["network"], "up": COLORS["ups"]}
+# 記憶體組成長條的顏色（RGBA）；快取與空閒用前景色的透明度，明暗主題都適用
+SEGMENT_HEX = (("app", COLORS["cpu"] + "ff"), ("shared", COLORS["gpu"] + "ff"),
+               ("kernel", COLORS["temperature"] + "ff"), ("cache", "#8c8c8cb3"),
+               ("other", COLORS["ups"] + "ff"), ("free", "#8c8c8c40"))
 
 BASE_CSS = """
         window { font-family: "Noto Sans CJK TC", "Ubuntu", sans-serif; }
@@ -32,10 +42,34 @@ BASE_CSS = """
         .metric { border-radius: 9px; padding: 8px 10px;
                   background-color: alpha(@theme_fg_color, .05); }
         .metric-value { font-size: 16px; font-weight: 600; }
+        .monitor-value { font-size: 34px; font-weight: 700; }
+        .badge { border-radius: 10px; padding: 2px 10px; font-weight: 600; font-size: 12px;
+                 background-color: alpha(@theme_fg_color, .08); }
+        .swatch { border-radius: 3px; min-width: 10px; min-height: 10px; }
+        .volume-bar trough, .volume-bar progress { min-height: 6px; }
         """ + f"""
         .power-warning {{ color: {WARNING}; }}
         .power-critical {{ color: {CRITICAL}; font-weight: 600; }}
+        .tone-good {{ color: {GOOD}; }}
+        .tone-warning {{ color: {WARNING}; }}
+        .tone-critical {{ color: {CRITICAL}; }}
+        .badge.tone-good {{ background-color: alpha({GOOD}, .16); }}
+        .badge.tone-warning {{ background-color: alpha({WARNING}, .18); }}
+        .badge.tone-critical {{ background-color: alpha({CRITICAL}, .18); }}
+        .bar-warning progress {{ background-color: {WARNING}; border-color: {WARNING};
+                                 background-image: none; }}
+        .bar-critical progress {{ background-color: {CRITICAL}; border-color: {CRITICAL};
+                                  background-image: none; }}
         """
+
+
+def rgba(color):
+    """「#rrggbbaa」或「#rrggbb」轉成 0–1 的 (r, g, b, a)。"""
+    digits = color[1:] if color.startswith("#") else ""
+    if len(digits) == HEX_DIGITS + 2:
+        alpha = int(digits[HEX_DIGITS:], 16) / 255
+        return rgb("#" + digits[:HEX_DIGITS]) + (alpha,)
+    return rgb(color) + (1.0,)
 
 
 def rgb(color):
@@ -64,3 +98,6 @@ def css_data(colors=None):
     palette = COLORS if colors is None else colors
     return (BASE_CSS + "\n".join(accent_css(key, color)
                                  for key, color in palette.items())).encode()
+
+
+SEGMENTS = tuple((key, rgba(color)) for key, color in SEGMENT_HEX)

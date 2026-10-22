@@ -12,7 +12,9 @@ from gi.repository import Gdk, GLib, Gtk
 
 from sdm.constants import Smoke
 
-SMOKE_PAGES = ("power", "overview", "devices", "settings")   # 模擬測試依序顯示的頁面
+# 模擬測試依序顯示的頁面；LOWER_CAPTURES 另外截一張捲到底部的畫面
+SMOKE_PAGES = ("power", "overview", "cpu", "memory", "disk", "network", "devices", "settings")
+LOWER_CAPTURES = ("power", "cpu", "memory", "disk")
 
 
 class SmokeMixin:
@@ -36,8 +38,8 @@ class SmokeMixin:
         if self.stack.get_visible_child_name() == name and self.scrolls[name].get_mapped():
             self.smoke_pages.append(name)
         self.capture(name, name)
-        if name == "power":
-            self.capture("power-lower", name, bottom=True)
+        if name in LOWER_CAPTURES:
+            self.capture(name + "-lower", name, bottom=True)
         if index + 1 < len(SMOKE_PAGES):
             GLib.timeout_add(Smoke.PAGE_DELAY_MS, self.smoke_show, index + 1)
         else:

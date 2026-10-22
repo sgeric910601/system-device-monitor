@@ -21,6 +21,9 @@ from sdm.data.power_supply import AdapterReading, BatteryReading
 from sdm.data.ups import UpsReading
 from sdm.data.upower import UpowerReading
 from sdm.services.power_service import PowerService
+from sdm.services.preview_monitors import (DEMO_DISKS, DEMO_GPU_USAGE, DEMO_RAM_BYTES,
+                                           DEMO_THREADS, VIRTUAL, WIRED, demo_cpu_percent,
+                                           demo_detail, demo_histories, demo_ram_used, demo_rates)
 
 SCENARIOS = Preview.SCENARIOS
 DESKTOP = "desktop"
@@ -75,17 +78,11 @@ LAPTOPS = {
 DEMO_UPS = UpsReading(status=("ONLINE",), online=True, charge_pct=100.0, load_pct=32.0,
                       nominal_w=900.0, load_w=288.0, time_left_min=44.0, line_v=110.0,
                       model="示範不斷電系統")
-DEMO_DISKS = (dict(name="nvme0n1", model="示範固態硬碟", transport="nvme", size=1000 * GIB,
-                   volumes=[dict(mount="/", total=900 * GIB, used=320 * GIB,
-                                 available=580 * GIB)]),)
-DEMO_CPU_INFO = dict(name=DEMO_PROCESSOR, cores=8, threads=16)
-DEMO_RAM_BYTES = 32 * GIB
+DEMO_CPU_INFO = dict(name=DEMO_PROCESSOR, cores=8, threads=DEMO_THREADS)
 DEMO_SENSORS = (dict(chip="示範感測器", label="主機板", value=38.0, device=""),)
 DEMO_FANS = (dict(name="示範風扇", value=1150.0),)
 DEMO_CPU_TEMP_C = 47.0
 DEMO_DISK_TEMP_C = 41.0
-DEMO_RX = 1_200_000.0       # 位元組／秒
-DEMO_TX = 240_000.0
 
 
 def check(scenario):
@@ -95,7 +92,7 @@ def check(scenario):
 
 
 def demo_gpus():
-    return (GpuReading(vendor="nvidia", index=0, name="示範顯示卡", usage=12.0,
+    return (GpuReading(vendor="nvidia", index=0, name="示範顯示卡", usage=DEMO_GPU_USAGE,
                        vram_used=3 * GIB, vram_total=24 * GIB, temp_c=45.0, fan_pct=30.0,
                        watts=61.5, stamp=time.monotonic()),)
 
@@ -238,14 +235,15 @@ class DemoStream:
 
 def demo_system(now):
     """總覽頁的即時資料（示範值，隨時間小幅變化，曲線才看得出來）。"""
-    rx, tx = DEMO_RX * (1.1 + wave(now, 13)), DEMO_TX * (1.1 + wave(now, 17))
-    ram_used = int(DEMO_RAM_BYTES * (0.42 + 0.03 * wave(now, 300)))
-    networks = [dict(name="示範有線網路", rx=rx, tx=tx, physical=True, kind="有線網路"),
-                dict(name="示範虛擬網路", rx=0.0, tx=0.0, physical=False, kind="虛擬介面")]
-    return dict(cpu=round(18 + 8 * wave(now, 47), 1), cpu_info=DEMO_CPU_INFO,
+    rx, tx = demo_rates(now)
+    ram_used = demo_ram_used(now)
+    networks = [dict(name=WIRED, rx=rx, tx=tx, physical=True, kind="有線網路"),
+                dict(name=VIRTUAL, rx=0.0, tx=0.0, physical=False, kind="虛擬介面")]
+    return dict(cpu=demo_cpu_percent(now), cpu_info=DEMO_CPU_INFO,
                 ram=ram_used / DEMO_RAM_BYTES * 100, ram_used=ram_used,
                 ram_total=DEMO_RAM_BYTES, networks=networks, rx=rx, tx=tx,
-                disks=[dict(name=disk["name"], read=rx / 3, write=tx / 2) for disk in DEMO_DISKS],
+                disks=[dict(name=disk["name"], read=0.0 if disk["external"] else rx / 3,
+                            write=0.0 if disk["external"] else tx / 2) for disk in DEMO_DISKS],
                 stamp=now)
 
 
@@ -269,12 +267,22 @@ class PreviewCollectors(Collectors):
         return dict(gpu=gpu, gpus=power.gpus, gpu_error="" if gpu else GPU_UNAVAILABLE,
                     ups=power.ups, power=power, temperatures=list(DEMO_SENSORS),
                     cpu_temp=DEMO_CPU_TEMP_C, cpu_temp_label="示範處理器溫度",
-                    fans=list(DEMO_FANS), storage=[dict(disk, temperature=DEMO_DISK_TEMP_C)
-                                                   for disk in self.disk_meta],
+                    fans=list(DEMO_FANS),
+                    storage=[dict(disk, temperature=None if disk["external"] else DEMO_DISK_TEMP_C)
+                             for disk in self.disk_meta],
                     network_temperatures={}, stamp=time.time())
 
     def refresh_disk_meta(self):
         return None
+
+    def detail(self, request):
+        """系統監控頁的示範資料；與總覽頁使用同一個時間點。"""
+        return demo_detail(request, time.time(), time.monotonic())
+
+    @staticmethod
+    def histories(stamp):
+        """系統監控頁第一次顯示時預先填好的曲線（stamp 為單調時鐘秒數）。"""
+        return demo_histories(stamp, time.time())
 
     def logitech(self):
         return {}

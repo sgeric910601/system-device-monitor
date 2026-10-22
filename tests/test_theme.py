@@ -1,7 +1,7 @@
 """配色輔助：十六進位色碼轉 0–1 的 RGB，以及電源頁的 CSS 類別。"""
 import unittest
 
-from sdm.ui.theme import COLORS, CRITICAL, WARNING, css_data, rgb
+from sdm.ui.theme import COLORS, CRITICAL, GOOD, SEGMENTS, SERIES, WARNING, css_data, rgb
 
 
 class Colors(unittest.TestCase):
@@ -26,6 +26,20 @@ class Colors(unittest.TestCase):
             self.assertIn(name, css)
         self.assertIn(WARNING, css)
         self.assertIn(CRITICAL, css)
+
+
+    def test_monitor_page_classes_are_in_the_css(self):
+        css = css_data().decode()
+        for name in (".badge", ".tone-good", ".tone-warning", ".tone-critical", ".monitor-value",
+                     ".bar-warning progress", ".bar-critical progress", ".swatch"):
+            self.assertIn(name, css)
+        self.assertIn(GOOD, css)
+
+    def test_series_and_segment_colours(self):
+        self.assertEqual(set(SERIES), {"cpu", "gpu", "memory", "read", "write", "down", "up"})
+        self.assertEqual([key for key, _ in SEGMENTS],
+                         ["app", "shared", "kernel", "cache", "other", "free"])
+        self.assertTrue(all(len(colour) == 4 for _, colour in SEGMENTS))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from sdm.constants import History
 from sdm.core.battery import CHARGING, DISCHARGING, LIMIT_REACHED
 from sdm.core.history import last_unplugged, valid_sample
 from sdm.core.recap import make_recap
+from sdm.core.tiers import request_for
 from sdm.services import preview
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import DesktopPower
@@ -103,7 +104,7 @@ class Collectors(unittest.TestCase):
         self.assertEqual(collector.logitech(), {})
         with patch("sdm.data.collectors.command", side_effect=AssertionError("lsblk")):
             collector.refresh_disk_meta()
-        self.assertEqual([disk["model"] for disk in collector.disk_meta], ["示範固態硬碟"])
+        self.assertEqual([disk["model"] for disk in collector.disk_meta], ["示範固態硬碟", "示範隨身碟"])
         self.assertIsInstance(collector.power_refresh()["power"], LaptopPower)
 
     def test_overview_data_is_demo_only(self):
@@ -117,13 +118,67 @@ class Collectors(unittest.TestCase):
         self.assertTrue(system["networks"])
         self.assertTrue(all(net["name"].startswith("示範") for net in system["networks"]))
         self.assertTrue(0 <= system["cpu"] <= 100 and 0 <= system["ram"] <= 100)
-        self.assertEqual([disk["name"] for disk in system["disks"]], ["nvme0n1"])
+        self.assertEqual([disk["name"] for disk in system["disks"]], ["nvme0n1", "sdb"])
         self.assertTrue(all(sensor["chip"].startswith("示範") for sensor in slow["temperatures"]))
         self.assertTrue(all(fan["name"].startswith("示範") for fan in slow["fans"]))
         self.assertTrue(slow["cpu_temp_label"].startswith("示範"))
         self.assertEqual(slow["gpu"].name, "示範顯示卡")
         self.assertEqual(slow["power"].system_w, 288.0)
-        self.assertEqual([disk["model"] for disk in slow["storage"]], ["示範固態硬碟"])
+        self.assertEqual([disk["model"] for disk in slow["storage"]], ["示範固態硬碟", "示範隨身碟"])
+
+    def test_monitor_pages_are_demo_only(self):
+        machine = AssertionError("this machine's data was read")
+        everything = request_for({"overview", "cpu", "memory", "disk", "network"})
+        with patch("sdm.data.detail.read", side_effect=machine), \
+                patch("sdm.data.cgroups.scan", side_effect=machine), \
+                patch("sdm.data.sensors.hwmon_temperatures", side_effect=machine), \
+                patch("sdm.data.collectors.Gio.bus_get_sync", side_effect=machine):
+            collector = preview.PreviewCollectors("desktop")
+            snapshot = collector.detail(everything)
+            histories = collector.histories(snapshot.stamp)
+        self.assertEqual(len(snapshot.cpu.sample.cores), 16)
+        labels = dict((app_id, name) for app_id, name, _ in snapshot.apps.labels)
+        self.assertTrue(all(name.startswith("示範") for name in labels.values()))
+        self.assertTrue(all(usage.app_id in labels or usage.app_id.startswith("@")
+                            for usage in snapshot.apps.sample.usages))
+        self.assertTrue(all(fan.name.startswith("示範") for fan in snapshot.thermal.fans))
+        self.assertEqual([disk.model for disk in snapshot.disks], ["示範固態硬碟", "示範隨身碟"])
+        self.assertTrue(snapshot.disks[1].external)
+        self.assertEqual(snapshot.disks[0].smart.health_percent, 98)
+        self.assertTrue(snapshot.network.primary.name.startswith("示範"))
+        self.assertTrue(snapshot.network.address.startswith("192.0.2."))
+        self.assertTrue(all(item.name.startswith("示範") for item in snapshot.network.others))
+        self.assertEqual(sorted(histories), ["cpu", "disk:nvme0n1", "disk:sdb", "memory", "network"])
+        self.assertGreater(len(histories["cpu"].points), 50)
+
+    def test_monitor_pages_follow_the_request(self):
+        collector = preview.PreviewCollectors("desktop")
+        snapshot = collector.detail(request_for({"memory"}))
+        self.assertIsNone(snapshot.cpu)
+        self.assertTrue(snapshot.apps.has_memory and not snapshot.apps.has_cpu)
+        self.assertIsNone(collector.detail(request_for({"overview"})).disks)
+
+    def test_demo_curves_lead_into_the_live_values(self):
+        collector = preview.PreviewCollectors("desktop")
+        now = 1_800_000_000.0
+        with patch("sdm.services.preview.time.time", return_value=now):
+            histories = collector.histories(500.0)
+        last = histories["cpu"].points[-1]
+        self.assertEqual(last.t, 498.0)
+        self.assertEqual(last.a, preview.demo_cpu_percent(now - 2))
+        memory = histories["memory"].points[-1].a
+        self.assertAlmostEqual(memory, preview.demo_ram_used(now - 2) / preview.DEMO_RAM_BYTES * 100)
+        self.assertEqual(histories["network"].points[-1].a, preview.demo_rates(now - 2)[0])
+
+    def test_memory_page_matches_the_overview(self):
+        collector = preview.PreviewCollectors("desktop")
+        now = 1_800_000_000.0
+        with patch("sdm.services.preview.time.time", return_value=now):
+            system = collector.system()
+            memory = collector.detail(request_for({"memory"})).memory.composition
+        self.assertEqual(memory.used, system["ram_used"])
+        self.assertEqual(memory.total, system["ram_total"])
+        self.assertEqual(sum(value for _, value in memory.segments()), memory.total)
 
     def test_settings_are_defaults(self):
         settings = preview.preview_settings()

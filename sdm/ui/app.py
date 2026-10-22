@@ -27,6 +27,7 @@ from sdm.services import preview as demo
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.services.history_service import HistoryService, read_boot_time
 from sdm.services.power_refresh import PowerRefresh
+from sdm.ui.monitor_wiring import OVERVIEW_TARGETS, MonitorMixin
 from sdm.ui.pages.power import PowerPage
 from sdm.ui.power_text import menu_line
 from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
@@ -53,7 +54,7 @@ class RunResult(NamedTuple):
     report: Optional[dict]
 
 
-class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
+class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -238,8 +239,10 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         root.pack_end(self.footer, False, False, 0)
         self.build_power()
         self.build_overview()
+        self.build_monitor_pages()
         self.build_devices()
         self.build_settings()
+        self.watch_visibility()
 
     def page(self, key, title):
         scroll = Gtk.ScrolledWindow()
@@ -284,15 +287,15 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
                 card.pack_start(graph, True, True, 0)
             card.pack_start(sub, False, False, 0)
             self.cards[key] = (value, sub)
-            grid.attach(card, i%3, i//3, 1, 1)
+            grid.attach(self.clickable(card, OVERVIEW_TARGETS[key]), i%3, i//3, 1, 1)
         page.pack_start(grid, False, False, 0)
-        page.pack_start(label("曲線顯示最近 5 分鐘 · 數據由裝置與系統回報", "muted"), False, False, 0)
+        page.pack_start(label("曲線顯示最近 5 分鐘 · 點一下卡片可開啟詳細頁面", "muted"), False, False, 0)
         page.pack_start(label("磁碟與儲存空間", "section"), False, False, 0)
         self.storage_box = box(spacing=10)
-        page.pack_start(self.storage_box, False, False, 0)
+        page.pack_start(self.clickable(self.storage_box, "disk"), False, False, 0)
         page.pack_start(label("網路介面", "section"), False, False, 0)
         self.network_box = box(spacing=8)
-        page.pack_start(self.network_box, False, False, 0)
+        page.pack_start(self.clickable(self.network_box, "network"), False, False, 0)
         page.pack_start(label("其他感測器與風扇", "section"), False, False, 0)
         self.sensor_label = label("讀取中…", "muted", True)
         page.pack_start(self.sensor_label, False, False, 0)
@@ -332,7 +335,9 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         page.pack_start(autostart, False, False, 0)
         page.pack_start(label("關閉視窗後仍會在頂端列運作。需要停止時，使用頂端列選單中的「退出」。", "muted", True), False, False, 0)
         page.pack_start(label("資料更新", "section"), False, False, 0)
-        page.pack_start(label("CPU／記憶體／網速／磁碟讀寫：2 秒\nGPU／溫度／UPS：5 秒\n磁碟容量：30 秒\n"
+        page.pack_start(label("CPU／記憶體／網速／磁碟讀寫：2 秒\nGPU／溫度／UPS：5 秒\n"
+                              "磁碟容量：總覽或磁碟頁開著時 30 秒，其他時候 5 分鐘\n"
+                              "各核心、App 排行、記憶體組成、磁碟 SMART、IPv4：只在該頁顯示時更新\n"
                               "耗電歷史：每分鐘記錄一次，保留 7 天\n設備插拔及連線事件會即時觸發更新。",
                               "muted", True), False, False, 0)
 
@@ -464,6 +469,7 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
             f"預估續航 {value_text(ups.time_left_min, ' 分鐘')}")
         for graph in self.graphs:
             graph.queue_draw()
+        self.render_monitor_pages(fast, slow)
         self.render_storage()
         clear(self.network_box)
         for net in fast.get("networks", []):
@@ -641,6 +647,7 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         if self.event_timer:
             GLib.source_remove(self.event_timer)
             self.event_timer = 0
+        self.stop_detail()
         if self.power_refresh is not None:
             self.power_refresh.stop()
 
