@@ -11,6 +11,12 @@ No telemetry, accounts, or cloud service required.
 - 頂端列順序：耗電（黃）→ CPU（藍）→ CPU 溫度（橘）→ RAM（綠）→ GPU（紫）→ 網路（青）。
 - 「電源」頁：整機耗電（APC 不斷電系統輸出，含螢幕等所有插在上面的設備）、3 分鐘平均、
   電力流向圖、耗電拆解與 7 天耗電歷史。
+- 筆電（有內建電池時自動切換）：電量與狀態（放電中／充電中／接電・未充電／已充飽／已達上限）、
+  剩餘時間或充滿時間、到 0% 與到 10% 的時間（系統預估與依近 3 分鐘平均兩種算法）、
+  變壓器 → 系統 → 電池的電力流向、今日電量回顧、電量歷史，以及健康度、循環次數、
+  充電上限等 18 項詳細資訊。頂端列「耗電」改顯示電量（例如「82%」）與系統的電池圖示。
+- 示範模式 --preview 以記憶體中的示範資料開啟視窗（截圖用），自我檢查 --dump 印出
+  回報問題時可以貼上的硬體摘要。
 - 完整看板：系統負載、磁碟容量與讀寫速度、實體與虛擬網路、周邊電量、APC UPS。
 - 溫度放在對應裝置名稱後；硬碟格式為「裝置 · 型號 · 容量 · 溫度」。
   依 sysfs 硬體路徑配對，沒有資料時標示「溫度未回報」。
@@ -59,6 +65,11 @@ GNOME 必須啟用 AppIndicator 擴充功能才能顯示頂端列。
 
     system-device-monitor --background
     system-device-monitor --version
+    system-device-monitor --preview laptop-battery
+    system-device-monitor --dump
+
+--preview 可選 laptop-battery、laptop-charging、laptop-limit、desktop，
+只顯示示範資料，不讀寫設定與歷史；--dump 的內容見 [使用說明](docs/USAGE.md#回報筆電問題--dump)。
 
 CPU／記憶體／網速／磁碟讀寫每 2 秒更新；GPU／溫度／UPS 每 5 秒，
 磁碟容量每 30 秒。裝置事件觸發更新，另有每 5 秒重新確認。
@@ -73,6 +84,14 @@ Solaar 電量查詢每 60 秒執行一次，獨立背景工作不阻塞裝置清
 
 ## 硬體支援與限制
 
+- 筆電電池：讀取 /sys/class/power_supply 中的系統電池（類型 Battery、不是滑鼠等周邊），
+  名稱不限（BAT0、BAT1、CMB0、BATT 等），多顆電池合併計算；變壓器支援 Mains 與 USB-C PD。
+  UPower 提供系統預估的剩餘與充滿時間，電源模式服務提供「低耗電模式」狀態。
+  **充電上限目前只讀取顯示**，調整功能會在之後的版本加入。
+- **筆電功能目前只以合成資料（模擬 ThinkPad、ASUS、Framework 等機型的 /sys 目錄）驗證，
+  尚未在真正的筆電上測試。** 遇到問題時請附上 `system-device-monitor --dump` 的輸出。
+- 大多數筆電量不到變壓器的實際輸入瓦數；接電時整機耗電因此顯示「—」，不用猜測值代替。
+  只有 USB-C PD 回報電壓與電流時才計算。
 - CPU 型號／核心數自動讀取；CPU 溫度支援 k10temp 的 Tctl／Tdie，
   以及 coretemp 的 Package 溫度。其他感測器仍列在看板。
 - GPU 詳細使用率、VRAM、功耗與風扇百分比來自 nvidia-smi；

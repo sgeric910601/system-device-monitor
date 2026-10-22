@@ -50,6 +50,10 @@ make test 執行 /usr/bin/python3 -B -m unittest discover -s tests -t . -v。
 打包清單一致性、檔案權限與安裝位置限制；匯入檢查與 CPU 量測解析；
 不斷電系統解析、nvidia-smi 串流（以暫存目錄中的假執行檔測試重啟與結束）、
 AMD 假 /sys、電力拆解、3 分鐘平均、歷史檔與圖表分段、頁面文字與幾何。
+筆電部分以 tests/fixtures/sysfs.py 產生的假 /sys（ThinkPad、ASUS、Framework、無門檻、
+到上限未充電、狀態未知、兩顆電池、周邊電池、壞值）測試讀取，並移植參考專案的
+充電狀態濾波、剩餘時間、電源情境與今日回顧數值；另有 --dump 隱私檢查，
+以及在 Xvfb 下實際執行示範模式、確認不寫入任何 XDG 目錄的整合測試（需要 xvfb-run）。
 測試資料為人工建立；不提交實機擷取資料。
 
 make import-check 從指定根目錄匯入 sdm/ 底下每個模組。
@@ -93,15 +97,22 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
 - sdm/core/：純邏輯，不載入 GTK。fmt 格式化；counters 計數器；
   devices 電量等級與裝置正規化；settings 與 preference_specs 設定；
   jsonfile JSON 讀取與原子寫入；power_breakdown 電力拆解；ema 3 分鐘平均；
-  history 歷史紀錄格式、保留與圖表降採樣；chart_layout 圖表與流向圖幾何。
+  history 歷史紀錄格式、保留與圖表降採樣；chart_layout 圖表與流向圖幾何；
+  battery 筆電電池快照（多顆合併、充電判斷、系統耗電）；presentation 充電狀態與流向的顯示濾波；
+  estimates 剩餘與充電時間、近 3 分鐘平均；recap 今日電量回顧。
 - sdm/data/：唯讀資料來源，可指向假的 /sys 目錄測試。collectors 讀取 /proc、/sys、
   BlueZ、UPower；ups 解析 apcaccess；gpu 為常駐 nvidia-smi 串流與 AMD sysfs；
   machine 讀機型與開機時間；sources 為共用讀檔與命令；
-  logitech_battery 為選用 Solaar CLI、G304／G305 電量解析及短期記憶體快取。
+  logitech_battery 為選用 Solaar CLI、G304／G305 電量解析及短期記憶體快取；
+  power_supply 讀筆電電池與變壓器；upower 讀 UPower 預估與電源模式。
 - sdm/services/：autostart 登入自啟、桌面入口與啟動器腳本；
-  power_service 每次慢速收集產生耗電快照；history_service 歷史檔讀寫與損壞備份。
+  power_service 每次慢速收集產生耗電快照（有系統電池時為筆電快照，見 battery_service）；
+  power_refresh 插拔後的重新讀取排程；history_service 歷史檔讀寫與損壞備份；
+  preview 示範模式的資料；dump 為 --dump 自我檢查。
 - sdm/ui/：GTK 介面。app 為視窗、彩色指示器及背景排程；pages/power 為「電源」頁；
   power_flow 電力流向圖；charts 耗電歷史圖；power_text 頁面文字（不載入 GTK）；
+  pages/laptop_power、battery_flow、battery_text、battery_details 為筆電版面與文字；
+  power_tray、power_wiring 為頂端列「耗電」與耗電快照的接線；smoke 為模擬測試；
   widgets 為共用元件與曲線圖；theme 為配色與 CSS。
 
 設定分成兩個檔案。settings.json 維持舊格式，只存五個頂端列開關，
