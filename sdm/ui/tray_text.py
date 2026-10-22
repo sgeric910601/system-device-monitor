@@ -16,6 +16,7 @@ from sdm.core.battery import CHARGING, DISCHARGING, FULL, LIMIT_REACHED
 from sdm.core.fmt import PLACEHOLDER, percent, size, temperature, value_text
 from sdm.core.settings import LEGACY_KEYS
 from sdm.ui import battery_text, power_text
+from sdm.ui.power_tray import tray_power
 from sdm.ui.tray_icons import power_glyph
 
 SPLIT, MERGED = "split", "merged"
@@ -43,6 +44,7 @@ class TrayView:
     merged_label: str
     glyph: Optional[object]     # 耗電圖示（tray_icons 的 BatteryGlyph／DesktopGlyph），None 為不顯示
     menu: tuple                 # （項目、文字、要開啟的頁面）
+    fallback_icon: str = ""     # 動態圖示寫不出來時改用的圖示（power_tray）
 
 
 def clock(minutes):
@@ -146,12 +148,6 @@ def merged_label(parts):
     return SEPARATOR.join(part for part in parts if part)
 
 
-def power_menu_line(power):
-    if is_laptop(power):
-        return battery_text.menu_line(power)
-    return power_text.menu_line(power)
-
-
 def ups_line(ups):
     return ("UPS " + percent(ups.charge_pct) + " · 續航 " +
             value_text(ups.time_left_min, " 分鐘"))
@@ -163,7 +159,7 @@ def menu_lines(power, fast, slow, preferences):
     titled = {"temperature": "CPU 溫度 " + texts["temperature"],
               "ram": "記憶體 " + percent(fast.get("ram")),
               "network": "網速 " + texts["network"]}
-    lines = [(POWER, power_menu_line(power), PAGES[POWER])]
+    lines = [(POWER, tray_power(power).menu, PAGES[POWER])]
     for key in LEGACY_KEYS:
         if module_enabled(preferences, key):
             lines.append((key, titled.get(key, texts[key]), PAGES[key]))
@@ -182,4 +178,4 @@ def tray_view(power, fast, slow, legacy, preferences):
         mode=preferences.tray_mode, labels=MappingProxyType(labels), visible=visible,
         merged_label=merged_label(tuple(compact[key] for key in visible)),
         glyph=power_glyph(power, display, preferences.low_threshold),
-        menu=menu_lines(power, fast, slow, preferences))
+        menu=menu_lines(power, fast, slow, preferences), fallback_icon=tray_power(power).icon)

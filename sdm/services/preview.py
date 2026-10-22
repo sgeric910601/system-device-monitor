@@ -212,6 +212,13 @@ def demo_devices():
     ]
 
 
+def preview_profile(scenario):
+    """示範的電源模式：筆電依情境，桌機為「平衡」。"""
+    if check(scenario) == DESKTOP:
+        return "balanced"
+    return LAPTOPS[scenario][3]
+
+
 def preview_settings():
     """示範模式不讀設定檔：一律使用預設值。"""
     return Settings(LEGACY_DEFAULTS, Preferences.defaults(), first_run=False)

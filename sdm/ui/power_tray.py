@@ -1,4 +1,5 @@
-"""頂端列「耗電」指示器的內容：桌機顯示整機瓦數與原本的圖示，筆電顯示電量與電池圖示。"""
+"""頂端列「耗電」項目的基本內容：文字、選單第一行，以及動態圖示寫不出來時的退回圖示
+（桌機為 icons/power.svg，筆電為圖示主題的電池圖示）。動態圖示見 tray_icons。"""
 from dataclasses import dataclass
 
 from sdm import paths

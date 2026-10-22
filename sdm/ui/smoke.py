@@ -82,8 +82,7 @@ class SmokeMixin:
         self.smoke_failed = bool(self.errors) or not bool(self.data["system"])
         report = dict(ok=not self.smoke_failed, collector_errors=sorted(self.errors),
                       system_ready=bool(self.data["system"]),
-                      indicator_count=len(getattr(self, "indicators", {})) +
-                      (1 if getattr(self, "power_indicator", None) else 0),
+                      indicator_count=self.tray.count() if self.tray is not None else 0,
                       pages=list(getattr(self, "smoke_pages", [])))
         if self.output_dir is not None:
             (self.output_dir/"smoke.json").write_text(json.dumps(report, indent=2) + "\n")

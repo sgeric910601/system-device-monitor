@@ -11,16 +11,12 @@ from typing import NamedTuple, Optional
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("GUdev", "1.0")
-gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import Gtk, Gio, GLib, GUdev, AyatanaAppIndicator3
+from gi.repository import Gtk, Gio, GLib, GUdev
 
 from sdm import paths
 from sdm.constants import Collect, History, Preview, Smoke, Solaar, Ui
-from sdm.core.devices import battery_menu_rows
-from sdm.core.fmt import percent, size, temperature, value_text
-from sdm.core.settings import LEGACY_KEYS, load_settings
+from sdm.core.settings import load_settings
 from sdm.data.collectors import Collectors
-from sdm.data.ups import UpsReading
 from sdm.services import preview as demo
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.services.settings_store import SettingsStore
@@ -33,15 +29,14 @@ from sdm.ui.monitor_wiring import MonitorMixin
 from sdm.ui.pages.devices import DevicesPage
 from sdm.ui.pages.overview import OverviewPage
 from sdm.ui.pages.power import PowerPage
-from sdm.ui.power_text import menu_line
 from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
 from sdm.ui.settings_wiring import SettingsMixin
-from sdm.ui.smoke import SMOKE_PAGES, SmokeMixin
+from sdm.ui.tray_wiring import TrayMixin
+from sdm.ui.smoke import SmokeMixin
 
 PAGE_TITLES = dict(PAGES)
 
 APP_ID = "tw.local.SystemDeviceMonitor"
-MENU_INDENT = "    "
 
 
 def create_history(smoke, preview=None):
@@ -57,7 +52,7 @@ class RunResult(NamedTuple):
     report: Optional[dict]
 
 
-class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Application):
+class Monitor(PowerMixin, SettingsMixin, TrayMixin, SmokeMixin, MonitorMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -126,8 +121,9 @@ class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Applicati
         self.boot_time = read_boot_time()
         self.build_window()
         if not self.preview:     # 示範模式沒有頂端列，也不監看裝置事件
-            self.build_indicator()
+            self.build_tray()
             self.watch_devices()
+        self.start_profiles()
         for kind, interval in (("system", Collect.SYSTEM_INTERVAL), ("slow", Collect.SLOW_INTERVAL),
                                ("devices", Collect.DEVICES_INTERVAL),
                                ("logitech", Solaar.INTERVAL)):
@@ -248,63 +244,8 @@ class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Applicati
                                     unplugged_for=self.history_unplugged,
                                     hidden_fields=lambda: self.preferences.hidden_detail_fields,
                                     hidden_flow=lambda: self.preferences.hidden_flow_items,
-                                    names=self.app_names)
+                                    names=self.app_names, switch_profile=self.switch_profile)
         content.pack_start(self.power_page, False, False, 0)
-
-    def build_indicator(self):
-        self.indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor",
-            "utilities-system-monitor-symbolic", AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES)
-        self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
-        self.menu = self.build_menu()
-        self.indicator.set_menu(self.menu)
-        self.build_split_indicators()
-        self.render_indicator()
-
-    def build_menu(self):
-        """第一行是耗電（開啟電源頁），其後為原有的摘要、設備電量與功能項目。"""
-        menu = Gtk.Menu()
-        self.power_item = Gtk.MenuItem(label=menu_line(None))
-        self.power_item.connect("activate", self.open_page, "power")
-        menu.append(self.power_item)
-        self.summary_items = {}
-        for key, title in (("cpu","CPU"),("temperature","CPU 溫度"),("ram","記憶體"),("gpu","GPU"),
-                           ("network","網速"),("ups","UPS")):
-            item = Gtk.MenuItem(label=title + "：讀取中")
-            item.connect("activate", self.open_page, "overview")
-            menu.append(item)
-            self.summary_items[key] = item
-        self.battery_header = Gtk.MenuItem(label="設備電量")
-        self.battery_header.connect("activate", self.open_page, "devices")
-        menu.append(self.battery_header)
-        self.battery_items, self.battery_rows = [], None
-        menu.append(Gtk.SeparatorMenuItem())
-        for title, page in (("開啟完整看板","overview"),("查看設備電量","devices")):
-            item = Gtk.MenuItem(label=title)
-            item.connect("activate", self.open_page, page)
-            menu.append(item)
-        item = Gtk.MenuItem(label="設定…")
-        item.connect("activate", lambda *_: self.open_settings())
-        menu.append(item)
-        item = Gtk.MenuItem(label="退出")
-        item.connect("activate", lambda *_: self.stop())
-        menu.append(item)
-        menu.show_all()
-        return menu
-
-    def build_split_indicators(self):
-        """分開顯示的頂端列指示器：舊有五項，加上最左邊的「耗電」。"""
-        category = AyatanaAppIndicator3.IndicatorCategory.SYSTEM_SERVICES
-        self.indicators = {}
-        for index, key in enumerate(reversed(LEGACY_KEYS)):
-            indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor-" + key,
-                str(paths.ROOT/"icons"/(key + ".svg")), category)
-            indicator.set_ordering_index(100 + index)
-            indicator.set_menu(self.menu)
-            self.indicators[key] = indicator
-        self.power_indicator = AyatanaAppIndicator3.Indicator.new(
-            "system-device-monitor-power", str(paths.ROOT/"icons"/"power.svg"), category)
-        self.power_indicator.set_ordering_index(100 + len(LEGACY_KEYS))
-        self.power_indicator.set_menu(self.menu)
 
     def open_page(self, widget, page):
         self.window.show_all()
@@ -342,59 +283,6 @@ class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Applicati
         self.footer.set_text(" · ".join(errors) if errors else
                              "更新於 " + time.strftime("%H:%M:%S") + "  ·  本機唯讀監看")
 
-    def render_indicator(self):
-        if not hasattr(self, "indicator"):
-            return
-        fast, slow = self.data["system"], self.data["slow"]
-        gpu = slow.get("gpu")
-        parts = {
-            "cpu": "CPU " + percent(fast.get("cpu")),
-            "gpu": "GPU " + percent(gpu.usage if gpu else None),
-            "ram": "RAM " + percent(fast.get("ram")),
-            "network": "↓" + size(fast.get("rx"), True) + " ↑" + size(fast.get("tx"), True),
-            "temperature": temperature(slow.get("cpu_temp")),
-        }
-        self.indicator.set_label("", "")
-        any_split = any(self.settings.values()) or self.preferences.tray_power
-        self.indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE if any_split
-                                  else AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
-        for key, indicator in getattr(self, "indicators", {}).items():
-            indicator.set_label(parts[key], "")
-            indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE if self.settings[key]
-                                 else AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
-        for key, text in parts.items():
-            self.summary_items[key].set_label(text)
-        ups = slow.get("ups") or UpsReading()
-        self.summary_items["ups"].set_label("UPS " + percent(ups.charge_pct) +
-            " · 續航 " + value_text(ups.time_left_min, " 分鐘"))
-        self.sync_battery_items(battery_menu_rows(self.data["devices"]))
-        self.render_power_tray(self.current_power())
-
-    def battery_item(self, text):
-        return Gtk.MenuItem(label=text)
-
-    def sync_battery_items(self, rows):
-        """在標題下方每台設備一行；只有設備組成改變時才重建選單項目。"""
-        if self.battery_rows is not None and [k for k, _ in rows] == [k for k, _ in self.battery_rows]:
-            for item, (_, text) in zip(self.battery_items, rows):
-                if item.get_label() != MENU_INDENT + text:
-                    item.set_label(MENU_INDENT + text)
-        else:
-            for item in self.battery_items:
-                self.menu.remove(item)
-                item.destroy()
-            start = self.menu.get_children().index(self.battery_header) + 1
-            self.battery_items = []
-            for offset, (key, text) in enumerate(rows):
-                item = self.battery_item(MENU_INDENT + text)
-                item.set_sensitive(key is not None)
-                if key is not None:
-                    item.connect("activate", self.open_page, "devices")
-                item.show()
-                self.menu.insert(item, start + offset)
-                self.battery_items.append(item)
-        self.battery_rows = rows
-
     def stop(self):
         """先存歷史，再停止其餘部分；任何一步失敗都只記錄，最後一定呼叫 quit()。
 
@@ -409,6 +297,7 @@ class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Applicati
                                  ("sources", self.remove_sources),
                                  ("subscriptions", self.unsubscribe_all),
                                  ("indicators", self.hide_indicators),
+                                 ("profiles", self.stop_profiles),
                                  ("workers", lambda: self.pool.shutdown(wait=False,
                                                                        cancel_futures=True)),
                                  ("stream", self.stop_stream)):
@@ -440,13 +329,6 @@ class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Applicati
                 self.collector.bus.signal_unsubscribe(subscription)
             except Exception as error:
                 logging.warning("Cannot unsubscribe: %s", type(error).__name__)
-
-    def hide_indicators(self):
-        indicators = [getattr(self, "indicator", None), getattr(self, "power_indicator", None)]
-        indicators += list(getattr(self, "indicators", {}).values())
-        for indicator in indicators:
-            if indicator is not None:    # 示範模式沒有頂端列
-                indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
 
     def stop_stream(self):
         if getattr(self, "collector", None) is not None:

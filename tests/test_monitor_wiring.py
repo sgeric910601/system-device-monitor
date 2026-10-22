@@ -9,6 +9,7 @@ from unittest.mock import patch
 from sdm.core.snapshots import DetailSnapshot
 from sdm.core.tiers import DetailGate, DetailRequest, request_for
 from sdm.ui import app as ui_app
+from sdm.ui import smoke
 from sdm.ui import monitor_wiring
 
 
@@ -46,7 +47,7 @@ def monitor():
     app.collector, app.pool = FakeCollector(), FakePool()
     app.detail_gate = DetailGate()
     app.window_iconified = False
-    app.scrolls = {name: FakeScroll() for name in ui_app.SMOKE_PAGES}
+    app.scrolls = {name: FakeScroll() for name in smoke.SMOKE_PAGES}
     app.monitor_pages = {"cpu": FakePage(), "memory": FakePage()}
     app.power_page = FakePage()
     return app

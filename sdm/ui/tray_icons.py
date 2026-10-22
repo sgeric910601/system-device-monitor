@@ -151,7 +151,12 @@ def render_desktop(glyph):
     return svg(HEIGHT, body)
 
 
+BLANK = svg(HEIGHT, "")          # 「只有百分比」：GNOME 仍保留圖示位置，留白
+
+
 def render(glyph):
+    if glyph is None:
+        return BLANK
     if isinstance(glyph, BatteryGlyph):
         return render_battery(glyph)
     return render_desktop(glyph)

@@ -17,6 +17,8 @@ from sdm.data.ups import UpsReading
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import PowerService
 from sdm.ui import app as ui_app
+from sdm.ui import smoke
+from sdm.ui.tray_menu import MENU_INDENT, BatteryRows
 
 class Calculations(unittest.TestCase):
     def test_cpu_guest_not_counted_twice_and_resume_resets(self):
@@ -100,43 +102,42 @@ class FakeMenu:
 class BatteryMenuSync(unittest.TestCase):
     """不使用真正的 GTK 元件：沒有顯示器時建立元件會讓程序中止。"""
     def setUp(self):
-        self.monitor = ui_app.Monitor.__new__(ui_app.Monitor)
-        self.monitor.battery_header = FakeItem("設備電量")
-        self.monitor.menu = FakeMenu([FakeItem("UPS"), self.monitor.battery_header, FakeItem("---")])
-        self.monitor.battery_items, self.monitor.battery_rows = [], None
-        self.monitor.battery_item = FakeItem
-        self.indent = ui_app.MENU_INDENT
+        self.header = FakeItem("設備電量")
+        self.menu = FakeMenu([FakeItem("UPS"), self.header, FakeItem("---")])
+        self.open_devices = lambda *_: None
+        self.rows = BatteryRows(self.menu, self.header, FakeItem, self.open_devices)
+        self.indent = MENU_INDENT
 
     def labels(self):
-        return [item.get_label() for item in self.monitor.menu.get_children()]
+        return [item.get_label() for item in self.menu.get_children()]
 
     def test_rows_are_inserted_below_header_and_open_devices_page(self):
-        self.monitor.sync_battery_items([("a", "A · 50%"), ("b", "B · 60%")])
+        self.rows.sync([("a", "A · 50%"), ("b", "B · 60%")])
         self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "A · 50%",
                                          self.indent + "B · 60%", "---"])
-        for item in self.monitor.battery_items:
+        for item in self.rows.items:
             self.assertTrue(item.visible and item.sensitive)
-            self.assertEqual(item.handlers, [("activate", self.monitor.open_page, ("devices",))])
+            self.assertEqual(item.handlers, [("activate", self.open_devices, ())])
 
     def test_same_devices_update_labels_in_place(self):
-        self.monitor.sync_battery_items([("a", "A · 50%")])
-        first = self.monitor.battery_items[0]
-        self.monitor.sync_battery_items([("a", "A · 40%")])
-        self.assertIs(self.monitor.battery_items[0], first)
+        self.rows.sync([("a", "A · 50%")])
+        first = self.rows.items[0]
+        self.rows.sync([("a", "A · 40%")])
+        self.assertIs(self.rows.items[0], first)
         self.assertFalse(first.destroyed)
         self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "A · 40%", "---"])
 
     def test_changed_devices_rebuild_rows(self):
-        self.monitor.sync_battery_items([("a", "A · 50%"), ("b", "B · 60%")])
-        old = list(self.monitor.battery_items)
-        self.monitor.sync_battery_items([("b", "B · 60%"), ("c", "C · 70%")])
+        self.rows.sync([("a", "A · 50%"), ("b", "B · 60%")])
+        old = list(self.rows.items)
+        self.rows.sync([("b", "B · 60%"), ("c", "C · 70%")])
         self.assertTrue(all(item.destroyed for item in old))
         self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "B · 60%",
                                          self.indent + "C · 70%", "---"])
 
     def test_placeholder_row_is_not_clickable(self):
-        self.monitor.sync_battery_items([(None, "讀取中…")])
-        item = self.monitor.battery_items[0]
+        self.rows.sync([(None, "讀取中…")])
+        item = self.rows.items[0]
         self.assertFalse(item.sensitive)
         self.assertEqual(item.handlers, [])
         self.assertEqual(self.labels(), ["UPS", "設備電量", self.indent + "讀取中…", "---"])
@@ -214,7 +215,7 @@ class SmokePages(unittest.TestCase):
         self.monitor.output_dir = Path(temp.name)
         self.monitor.capture_enabled = False
         self.monitor.stack = FakeStack()
-        self.monitor.scrolls = {name: FakeScroll() for name in ui_app.SMOKE_PAGES}
+        self.monitor.scrolls = {name: FakeScroll() for name in smoke.SMOKE_PAGES}
         self.monitor.smoke_pages = []
         self.monitor.errors, self.monitor.indicators = {}, {}
         self.monitor.data = {"system": {"cpu": 1}}
@@ -222,19 +223,19 @@ class SmokePages(unittest.TestCase):
         self.monitor.stop = lambda: self.stopped.append(True)
 
     def test_power_page_comes_first(self):
-        self.assertEqual(ui_app.SMOKE_PAGES, ("power", "overview", "cpu", "memory", "disk",
+        self.assertEqual(smoke.SMOKE_PAGES, ("power", "overview", "cpu", "memory", "disk",
                                               "network", "devices"))
 
     def test_rendered_pages_are_reported(self):
         with patch.object(ui_app.GLib, "timeout_add") as timer:
-            for index, name in enumerate(ui_app.SMOKE_PAGES):
+            for index, name in enumerate(smoke.SMOKE_PAGES):
                 self.monitor.stack.set_visible_child_name(name)
                 self.monitor.smoke_capture(index)
-            self.assertEqual(timer.call_count, len(ui_app.SMOKE_PAGES))
+            self.assertEqual(timer.call_count, len(smoke.SMOKE_PAGES))
         self.monitor.scrolls["devices"].mapped = False
         self.monitor.smoke_finish()
         report = json.loads((self.monitor.output_dir/"smoke.json").read_text())
-        self.assertEqual(report["pages"], list(ui_app.SMOKE_PAGES))
+        self.assertEqual(report["pages"], list(smoke.SMOKE_PAGES))
         self.assertTrue(report["ok"])
         self.assertEqual(self.stopped, [True])
 

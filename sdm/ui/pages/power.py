@@ -16,7 +16,7 @@ from sdm.services.battery_service import LaptopPower
 from sdm.ui.charts import HistoryChart
 from sdm.ui.app_names import AppNames
 from sdm.ui.pages.laptop_power import DetailsView, LaptopPowerView
-from sdm.ui.pages.power_extras import RankingCard
+from sdm.ui.pages.power_extras import PowerModeCard, RankingCard
 from sdm.ui.power_flow import PowerFlow
 from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, detail_rows,
                                flow_model, header_text)
@@ -51,7 +51,7 @@ def ellipsized(text, css=None):
 class PowerPage(Gtk.Box):
     def __init__(self, points_for, clock=time.time, recap_for=lambda now: DailyRecap(),
                  unplugged_for=lambda now: None, hidden_fields=lambda: (),
-                 hidden_flow=lambda: (), names=None):
+                 hidden_flow=lambda: (), names=None, switch_profile=lambda name: None):
         """points_for(range_s, now) 回傳歷史圖表點；recap_for(now) 今日回顧與
         unplugged_for(now) 由歷史推算的拔電時間只在筆電模式使用；
         hidden_fields()、hidden_flow() 為使用者隱藏的詳細資訊欄位與電力流向細項。"""
@@ -72,6 +72,8 @@ class PowerPage(Gtk.Box):
         self.desktop.set_no_show_all(True)
         self.ranking = RankingCard(names or AppNames())
         self.pack_end(self.ranking.container, False, False, 0)
+        self.modes = PowerModeCard(switch_profile)
+        self.pack_end(self.modes.container, False, False, 0)
         self.connect("map", self.on_map)
 
     def build_header(self):
@@ -124,6 +126,10 @@ class PowerPage(Gtk.Box):
         if self.laptop is not None:
             self.laptop.set_visible(laptop)
             self.desktop.set_visible(not laptop)
+
+    def set_profiles(self, state):
+        """電源模式服務的狀態（sdm.services.power_profiles.ProfileState）。"""
+        self.modes.set_state(state)
 
     def set_motion(self, window_visible, iconified, saving):
         """電力流向動畫的條件（視窗看得到、沒有最小化、省電模式沒有生效）。"""

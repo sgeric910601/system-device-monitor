@@ -1,17 +1,14 @@
 """看板的耗電部分（Monitor 的混入類別）：選出最新的耗電快照、插拔後重新讀取、
-記錄歷史、今日回顧與拔電時間，以及頂端列「耗電」指示器。
+記錄歷史、今日回顧與拔電時間（頂端列見 tray_wiring）。
 
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
-import gi
-gi.require_version("AyatanaAppIndicator3", "0.1")
-from gi.repository import AyatanaAppIndicator3, GLib
+from gi.repository import GLib
 
 from sdm.core.history import still_unplugged, unplugged_since
 from sdm.core.recap import DailyRecap, day_bounds, make_recap
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import history_sample, newest
-from sdm.ui.power_tray import DESKTOP_ICON, tray_power
 
 POWER_REFRESH = "power_refresh"     # 收集器的方法名稱：插拔後只重新讀取耗電快照
 
@@ -100,16 +97,3 @@ class PowerMixin:
         if self.unplugged_cache is None or self.unplugged_cache[0] != key:
             self.unplugged_cache = (key, unplugged_since(samples, self.boot_time))
         return self.unplugged_cache[1]
-
-    def render_power_tray(self, power):
-        """桌機顯示整機瓦數（選單加上 3 分鐘平均）；筆電顯示電量並換成電池圖示。"""
-        state = tray_power(power)
-        self.power_indicator.set_label(state.label, "")
-        if state.icon != getattr(self, "power_icon", DESKTOP_ICON):
-            self.power_icon = state.icon
-            self.power_indicator.set_icon_full(state.icon, state.label)
-        self.power_indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE
-                                        if self.preferences.tray_power
-                                        else AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
-        if self.power_item.get_label() != state.menu:
-            self.power_item.set_label(state.menu)
