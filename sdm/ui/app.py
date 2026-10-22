@@ -681,7 +681,7 @@ class Monitor(Gtk.Application):
 
     def save_history(self):
         if self.history is not None:
-            self.history.save()
+            self.history.save(force=True)
 
     def remove_sources(self):
         for timer in self.timers:

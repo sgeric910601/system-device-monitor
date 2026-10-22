@@ -39,8 +39,8 @@ class HistoryService:
     """在主執行緒使用；samples 是不可變的 tuple，每次新增都換成新的 tuple。"""
 
     def __init__(self, path=None, clock=time.time, writer=write_bytes_atomic,
-                 backup=create_backup, memory=False):
-        self.memory = memory
+                 backup=create_backup, memory=False, monotonic=time.monotonic):
+        self.memory, self.monotonic = memory, monotonic
         if memory:
             self.path = None
         else:
@@ -50,6 +50,7 @@ class HistoryService:
         self.unsaved = 0
         self.writable = True
         self.jump_backup_done = False
+        self.failures, self.retry_at, self.gave_up = 0, None, False
 
     @classmethod
     def in_memory(cls, **options):
@@ -134,18 +135,36 @@ class HistoryService:
         LOG.warning("Clock jumped forward; copied history to %s before trimming", backup.name)
         return True
 
-    def save(self):
-        """有未存的紀錄且允許寫入時原子寫檔；失敗時保留紀錄，下次再試。"""
-        if self.memory or not self.writable or not self.unsaved:
+    def save(self, force=False):
+        """有未存的紀錄時原子寫檔；失敗時保留紀錄，依退避時間再試。
+
+        force 為 True（結束時）會忽略退避等待，但連續失敗 5 次放棄後就不再嘗試。
+        """
+        if self.memory or not self.writable or self.gave_up or not self.unsaved:
+            return False
+        if not force and self.retry_at is not None and self.monotonic() < self.retry_at:
             return False
         try:
             self._ensure_directory()
             self.writer(self.path, encode_history(self.samples), mode=History.FILE_MODE)
         except (OSError, ValueError) as error:
-            LOG.warning("Cannot save history: %s", type(error).__name__)
+            self._save_failed(type(error).__name__)
             return False
-        self.unsaved = 0
+        self.unsaved, self.failures, self.retry_at = 0, 0, None
         return True
+
+    def _save_failed(self, name):
+        """第一次失敗記警告，之後只記除錯訊息；連續失敗達上限時記最後一次警告並放棄。"""
+        self.failures += 1
+        if self.failures >= History.SAVE_MAX_FAILURES:
+            self.gave_up = True
+            LOG.warning("Cannot save history (%s); giving up for this session after %d attempts",
+                        name, self.failures)
+            return
+        delays = History.SAVE_RETRY_SECONDS
+        self.retry_at = self.monotonic() + delays[min(self.failures, len(delays)) - 1]
+        LOG.log(logging.WARNING if self.failures == 1 else logging.DEBUG,
+                "Cannot save history (%s); will retry later", name)
 
     def _ensure_directory(self):
         """資料夾不存在時才建立並設為 0700；既有的資料夾與上層資料夾都不動。"""

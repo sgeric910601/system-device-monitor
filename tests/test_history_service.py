@@ -276,6 +276,68 @@ class AtomicBytes(TempData):
         self.assertEqual([p.name for p in self.path.parent.iterdir()], ["history.json"])
 
 
+class SaveBackoff(TempData):
+    """寫檔失敗後不洗版：只記一次警告，之後 15、30、60 分鐘重試，連續 5 次就放棄。"""
+    def setUp(self):
+        super().setUp()
+        self.mono, self.attempts, self.fail = [0.0], [], [True]
+        self.index = 0
+
+    def writer(self, path, data, **options):
+        self.attempts.append(self.mono[0])
+        if self.fail[0]:
+            raise OSError("disk full")
+        path.write_bytes(data)
+
+    def add(self, service, count=1):
+        for _ in range(count):
+            self.index += 1
+            service.add(sample(NOW - 5000 + self.index))
+
+    def backoff_service(self):
+        return self.service(writer=self.writer, monotonic=lambda: self.mono[0])
+
+    def test_schedule_and_give_up(self):
+        service = self.backoff_service()
+        with self.assertLogs(LOGGER, "DEBUG") as logs:
+            self.add(service, 15)
+            self.mono[0] = 15 * 60 - 1
+            self.add(service)
+            for minutes in (1 / 60, 30, 60, 60):
+                self.mono[0] += minutes * 60
+                self.add(service)
+            self.mono[0] += 10 * 3600
+            self.add(service)
+            self.assertFalse(service.save(force=True))
+        self.assertEqual(self.attempts, [0.0, 900.0, 2700.0, 6300.0, 9900.0])
+        warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
+        debugs = [r.getMessage() for r in logs.records if r.levelname == "DEBUG"]
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("giving up", warnings[1])
+        self.assertEqual(len(debugs), 3)
+
+    def test_success_resets_the_backoff(self):
+        service = self.backoff_service()
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.add(service, 15)
+        self.fail[0] = False
+        self.mono[0] = 15 * 60
+        self.add(service)
+        self.assertEqual(len(self.attempts), 2)
+        self.assertEqual(service.unsaved, 0)
+        self.add(service, 15)
+        self.assertEqual(len(self.attempts), 3)
+
+    def test_forced_save_on_exit_ignores_the_retry_window(self):
+        service = self.backoff_service()
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.add(service, 15)
+        self.fail[0] = False
+        self.assertFalse(service.save())
+        self.assertTrue(service.save(force=True))
+        self.assertEqual(len(self.attempts), 2)
+
+
 class InMemory(TempData):
     """模擬測試用的歷史：可以新增與畫圖，但完全不讀寫檔案。"""
     def test_no_file_io(self):

@@ -64,6 +64,8 @@ class History:
     FILE_MODE = 0o600                   # history.json 與其備份只有本人可讀寫
     RETENTION_SECONDS = 7 * 24 * 3600
     SAVE_EVERY = 15                     # 每累積幾筆新紀錄寫檔一次
+    SAVE_RETRY_SECONDS = (15 * 60, 30 * 60, 60 * 60)   # 寫檔失敗後的重試間隔，之後維持最後一個
+    SAVE_MAX_FAILURES = 5               # 連續失敗幾次就在這次執行放棄寫檔
     RECORD_INTERVAL_SECONDS = 60        # 桌機每分鐘記錄一次
     FUTURE_TOLERANCE_SECONDS = 300      # 載入時容許的未來時間（時鐘誤差）
     MAX_POINTS = 240                    # 圖表降採樣後的最多點數
