@@ -1,11 +1,13 @@
 """UPower 與電源模式服務的唯讀讀取：以假的屬性表代替系統匯流排。"""
 import unittest
 
-from gi.repository import GLib
+from gi.repository import Gio, GLib
+
+from sdm.constants import Battery
 
 from sdm.core.estimates import SystemTimes
 from sdm.data import upower
-from sdm.data.upower import UpowerReading, read_power_profile, read_upower
+from sdm.data.upower import UpowerReading, UpowerSource, read_power_profile, read_upower
 
 BATTERY_TYPE = 2
 UPS_TYPE = 3
@@ -72,6 +74,60 @@ class Upower(unittest.TestCase):
     def test_minutes_round_to_nearest(self):
         self.assertEqual(read_upower(laptop(TimeToEmpty=89)).times().to_empty_min, 1)
         self.assertEqual(read_upower(laptop(TimeToEmpty=29)).times().to_empty_min, 0)
+
+
+def timeout_error():
+    return GLib.Error.new_literal(Gio.io_error_quark(), "timed out", int(Gio.IOErrorEnum.TIMED_OUT))
+
+
+def no_reply_error():
+    return Gio.DBusError.new_for_dbus_error("org.freedesktop.DBus.Error.NoReply", "no reply")
+
+
+class TimingOutBus(FakeBus):
+    def __init__(self, values, error):
+        super().__init__(values)
+        self.error = error
+
+    def __call__(self, destination, path, interface, name):
+        self.asked.append(name)
+        raise self.error()
+
+
+class Clock:
+    def __init__(self):
+        self.value = 1000.0
+
+    def __call__(self):
+        return self.value
+
+
+class Backoff(unittest.TestCase):
+    def test_a_timeout_skips_the_rest_of_the_sample_and_backs_off(self):
+        for error in (timeout_error, no_reply_error):
+            with self.subTest(error=error.__name__):
+                bus, clock = TimingOutBus({}, error), Clock()
+                source = UpowerSource(bus, clock)
+                self.assertIsNone(source.upower())
+                self.assertIsNone(source.profile())
+                self.assertEqual(bus.asked, ["OnBattery"])
+                clock.value += Battery.UPOWER_BACKOFF_SECONDS - 1
+                self.assertEqual((source.upower(), source.profile()), (None, None))
+                self.assertEqual(len(bus.asked), 1)
+                clock.value += 1
+                source.upower()
+                self.assertEqual(len(bus.asked), 2)
+
+    def test_missing_service_is_not_a_timeout(self):
+        bus, clock = FakeBus({}), Clock()
+        source = UpowerSource(bus, clock)
+        self.assertIsNone(source.upower())
+        self.assertIsNone(source.profile())
+        self.assertEqual(bus.asked, ["OnBattery", "ActiveProfile", "ActiveProfile"])
+
+    def test_normal_reads_pass_through(self):
+        source = UpowerSource(laptop(), Clock())
+        self.assertEqual(source.upower().time_to_empty_s, 12300)
 
 
 class Profiles(unittest.TestCase):

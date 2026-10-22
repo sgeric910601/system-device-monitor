@@ -2,13 +2,14 @@
 
 桌機：每次慢速收集時讀取不斷電系統與顯示卡，產生拆解與 3 分鐘平均。
 筆電：sysfs 電池與變壓器為主，UPower 提供系統預估，電源模式服務提供省電狀態。
-sample() 在收集執行緒中呼叫；插拔電源時也會另外觸發，所以用鎖確保一次只取樣一個，
-sequence 依取樣先後遞增，讓介面能分辨哪一份快照比較新。
+sample() 在收集執行緒中呼叫；插拔電源時也會另外觸發。讀取（sysfs、D-Bus、外部命令）
+在鎖外進行，只有更新平均、顯示濾波與 sequence 時持有鎖；sequence 依處理先後遞增，
+讓介面能分辨哪一份快照比較新。
 """
 from dataclasses import dataclass, replace
 import threading
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from sdm.constants import Battery, Collect, Power
 from sdm.core.battery import combine
@@ -44,6 +45,16 @@ class DesktopPower:
     sequence: int = 0
 
 
+class LaptopReadings(NamedTuple):
+    """在鎖外讀好的筆電資料來源。"""
+    batteries: tuple
+    adapters: tuple
+    upower: object
+    profile: Optional[str]
+    ups: Optional[UpsReading]
+    gpus: tuple
+
+
 def supply_label(supply):
     return SUPPLY_LABELS.get(supply, SUPPLY_LABELS[SUPPLY_MAINS])
 
@@ -72,12 +83,18 @@ class PowerService:
         self.lock = threading.Lock()
 
     def sample(self):
+        batteries = tuple(self.read_batteries())
+        if batteries:
+            readings = LaptopReadings(batteries, tuple(self.read_adapters()), self.read_upower(),
+                                      self.read_profile(), self.read_ups(),
+                                      tuple(self.read_gpus()))
+        else:
+            readings = (self.read_ups(), tuple(self.read_gpus()))
         with self.lock:
             self.sequence += 1
-            batteries = tuple(self.read_batteries())
             if batteries:
                 self.empty_reads = 0
-                self.last_laptop = self.laptop(batteries)
+                self.last_laptop = self.laptop(readings)
                 return self.last_laptop
             if self.last_laptop is not None:
                 self.empty_reads += 1
@@ -85,14 +102,15 @@ class PowerService:
                     # 電池暫時讀不到：沿用上一份筆電快照（時間不變，不會重複記入歷史）
                     return replace(self.last_laptop, sequence=self.sequence)
             self.tracker, self.last_laptop, self.empty_reads = None, None, 0
-            return self.desktop()
+            return self.desktop(*readings)
 
-    def laptop(self, batteries):
-        adapters, upower = tuple(self.read_adapters()), self.read_upower()
-        profile, ups, gpus = self.read_profile(), self.read_ups(), tuple(self.read_gpus())
+    def laptop(self, readings):
+        upower, gpus = readings.upower, readings.gpus
+        # 讀完才取時間：讀取期間打上的時間戳記不會晚於 now
         now, wall = self.clock(), self.wall()
         state = upower.state if upower is not None and upower.is_battery else None
-        snapshot = combine(batteries, adapters, upower.on_battery if upower else None, state)
+        snapshot = combine(readings.batteries, readings.adapters,
+                           upower.on_battery if upower else None, state)
         if self.tracker is None:
             self.tracker = BatteryTracker()
         times = upower.times() if upower else SystemTimes()
@@ -102,15 +120,13 @@ class PowerService:
             stamp=wall, battery=snapshot, estimates=estimates,
             breakdown=make_breakdown(None, gpu_components(gpus), now, self.interval,
                                      sampling=self.gpus_pending()),
-            upower=upower, profile=profile, unplugged_at=self.tracker.unplugged_at,
-            plugged_in_at=self.tracker.plugged_in_at, ups=ups,
+            upower=upower, profile=readings.profile, unplugged_at=self.tracker.unplugged_at,
+            plugged_in_at=self.tracker.plugged_in_at, ups=readings.ups,
             gpus=tuple(gpu for gpu in gpus if 0 <= now - gpu.stamp <= limit),
             processor=self.processor, model=self.model, uptime_s=self.read_uptime(),
             sequence=self.sequence)
 
-    def desktop(self):
-        ups = self.read_ups()
-        gpus = tuple(self.read_gpus())
+    def desktop(self, ups, gpus):
         # 讀完才取時間：讀取期間打上的時間戳記不會晚於 now 而被當成未來樣本
         now = self.clock()
         breakdown = make_breakdown(ups.load_w if ups else None, gpu_components(gpus), now,

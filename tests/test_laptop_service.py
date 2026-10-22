@@ -53,6 +53,32 @@ class Base(unittest.TestCase):
             (self.battery_dir(supply)/key).write_text(f"{value}\n")
 
 
+class Locking(Base):
+    def test_slow_readers_run_without_holding_the_service_lock(self):
+        held = []
+
+        def watch(value):
+            held.append(self.service.lock.locked())
+            return value
+
+        self.service.read_upower = lambda: watch(None)
+        self.service.read_profile = lambda: watch(None)
+        self.service.read_ups = lambda: watch(None)
+        self.service.read_gpus = lambda: watch(())
+        self.service.read_adapters = lambda: watch(())
+        sysfs.thinkpad(self.root)
+        self.service.sample()
+        sysfs_dir = self.root/sysfs.SUPPLY_DIR
+        for name in ("BAT0", "AC"):
+            for child in (sysfs_dir/name).iterdir():
+                child.unlink()
+            (sysfs_dir/name).rmdir()
+        for _ in range(3):
+            self.service.sample()       # 第三次切回桌機，讀不斷電系統與顯示卡
+        self.assertTrue(held)
+        self.assertFalse(any(held))
+
+
 class Mode(Base):
     def test_desktop_with_only_a_peripheral_battery_keeps_the_desktop_snapshot(self):
         sysfs.peripheral(self.root)

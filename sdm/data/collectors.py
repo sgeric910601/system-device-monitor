@@ -21,7 +21,7 @@ from sdm.data.machine import read_model
 from sdm.data.power_supply import read_adapters, read_batteries
 from sdm.data.sources import command, read
 from sdm.data.ups import read_ups
-from sdm.data.upower import bus_getter, read_power_profile, read_upower
+from sdm.data.upower import UpowerSource, bus_getter
 from sdm.services.power_service import PowerService
 
 GPU_UNAVAILABLE = "GPU 資料暫時無法取得"
@@ -189,14 +189,14 @@ class Collectors:
 
     def make_power_service(self, model=None):
         """各讀取函式都在呼叫時才查模組層級名稱，測試可替換；UPower 只在筆電模式讀取。"""
-        nvidia, get = self.nvidia, bus_getter(self.bus)
+        nvidia, system = self.nvidia, UpowerSource(bus_getter(self.bus))
         return PowerService(
             read_ups=lambda: read_ups(command),
             read_gpus=lambda: tuple(nvidia.latest()) + tuple(read_amd_gpus()),
             gpus_pending=nvidia.pending, processor=self.cpu_info.get("name", ""),
             model=read_model() if model is None else model,
             read_batteries=lambda: read_batteries(), read_adapters=lambda: read_adapters(),
-            read_upower=lambda: read_upower(get), read_profile=lambda: read_power_profile(get))
+            read_upower=system.upower, read_profile=system.profile)
 
     def power_refresh(self):
         """插拔電源後的重新讀取：只取耗電快照，不重跑溫度與磁碟。"""
