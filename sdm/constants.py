@@ -174,6 +174,13 @@ class Smoke:
     FINISH_DELAY_MS = 800       # 最後一頁之後寫出結果
 
 
+class Preview:
+    """--preview 示範模式。"""
+    SCENARIOS = ("laptop-battery", "laptop-charging", "laptop-limit", "desktop")
+    APP_ID_SUFFIX = ".Preview"          # 與正在執行的看板分開，不會把請求交給它
+    CHECK_DELAY_SECONDS = 3             # 示範資料已在記憶體，模擬測試不用等收集器
+
+
 class Launcher:
     """啟動器腳本等待專案磁碟掛載的最長秒數。"""
     WAIT_SECONDS = 60

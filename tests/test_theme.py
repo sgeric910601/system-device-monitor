@@ -21,7 +21,8 @@ class Colors(unittest.TestCase):
 
     def test_power_page_classes_are_in_the_css(self):
         css = css_data().decode()
-        for name in (".power-value", ".power-warning", ".power-critical"):
+        for name in (".power-value", ".power-warning", ".power-critical", ".power-state",
+                     ".power-headline", ".flow-value", ".metric-value", ".metric"):
             self.assertIn(name, css)
         self.assertIn(WARNING, css)
         self.assertIn(CRITICAL, css)

@@ -4,7 +4,8 @@ import math
 import unittest
 
 from sdm.core.chart_layout import (axis_ticks, band_widths, flow_geometry, line_segments,
-                                   linear, nice_axis_max, ups_segments, watts_segments,
+                                   linear, nice_axis_max, pct_segments, ups_segments,
+                                   watts_segments,
                                    watts_summary)
 from sdm.core.history import ChartPoint
 
@@ -130,6 +131,16 @@ class Segments(unittest.TestCase):
         self.assertEqual(ups_segments(points),
                          [[(0, 100.0, True)], [(120, 99.0, True), (180, 98.0, True)],
                           [(180, 98.0, False), (240, 90.0, False)]])
+
+    def test_battery_runs_are_coloured_by_plug_state(self):
+        points = (ChartPoint(0, 0, 80.0, 6.0, None, False, 0, 0),
+                  ChartPoint(1, 60, 79.0, None, None, False, 0, 1),
+                  ChartPoint(2, 60, 79.0, None, None, True, 1, 1),      # 接上電源的複製點
+                  ChartPoint(3, 120, 81.0, 20.0, None, True, 1, 1),
+                  ChartPoint(4, 180, None, 5.0, None, True, 1, 1))
+        self.assertEqual(pct_segments(points),
+                         [[(0, 80.0, False), (60, 79.0, False)],
+                          [(60, 79.0, True), (120, 81.0, True)]])
 
     def test_generic_split(self):
         self.assertEqual(line_segments((), lambda p: p.watts, lambda p: 0), [])

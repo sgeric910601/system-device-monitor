@@ -26,6 +26,12 @@ BASE_CSS = """
         .footnote { padding: 8px 22px; font-size: 11px; color: alpha(@theme_fg_color, .6); }
         .power-value { font-size: 44px; font-weight: 700; }
         .power-sub { font-size: 13px; color: alpha(@theme_fg_color, .72); }
+        .power-state { font-size: 15px; font-weight: 600; }
+        .power-headline { font-size: 17px; font-weight: 600; }
+        .flow-value { font-size: 15px; font-weight: 600; }
+        .metric { border-radius: 9px; padding: 8px 10px;
+                  background-color: alpha(@theme_fg_color, .05); }
+        .metric-value { font-size: 16px; font-weight: 600; }
         """ + f"""
         .power-warning {{ color: {WARNING}; }}
         .power-critical {{ color: {CRITICAL}; font-weight: 600; }}

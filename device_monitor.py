@@ -2,6 +2,7 @@
 """系統與裝置監看的進入點：解析命令列、設定日誌，再啟動 GTK 看板。
 
 --version 走快速路徑，不載入 gi，讓啟動器與套件檢查不需要圖形環境。
+--preview 以記憶體中的示範資料開啟視窗（截圖用），不讀寫設定與歷史。
 """
 import argparse
 import json
@@ -9,6 +10,7 @@ import logging
 from pathlib import Path
 import sys
 
+from sdm.constants import Preview
 from sdm.paths import VERSION
 
 
@@ -19,6 +21,7 @@ def build_parser():
     parser.add_argument("--version", action="version", version=VERSION)
     parser.add_argument("--output-dir", type=Path, help="Diagnostic output directory")
     parser.add_argument("--capture", action="store_true", help="Opt in to local app-window screenshots")
+    parser.add_argument("--preview", choices=Preview.SCENARIOS, help="Show in-memory demo data only")
     return parser
 
 
@@ -31,6 +34,8 @@ def main(argv):
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
     if options.capture and not options.smoke_test:
         parser.error("--capture requires --smoke-test")
+    if options.preview and options.capture and options.output_dir is None:
+        parser.error("--preview --capture requires --output-dir")
     # 延後載入：只有真正啟動看板時才需要 GTK。
     from sdm.ui.app import run
     result = run(options)

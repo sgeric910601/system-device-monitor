@@ -60,6 +60,13 @@ class HistoryService:
         """模擬測試用：只存在記憶體，不讀取也不寫入任何檔案。"""
         return cls(memory=True, **options)
 
+    @classmethod
+    def preloaded(cls, samples, **options):
+        """示範模式用：只在記憶體，先放入示範紀錄（修剪到 7 天，依時間排序）。"""
+        service = cls(memory=True, **options)
+        service.samples = trim(tuple(sorted(samples, key=lambda item: item.t)), service.clock())
+        return service
+
     def load(self):
         if self.memory:
             return

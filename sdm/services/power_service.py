@@ -139,6 +139,12 @@ def desktop_history_sample(power):
                          ups_pct=ups_pct, ups_online=ups.online if ups else None)
 
 
+def newest(*snapshots):
+    """sequence 最大（最後取樣）的快照；全部都是 None 時回傳 None。"""
+    known = [snapshot for snapshot in snapshots if snapshot is not None]
+    return max(known, key=lambda snapshot: snapshot.sequence) if known else None
+
+
 def history_sample(power):
     """依快照種類產生一筆歷史紀錄；沒有快照或沒有可記錄的數值時回傳 None。"""
     if isinstance(power, LaptopPower):

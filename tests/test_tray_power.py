@@ -7,9 +7,11 @@ from unittest.mock import patch
 
 from sdm import paths
 from sdm.core.settings import Preferences
+from sdm.data.power_supply import BatteryReading
 from sdm.data.ups import UpsReading
 from sdm.services.power_service import PowerService
 from sdm.ui import app as ui_app
+from sdm.ui.power_tray import DESKTOP_ICON
 
 ACTIVE = ui_app.AyatanaAppIndicator3.IndicatorStatus.ACTIVE
 PASSIVE = ui_app.AyatanaAppIndicator3.IndicatorStatus.PASSIVE
@@ -82,6 +84,41 @@ class Indicator(Base):
         self.monitor.render_power_tray(None)
         self.assertEqual(self.monitor.power_indicator.label, "— W")
         self.assertEqual(self.monitor.power_item.label, "耗電：讀取中")
+
+
+class IconIndicator(FakeIndicator):
+    def __init__(self):
+        super().__init__()
+        self.icons = []
+    def set_icon_full(self, name, description): self.icons.append((name, description))
+
+
+def laptop_snapshot(percent=82, status="Discharging"):
+    battery = BatteryReading(name="BAT0", status=status, capacity=percent, power_w=15.0)
+    return PowerService(read_ups=lambda: None, read_gpus=lambda: (), read_uptime=lambda: None,
+                        clock=lambda: 1.0, wall=lambda: 1.0,
+                        read_batteries=lambda: (battery,)).sample()
+
+
+class LaptopIndicator(Base):
+    def setUp(self):
+        super().setUp()
+        self.monitor.power_indicator = IconIndicator()
+
+    def test_percent_battery_icon_and_menu_line(self):
+        self.monitor.render_power_tray(laptop_snapshot())
+        indicator = self.monitor.power_indicator
+        self.assertEqual((indicator.label, indicator.status), ("82%", ACTIVE))
+        self.assertEqual(indicator.icons, [("battery-level-80-symbolic", "82%")])
+        self.assertEqual(self.monitor.power_item.label, "電池：82%・計算中…")
+
+    def test_icon_is_only_replaced_when_it_changes_and_desktop_restores_it(self):
+        self.monitor.render_power_tray(laptop_snapshot())
+        self.monitor.render_power_tray(laptop_snapshot(84))
+        self.assertEqual(len(self.monitor.power_indicator.icons), 1)
+        self.monitor.render_power_tray(snapshot())
+        self.assertEqual(self.monitor.power_indicator.icons[-1][0], DESKTOP_ICON)
+        self.assertEqual(self.monitor.power_indicator.label, "288 W")
 
 
 class Checkbox(Base):

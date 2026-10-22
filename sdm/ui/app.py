@@ -16,30 +16,34 @@ gi.require_version("AyatanaAppIndicator3", "0.1")
 from gi.repository import Gtk, Gio, GLib, Gdk, GUdev, AyatanaAppIndicator3
 
 from sdm import paths
-from sdm.constants import Collect, History, Smoke, Solaar, Ui
+from sdm.constants import Collect, History, Preview, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
 from sdm.core.fmt import percent, size, age, temperature, value_text
 from sdm.core.settings import (LEGACY_KEYS, PreferencesReadOnlyError, load_settings,
                                save_legacy, save_preferences)
 from sdm.data.collectors import Collectors
 from sdm.data.ups import UpsReading
+from sdm.services import preview as demo
 from sdm.services.autostart import set_autostart, initialize_preferences
-from sdm.services.history_service import HistoryService
-from sdm.services.power_service import desktop_history_sample
+from sdm.services.history_service import HistoryService, read_boot_time
+from sdm.services.power_refresh import PowerRefresh
 from sdm.ui.pages.power import PowerPage
-from sdm.ui.power_text import menu_line, tray_label
+from sdm.ui.power_text import menu_line
+from sdm.ui.power_wiring import PowerMixin
+from sdm.ui.smoke import SMOKE_PAGES, SmokeMixin
 from sdm.ui.theme import GRAPH_COLORS, css_data
 from sdm.ui.widgets import label, box, clear, Graph
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 MENU_INDENT = "    "
-SMOKE_PAGES = ("power", "overview", "devices", "settings")   # 模擬測試依序顯示的頁面
 READ_ONLY_TIP = "設定檔目前無法寫入（可能由較新版本建立），此項目暫時無法變更"
 SAVE_FAILED_TIP = "無法儲存設定：這次執行期間仍會套用，重新啟動後恢復原本的選擇"
 
 
-def create_history(smoke):
-    """模擬測試只用記憶體中的歷史，絕不讀寫使用者的 history.json。"""
+def create_history(smoke, preview=None):
+    """模擬測試與示範模式只用記憶體中的歷史，絕不讀寫使用者的 history.json。"""
+    if preview:
+        return HistoryService.preloaded(demo.demo_history(preview, time.time()))
     return HistoryService.in_memory() if smoke else HistoryService()
 
 
@@ -49,11 +53,20 @@ class RunResult(NamedTuple):
     report: Optional[dict]
 
 
-class Monitor(Gtk.Application):
-    def __init__(self, background=False, smoke=False, output_dir=None, capture=False):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.FLAGS_NONE)
-        self.background, self.smoke = background, smoke
-        self.output_dir = Path(output_dir) if output_dir else paths.CACHE/"diagnostics"
+class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
+    preview = None          # 示範情境（--preview）；None 為一般執行
+    power_refresh = None    # 插拔電源後的重新讀取排程
+    boot_time = None
+
+    def __init__(self, background=False, smoke=False, output_dir=None, capture=False,
+                 preview=None):
+        # 示範模式另用一個不註冊為唯一實例的代號，絕不把請求交給正在執行的看板
+        super().__init__(application_id=APP_ID + Preview.APP_ID_SUFFIX if preview else APP_ID,
+                         flags=Gio.ApplicationFlags.NON_UNIQUE if preview
+                         else Gio.ApplicationFlags.FLAGS_NONE)
+        self.background, self.smoke, self.preview = background, smoke, preview
+        default_dir = None if preview else paths.CACHE/"diagnostics"
+        self.output_dir = Path(output_dir) if output_dir else default_dir
         self.capture_enabled = capture
         self.smoke_failed = False
         self.smoke_report = None
@@ -65,7 +78,9 @@ class Monitor(Gtk.Application):
         self.errors = {}
         self.series = {key: deque(maxlen=Ui.SERIES_MAXLEN) for key in ("cpu", "gpu", "ram")}
         # 只讀取；首次啟動判斷必須在 initialize_preferences() 建立 settings.json 之前。
-        loaded = load_settings(paths.CONFIG, paths.PREFERENCES)
+        # 示範模式不讀設定檔，一律使用預設值。
+        loaded = demo.preview_settings() if preview else load_settings(paths.CONFIG,
+                                                                      paths.PREFERENCES)
         self.settings = dict(loaded.legacy)
         self.preferences = loaded.preferences  # 新版設定：後續階段才使用
         self.first_run = loaded.first_run
@@ -80,6 +95,8 @@ class Monitor(Gtk.Application):
         self.power_page = None
         self.scrolls = {}
         self.signal_sources = []   # 不放進 timers：結束流程不移除正在處理中的訊號來源
+        self.power_refresh = PowerRefresh(lambda: self.submit("power"), self.schedule,
+                                          self.remove_source)
 
     def do_activate(self):
         if self.window:
@@ -87,15 +104,17 @@ class Monitor(Gtk.Application):
             self.window.present()
             return
         self.hold()
-        if not self.smoke:
+        if not (self.smoke or self.preview):
             initialize_preferences()
-        self.collector = Collectors()
+        self.collector = demo.PreviewCollectors(self.preview) if self.preview else Collectors()
         self.collector.nvidia.start()
-        self.history = create_history(self.smoke)
+        self.history = create_history(self.smoke, self.preview)
         self.history.load()
+        self.boot_time = read_boot_time()
         self.build_window()
-        self.build_indicator()
-        self.watch_devices()
+        if not self.preview:     # 示範模式沒有頂端列，也不監看裝置事件
+            self.build_indicator()
+            self.watch_devices()
         for kind, interval in (("system", Collect.SYSTEM_INTERVAL), ("slow", Collect.SLOW_INTERVAL),
                                ("devices", Collect.DEVICES_INTERVAL),
                                ("logitech", Solaar.INTERVAL)):
@@ -107,7 +126,8 @@ class Monitor(Gtk.Application):
         if not self.background:
             self.window.show_all()
         if self.smoke:
-            self.timers.append(GLib.timeout_add_seconds(Smoke.CHECK_DELAY_SECONDS, self.smoke_check))
+            delay = Preview.CHECK_DELAY_SECONDS if self.preview else Smoke.CHECK_DELAY_SECONDS
+            self.timers.append(GLib.timeout_add_seconds(delay, self.smoke_check))
 
     def install_signal_handlers(self):
         """登出或 kill 送來 SIGTERM／SIGINT 時照常結束：存歷史、停止 nvidia-smi。"""
@@ -121,7 +141,7 @@ class Monitor(Gtk.Application):
 
     def watch_devices(self):
         self.udev = GUdev.Client.new(["usb", "power_supply"])
-        self.udev.connect("uevent", lambda *_: self.device_event())
+        self.udev.connect("uevent", self.on_uevent)
         if self.collector.bus is None:
             return
         for sender, interface, member in (
@@ -173,6 +193,8 @@ class Monitor(Gtk.Application):
             self.data[kind] = {} if kind != "devices" else {"devices": [], "errors": ["設備資料暫時無法取得"]}
         if kind == "slow" and self.last_recorded is None:
             self.record_history()
+        if kind in ("slow", "power"):
+            self.observe_power()
         if kind == "system":
             now = time.monotonic()
             gpu = self.data["slow"].get("gpu")
@@ -181,22 +203,6 @@ class Monitor(Gtk.Application):
                 self.series[key].append((now, value))
         self.render()
         return False
-
-    def record_history(self):
-        """每分鐘把最新的耗電快照記入歷史；第一次收到快照時也記一筆，同一快照不重複記。"""
-        if self.closing:
-            return False
-        sample = desktop_history_sample(self.data["slow"].get("power"))
-        if sample is not None and sample.t != self.last_recorded:
-            self.last_recorded = sample.t
-            self.history.add(sample)
-            if self.power_page is not None:
-                self.power_page.history_changed()
-        return True
-
-    def history_points(self, range_s, now):
-        """電源頁歷史圖的資料來源。"""
-        return self.history.points(range_s, now) if self.history is not None else ()
 
     def build_window(self):
         settings = Gtk.Settings.get_default()
@@ -248,7 +254,9 @@ class Monitor(Gtk.Application):
     def build_power(self):
         """「電源」頁放在第一頁。"""
         content = self.page("power", "電源")
-        self.power_page = PowerPage(self.history_points)
+        self.power_page = PowerPage(self.history_points, recap_for=self.today_recap,
+                                    unplugged_for=self.history_unplugged,
+                                    hidden_fields=lambda: self.preferences.hidden_detail_fields)
         content.pack_start(self.power_page, False, False, 0)
 
     def build_overview(self):
@@ -319,7 +327,7 @@ class Monitor(Gtk.Application):
         page.pack_start(self.power_check, False, False, 0)
         page.pack_start(label("啟動與背景運作", "section"), False, False, 0)
         autostart = Gtk.CheckButton(label="登入 Ubuntu 桌面後自動啟動")
-        autostart.set_active(paths.AUTOSTART.exists())
+        autostart.set_active(False if self.preview else paths.AUTOSTART.exists())
         autostart.connect("toggled", self.toggle_autostart)
         page.pack_start(autostart, False, False, 0)
         page.pack_start(label("關閉視窗後仍會在頂端列運作。需要停止時，使用頂端列選單中的「退出」。", "muted", True), False, False, 0)
@@ -329,15 +337,18 @@ class Monitor(Gtk.Application):
                               "muted", True), False, False, 0)
 
     def toggle_setting(self, widget, key):
+        """示範模式只套用在這次執行，不寫入設定檔（其他設定項目相同）。"""
         self.settings = {**self.settings, key: widget.get_active()}
-        save_legacy(paths.CONFIG, self.settings)
+        if not self.preview:
+            save_legacy(paths.CONFIG, self.settings)
         self.render_indicator()
 
     def toggle_power_tray(self, widget):
         """「整機耗電」寫入 preferences.json，不動舊版 settings.json。"""
         updated = self.preferences.with_changes(tray_power=widget.get_active())
         try:
-            save_preferences(paths.PREFERENCES, updated)
+            if not self.preview:
+                save_preferences(paths.PREFERENCES, updated)
         except PreferencesReadOnlyError:
             self.lock_power_check(widget)
             return
@@ -356,7 +367,8 @@ class Monitor(Gtk.Application):
         widget.set_tooltip_text(READ_ONLY_TIP)
 
     def toggle_autostart(self, widget):
-        set_autostart(widget.get_active())
+        if not self.preview:
+            set_autostart(widget.get_active())
 
     def build_indicator(self):
         self.indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor",
@@ -422,7 +434,7 @@ class Monitor(Gtk.Application):
     def render(self):
         fast, slow = self.data["system"], self.data["slow"]
         gpu, ups = slow.get("gpu"), slow.get("ups") or UpsReading()
-        self.power_page.update(slow.get("power"))
+        self.power_page.update(self.current_power())
         self.cards["cpu"][0].set_text(percent(fast.get("cpu")))
         info = fast.get("cpu_info", {})
         self.card_titles["cpu"].set_text(info.get("name", "CPU") + " · " + temperature(slow.get("cpu_temp")))
@@ -565,17 +577,7 @@ class Monitor(Gtk.Application):
         self.summary_items["ups"].set_label("UPS " + percent(ups.charge_pct) +
             " · 續航 " + value_text(ups.time_left_min, " 分鐘"))
         self.sync_battery_items(battery_menu_rows(self.data["devices"]))
-        self.render_power_tray(slow.get("power"))
-
-    def render_power_tray(self, power):
-        """「耗電」指示器顯示整機瓦數（取整數）；選單第一行加上 3 分鐘平均。"""
-        self.power_indicator.set_label(tray_label(power), "")
-        self.power_indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE
-                                        if self.preferences.tray_power
-                                        else AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
-        text = menu_line(power)
-        if self.power_item.get_label() != text:
-            self.power_item.set_label(text)
+        self.render_power_tray(self.current_power())
 
     def battery_item(self, text):
         return Gtk.MenuItem(label=text)
@@ -601,61 +603,6 @@ class Monitor(Gtk.Application):
                 self.menu.insert(item, start + offset)
                 self.battery_items.append(item)
         self.battery_rows = rows
-
-    def smoke_check(self):
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.window.show_all()
-        self.window.present()
-        self.smoke_pages = []
-        self.smoke_show(0)
-        return False
-
-    def smoke_show(self, index):
-        self.stack.set_visible_child_name(SMOKE_PAGES[index])
-        GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.smoke_capture, index)
-        return False
-
-    def smoke_capture(self, index):
-        """確認頁面已切換並顯示，選用時截圖，再排下一頁或結束。"""
-        name = SMOKE_PAGES[index]
-        if self.stack.get_visible_child_name() == name and self.scrolls[name].get_mapped():
-            self.smoke_pages.append(name)
-        self.capture(name, name)
-        if name == "power":
-            self.capture("power-lower", name, bottom=True)
-        if index + 1 < len(SMOKE_PAGES):
-            GLib.timeout_add(Smoke.PAGE_DELAY_MS, self.smoke_show, index + 1)
-        else:
-            GLib.timeout_add(Smoke.FINISH_DELAY_MS, self.smoke_finish)
-        return False
-
-    def capture(self, name, page, bottom=False):
-        """只在 --capture 時把視窗存成 name.png；bottom 為 True 時先捲到頁面底部。"""
-        if not self.capture_enabled:
-            return
-        self.window.set_focus(None)
-        adjustment = self.scrolls[page].get_vadjustment()
-        adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() if bottom else 0)
-        while Gtk.events_pending():
-            Gtk.main_iteration_do(False)
-        window = self.window.get_window()
-        if window:
-            width, height = window.get_width(), window.get_height()
-            pixbuf = Gdk.pixbuf_get_from_window(window, 0, 0, width, height)
-            if pixbuf:
-                pixbuf.savev(str(self.output_dir/f"{name}.png"), "png", [], [])
-
-    def smoke_finish(self):
-        self.smoke_failed = bool(self.errors) or not bool(self.data["system"])
-        report = dict(ok=not self.smoke_failed, collector_errors=sorted(self.errors),
-                      system_ready=bool(self.data["system"]),
-                      indicator_count=len(getattr(self, "indicators", {})) +
-                      (1 if getattr(self, "power_indicator", None) else 0),
-                      pages=list(getattr(self, "smoke_pages", [])))
-        (self.output_dir/"smoke.json").write_text(json.dumps(report, indent=2) + "\n")
-        self.smoke_report = report
-        self.stop()
-        return False
 
     def stop(self):
         """先存歷史，再停止其餘部分；任何一步失敗都只記錄，最後一定呼叫 quit()。
@@ -690,6 +637,8 @@ class Monitor(Gtk.Application):
         if self.event_timer:
             GLib.source_remove(self.event_timer)
             self.event_timer = 0
+        if self.power_refresh is not None:
+            self.power_refresh.stop()
 
     def unsubscribe_all(self):
         for subscription in self.subscriptions:
@@ -699,10 +648,11 @@ class Monitor(Gtk.Application):
                 logging.warning("Cannot unsubscribe: %s", type(error).__name__)
 
     def hide_indicators(self):
-        split = list(getattr(self, "indicators", {}).values())
-        split += [indicator for indicator in (getattr(self, "power_indicator", None),) if indicator]
-        for indicator in [self.indicator] + split:
-            indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
+        indicators = [getattr(self, "indicator", None), getattr(self, "power_indicator", None)]
+        indicators += list(getattr(self, "indicators", {}).values())
+        for indicator in indicators:
+            if indicator is not None:    # 示範模式沒有頂端列
+                indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.PASSIVE)
 
     def stop_stream(self):
         if getattr(self, "collector", None) is not None:
@@ -711,6 +661,7 @@ class Monitor(Gtk.Application):
 
 def run(options):
     """依命令列選項啟動看板，直到使用者退出或 smoke test 結束。"""
-    app = Monitor(options.background, options.smoke_test, options.output_dir, options.capture)
+    app = Monitor(options.background, options.smoke_test, options.output_dir, options.capture,
+                  getattr(options, "preview", None))
     result = app.run([sys.argv[0]])
     return RunResult(1 if app.smoke_failed else result, app.smoke_report)

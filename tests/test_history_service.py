@@ -400,6 +400,17 @@ class InMemory(TempData):
         self.assertEqual(self.path.read_bytes(), b"real history must stay untouched")
         self.assertEqual(self.backups(), [])
 
+    def test_preloaded_samples_for_the_preview(self):
+        writer = Writer()
+        rows = [sample(NOW - 60), sample(NOW - 120), sample(NOW - 30 * 86400)]
+        service = HistoryService.preloaded(rows, clock=self.clock, writer=writer)
+        service.load()
+        self.assertIsNone(service.path)
+        self.assertEqual([row.t for row in service.samples], [NOW - 120, NOW - 60])
+        service.add(sample(NOW))
+        self.assertFalse(service.save(force=True))
+        self.assertEqual(writer.calls, [])
+
     def test_forward_jump_trims_without_a_backup(self):
         service = HistoryService.in_memory(clock=self.clock)
         service.add(sample(NOW))

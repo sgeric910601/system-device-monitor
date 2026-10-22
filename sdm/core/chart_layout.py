@@ -183,6 +183,12 @@ def ups_segments(points):
                          break_on_missing=True)
 
 
+def pct_segments(points):
+    """筆電電量線：與不斷電系統電量線相同，依接電與用電池分色，讀不到電量時斷開。"""
+    return line_segments(points, lambda point: point.pct, lambda point: point.segment,
+                         break_on_missing=True)
+
+
 def watts_summary(points):
     """圖表下方摘要「平均耗電 X W · 最高 Y W」；沒有耗電資料時回傳 None。"""
     watts = [point.watts for point in points if point.watts is not None]

@@ -1,9 +1,11 @@
-"""耗電歷史圖：1 小時／24 小時／7 天，耗電曲線（左軸）與不斷電系統電量（右軸）。
+"""耗電歷史圖：1 小時／24 小時／7 天，耗電曲線（左軸）與電量（右軸）。
 
+電量線在桌機是不斷電系統電量，在筆電是電池電量（level 參數）。
 座標與刻度在 set_points() 算好，繪圖時只畫線與文字。
 耗電曲線依 watts_segment 斷開；電量曲線依 segment 斷開，接電與改用電池分色。
 """
 import math
+from typing import Callable, NamedTuple
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -11,8 +13,8 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gtk, PangoCairo
 
 from sdm.constants import Chart, History
-from sdm.core.chart_layout import (axis_ticks, linear, nice_axis_max, ups_segments,
-                                   watts_segments, watts_summary)
+from sdm.core.chart_layout import (axis_ticks, linear, nice_axis_max, pct_segments,
+                                   ups_segments, watts_segments, watts_summary)
 from sdm.ui.theme import COLORS, WARNING, rgb
 from sdm.ui.widgets import box, label
 
@@ -26,6 +28,28 @@ LABEL_ALPHA = 0.7
 LABEL_GAP = 6
 MIN_WATT_POINTS = 2              # 至少兩點才畫得出線（參考專案相同）
 DOT_RADIUS = 2.5                 # 前後都斷開的單獨一點畫成圓點
+LEVEL_UPS = "ups"
+LEVEL_BATTERY = "battery"
+
+
+class Level(NamedTuple):
+    """電量線：取值、分段、接電與用電池的顏色、圖例（依畫面由左到右），
+    以及沒有耗電資料時是否只靠電量也能畫圖（筆電接電時常量不到耗電）。"""
+    value: Callable
+    segments: Callable
+    plugged_color: tuple
+    battery_color: tuple
+    legends: tuple
+    drawable_alone: bool
+
+
+LEVELS = {
+    LEVEL_UPS: Level(lambda point: point.ups_pct, ups_segments, UPS_COLOR, UPS_BATTERY_COLOR,
+                     ((COLORS["temperature"], "耗電"), (COLORS["ups"], "不斷電系統電量")), False),
+    LEVEL_BATTERY: Level(lambda point: point.pct, pct_segments, rgb(COLORS["ram"]),
+                         rgb(COLORS["cpu"]), ((COLORS["cpu"], "用電池"), (COLORS["ram"], "接電源"),
+                                              (COLORS["temperature"], "耗電")), True),
+}
 
 
 def legend(color, text):
@@ -33,12 +57,12 @@ def legend(color, text):
 
 
 class HistoryChart(Gtk.Box):
-    def __init__(self, on_range):
+    def __init__(self, on_range, level=LEVEL_UPS):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.on_range = on_range
+        self.on_range, self.level = on_range, LEVELS[level]
         self.range_s = History.RANGES[0]
-        self.points, self.ticks, self.axis_max, self.has_ups = (), (), 0.0, False
-        self.watts_runs, self.ups_runs = [], []
+        self.points, self.ticks, self.axis_max, self.has_level = (), (), 0.0, False
+        self.watts_runs, self.level_runs = [], []
         self.start = self.end = 0.0
         self.pack_start(self.build_toolbar(), False, False, 0)
         self.stack = Gtk.Stack()
@@ -66,8 +90,8 @@ class HistoryChart(Gtk.Box):
             buttons.pack_start(button, False, False, 0)
             group = group or button
         toolbar.pack_start(buttons, False, False, 0)
-        toolbar.pack_end(legend(COLORS["ups"], "不斷電系統電量"), False, False, 0)
-        toolbar.pack_end(legend(COLORS["temperature"], "耗電"), False, False, 0)
+        for color, text in reversed(self.level.legends):
+            toolbar.pack_end(legend(color, text), False, False, 0)
         return toolbar
 
     def range_toggled(self, button, range_s):
@@ -76,16 +100,18 @@ class HistoryChart(Gtk.Box):
             self.on_range(range_s)
 
     def set_points(self, points, now):
-        """換上新的圖表點並重畫；耗電點少於兩個時顯示「累積資料中」。"""
+        """換上新的圖表點並重畫；耗電與電量都少於兩點時顯示「累積資料中」。"""
         self.points = tuple(points)
         self.start, self.end = now - self.range_s, now
         watts = [point.watts for point in self.points if point.watts is not None]
+        levels = [point for point in self.points if self.level.value(point) is not None]
         self.axis_max = nice_axis_max(max(watts, default=0), Chart.WATTS_AXIS_MINIMUM)
         self.ticks = axis_ticks(now, self.range_s)
-        self.has_ups = any(point.ups_pct is not None for point in self.points)
+        self.has_level = bool(levels)
         self.watts_runs = watts_segments(self.points)
-        self.ups_runs = ups_segments(self.points)
-        enough = len(watts) >= MIN_WATT_POINTS
+        self.level_runs = self.level.segments(self.points)
+        enough = len(watts) >= MIN_WATT_POINTS or (
+            self.level.drawable_alone and len(levels) >= MIN_WATT_POINTS)
         self.stack.set_visible_child_name("chart" if enough else "empty")
         self.summary.set_text((watts_summary(self.points) or "") if enough else "")
         self.area.queue_draw()
@@ -109,8 +135,8 @@ class HistoryChart(Gtk.Box):
                      bottom - top + 2 * DOT_RADIUS)
         cr.clip()
         self.draw_watts(cr, (left, right, top, bottom))
-        if self.has_ups:
-            self.draw_ups(cr, (left, right, top, bottom))
+        if self.has_level:
+            self.draw_level(cr, (left, right, top, bottom))
         cr.restore()
         return False
 
@@ -132,7 +158,7 @@ class HistoryChart(Gtk.Box):
             cr.stroke()
             cr.set_source_rgba(*foreground, LABEL_ALPHA)
             self.draw_text(cr, layout, f"{self.axis_max * fraction:.0f} W", left - LABEL_GAP, y, 1)
-            if self.has_ups:
+            if self.has_level:
                 self.draw_text(cr, layout, f"{fraction * 100:.0f}%", right + LABEL_GAP, y, 0)
         for stamp, text in self.ticks:
             x = linear(stamp, self.start, self.end, left, right)
@@ -143,10 +169,11 @@ class HistoryChart(Gtk.Box):
         for run in self.watts_runs:
             self.draw_run(cr, run, self.axis_max, frame, WATTS_COLOR)
 
-    def draw_ups(self, cr, frame):
+    def draw_level(self, cr, frame):
         cr.set_line_width(Chart.UPS_LINE_WIDTH)
-        for run in self.ups_runs:
-            self.draw_run(cr, run, 100, frame, UPS_COLOR if run[0][2] else UPS_BATTERY_COLOR)
+        for run in self.level_runs:
+            color = self.level.plugged_color if run[0][2] else self.level.battery_color
+            self.draw_run(cr, run, 100, frame, color)
 
     def draw_run(self, cr, run, top_value, frame, color):
         """一段連續資料：兩點以上畫線，只有一點畫圓點。"""

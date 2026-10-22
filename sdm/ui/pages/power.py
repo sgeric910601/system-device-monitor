@@ -1,4 +1,5 @@
-"""「電源」頁：整機耗電、電力流向、耗電拆解、耗電歷史與詳細資訊。
+"""「電源」頁：桌機顯示整機耗電、電力流向、耗電拆解、耗電歷史與詳細資訊；
+有系統電池（筆電）時改顯示筆電版面（laptop_power.LaptopPowerView，第一次收到筆電快照才建立）。
 
 自成一個 Gtk.Box，對外只有 update(power) 與 history_changed()，之後換外殼可直接重用。
 頁面沒有顯示時只記下最新資料，顯示時才更新文字與重算圖表；文字沒變就不重設。
@@ -10,7 +11,10 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Pango
 
 from sdm.constants import Flow
+from sdm.core.recap import DailyRecap
+from sdm.services.battery_service import LaptopPower
 from sdm.ui.charts import HistoryChart
+from sdm.ui.pages.laptop_power import LaptopPowerView
 from sdm.ui.power_flow import PowerFlow
 from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, detail_rows,
                                flow_model, header_text)
@@ -44,15 +48,26 @@ def ellipsized(text, css=None):
 
 
 class PowerPage(Gtk.Box):
-    def __init__(self, points_for, clock=time.time):
-        """points_for(range_s, now) 回傳歷史圖表點（HistoryService.points）。"""
+    def __init__(self, points_for, clock=time.time, recap_for=lambda now: DailyRecap(),
+                 unplugged_for=lambda now: None, hidden_fields=lambda: ()):
+        """points_for(range_s, now) 回傳歷史圖表點；其餘回呼只在筆電模式使用：
+        recap_for(now) 今日回顧、unplugged_for(now) 由歷史推算的拔電時間、
+        hidden_fields() 使用者隱藏的詳細資訊欄位。"""
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=SPACING)
         self.points_for, self.clock = points_for, clock
+        self.recap_for, self.unplugged_for, self.hidden_fields = (recap_for, unplugged_for,
+                                                                   hidden_fields)
         self.power, self.stale = None, True
         self.row_ids, self.row_labels = None, []
+        self.laptop = None
+        self.desktop = box(spacing=SPACING)
+        self.pack_start(self.desktop, False, False, 0)
         self.build_header()
         self.build_cards()
         self.build_details()
+        # 兩種版面的顯示與隱藏由這裡控制：之後視窗的 show_all() 不會把隱藏的版面又顯示出來
+        self.desktop.show_all()
+        self.desktop.set_no_show_all(True)
         self.connect("map", self.on_map)
 
     def build_header(self):
@@ -61,7 +76,7 @@ class PowerPage(Gtk.Box):
         self.sub = label("正在讀取耗電…", "power-sub", True)
         header.pack_start(self.value, False, False, 0)
         header.pack_start(self.sub, False, False, 0)
-        self.pack_start(header, False, False, 0)
+        self.desktop.pack_start(header, False, False, 0)
 
     def build_cards(self):
         self.flow = PowerFlow()
@@ -77,7 +92,7 @@ class PowerPage(Gtk.Box):
             cards.add(child)
         for child in cards.get_children():
             child.set_can_focus(False)
-        self.pack_start(cards, False, False, 0)
+        self.desktop.pack_start(cards, False, False, 0)
 
     def build_details(self):
         grid = Gtk.Grid(column_spacing=SPACING, row_spacing=8)
@@ -88,15 +103,29 @@ class PowerPage(Gtk.Box):
             grid.attach(label(name, "muted"), column * 2, row, 1, 1)
             grid.attach(text, column * 2 + 1, row, 1, 1)
             self.detail_values.append(text)
-        self.pack_start(card("詳細資訊", grid), False, False, 0)
+        self.desktop.pack_start(card("詳細資訊", grid), False, False, 0)
 
     def update(self, power):
-        """收到新的 DesktopPower（或 None）；同一份快照不重複處理。"""
+        """收到新的 DesktopPower、LaptopPower 或 None；同一份快照不重複處理。"""
         if power is self.power and not self.stale:
             return
         self.power, self.stale = power, True
+        self.select_view(isinstance(power, LaptopPower))
         if self.get_mapped():
             self.apply()
+
+    def select_view(self, laptop):
+        """第一次收到筆電快照才建立筆電版面；之後依快照種類切換。"""
+        if laptop and self.laptop is None:
+            self.laptop = LaptopPowerView(self.points_for, self.clock)
+            self.pack_start(self.laptop, False, False, 0)
+            self.laptop.show_all()
+            self.laptop.set_no_show_all(True)
+            if self.get_mapped():
+                self.laptop.refresh_chart()
+        if self.laptop is not None:
+            self.laptop.set_visible(laptop)
+            self.desktop.set_visible(not laptop)
 
     def history_changed(self):
         if self.get_mapped():
@@ -110,6 +139,14 @@ class PowerPage(Gtk.Box):
     def apply(self):
         self.stale = False
         power = self.power
+        if isinstance(power, LaptopPower):
+            now = self.clock()
+            self.laptop.apply(power, now, self.unplugged_for(now), self.recap_for(now),
+                              self.hidden_fields())
+            return
+        self.apply_desktop(power)
+
+    def apply_desktop(self, power):
         big, sub, tone = header_text(power)
         set_text(self.value, big)
         set_text(self.sub, sub)
@@ -148,5 +185,8 @@ class PowerPage(Gtk.Box):
                 set_text(widget, text)
 
     def refresh_chart(self):
+        if self.laptop is not None and self.laptop.get_visible():
+            self.laptop.refresh_chart()
+            return
         now = self.clock()
         self.chart.set_points(self.points_for(self.chart.range_s, now), now)
