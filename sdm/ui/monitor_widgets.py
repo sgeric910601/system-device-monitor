@@ -32,6 +32,7 @@ TRACK_ALPHA = 0.10
 BAR_HEIGHT = 14
 ICON_SIZE = 20
 SPACING = 8
+CHART_NOTE = "最近 2 分鐘"
 
 
 def set_text(widget, text):
@@ -76,6 +77,14 @@ def legend(entries):
     """「● CPU　● GPU」這類圖例；entries 為（顏色、文字）。"""
     text = "　".join(f'<span foreground="{color}">●</span> {name}' for color, name in entries)
     return label(text, "muted", markup=True)
+
+
+def chart_heading(entries):
+    """曲線上方的圖例，右邊註明「最近 2 分鐘」。"""
+    heading = box(False, SPACING)
+    heading.pack_start(legend(entries), False, False, 0)
+    heading.pack_end(label(CHART_NOTE, "muted"), False, False, 0)
+    return heading
 
 
 def foreground(widget):
@@ -272,6 +281,9 @@ class TopList(Gtk.Box):
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=SPACING)
         self.message = label("計算中…", "muted")
+        # 顯示與否由 set_message 決定，視窗的 show_all() 不會把空白的訊息又顯示出來
+        self.message.set_no_show_all(True)
+        self.message.show()
         self.rows_box = box(spacing=SPACING)
         self.pack_start(self.message, False, False, 0)
         self.pack_start(self.rows_box, False, False, 0)

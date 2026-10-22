@@ -99,7 +99,8 @@ def write_system(root, step=0):
             write(directory/"partition", "1\n")
 
 
-# hwmon 目錄 →（晶片名稱、device 指向的硬體目錄、溫度 {檔名: (標籤, 毫度)}、風扇 {編號: (標籤, 轉速, 最高)}）
+# hwmon 目錄 →（晶片名稱、device 指向的硬體目錄、溫度（檔名 →（標籤、毫度））、
+#               風扇（編號 →（標籤、轉速、最高）））
 HWMON = (
     ("k10temp", "pci0/cpu", {"temp1": ("Tctl", 47125), "temp3": ("Tccd1", 41125)}, {}),
     ("nvme", "pci0/nvme/nvme0", {"temp1": ("Composite", 40850)}, {}),

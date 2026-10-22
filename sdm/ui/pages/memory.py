@@ -17,8 +17,7 @@ from sdm.ui.app_names import placeholder, top_rows
 from sdm.ui.monitor_text import (LEGEND_NAMES, memory_header, memory_legend, pressure_badge,
                                  pressure_text, swap_text, zswap_text)
 from sdm.ui.monitor_widgets import (CompositionBar, MonitorChart, RowsGrid, TopList, card,
-                                    set_text, set_tone)
-from sdm.ui.pages.cpu import chart_heading
+                                    chart_heading, set_text, set_tone)
 from sdm.ui.pages.monitor_page import Header, MonitorPage, card_flow, note
 from sdm.ui.theme import SEGMENTS, SERIES
 from sdm.ui.widgets import box, label

@@ -223,7 +223,8 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         self.window.set_titlebar(header)
         refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         refresh.set_tooltip_text("更新所有資料")
-        refresh.connect("clicked", lambda *_: [self.submit(k) for k in self.data])
+        refresh.connect("clicked", lambda *_: [self.submit(k) for k in self.data] +
+                        [self.submit_detail()])
         header.pack_end(refresh)
         root = box(spacing=0)
         self.window.add(root)

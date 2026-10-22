@@ -15,8 +15,8 @@ from sdm.core.disk_health import summarize
 from sdm.core.monitor_history import MonitorHistory
 from sdm.ui.monitor_text import (disk_rates, disk_temperature, disk_title, disk_totals,
                                  volume_fraction, volume_title, volume_tone, volume_usage)
-from sdm.ui.monitor_widgets import MonitorChart, RowsGrid, badge, ellipsized, set_text, set_tone
-from sdm.ui.pages.cpu import chart_heading
+from sdm.ui.monitor_widgets import (MonitorChart, RowsGrid, badge, chart_heading, ellipsized,
+                                    set_text, set_tone)
 from sdm.ui.pages.monitor_page import Header, MonitorPage, note
 from sdm.ui.theme import SERIES
 from sdm.ui.widgets import box, clear, label

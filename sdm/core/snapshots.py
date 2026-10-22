@@ -12,7 +12,7 @@ class CpuDetail:
 
 @dataclass(frozen=True)
 class ThermalDetail:
-    groups: tuple                       # （群組, thermal.Stat），依顯示順序
+    groups: tuple                       # （群組、thermal.Stat），依顯示順序
     fans: tuple                         # thermal.Fan
 
 
@@ -22,7 +22,7 @@ class AppsDetail:
     cores: int
     has_cpu: bool = True                # 這次讀了 CPU 時間（CPU／GPU 頁）
     has_memory: bool = True             # 這次讀了記憶體（記憶體頁）
-    labels: tuple = ()                  # 示範模式：（代號, 名稱, 圖示名稱）；實際資料由介面查詢
+    labels: tuple = ()                  # 示範模式：（代號、名稱、圖示名稱）；實際資料由介面查詢
 
 
 @dataclass(frozen=True)

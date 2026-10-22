@@ -13,8 +13,7 @@ from gi.repository import Gtk
 from sdm.core.monitor_history import MonitorHistory
 from sdm.ui.monitor_text import (address_text, compact_rates, network_rows, network_title,
                                  network_totals, other_rows)
-from sdm.ui.monitor_widgets import MonitorChart, RowsGrid, card, ellipsized, set_text
-from sdm.ui.pages.cpu import chart_heading
+from sdm.ui.monitor_widgets import MonitorChart, RowsGrid, card, chart_heading, ellipsized, set_text
 from sdm.ui.pages.monitor_page import Header, MonitorPage, card_flow, note
 from sdm.ui.theme import SERIES
 from sdm.ui.widgets import clear, label

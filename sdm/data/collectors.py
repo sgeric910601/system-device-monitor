@@ -88,7 +88,8 @@ class Collectors:
                                        disk_meta=lambda: self.disk_meta, gpus=self.all_gpus)
 
     def all_gpus(self):
-        return tuple(self.nvidia.latest()) + tuple(read_amd_gpus())
+        """溫度分組用的顯示卡讀值：未過期的 NVIDIA 串流與 AMD sysfs。"""
+        return tuple(self.nvidia.readings()) + tuple(read_amd_gpus())
 
     def detail(self, request):
         """頁面顯示時才排程的詳細取樣（見 sdm.core.tiers）。"""

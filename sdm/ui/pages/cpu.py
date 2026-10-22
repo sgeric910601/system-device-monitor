@@ -14,23 +14,15 @@ from sdm.core.thermal import GROUP_TITLES, stat_text
 from sdm.ui.app_names import placeholder, top_rows
 from sdm.ui.monitor_text import (cpu_header, frequency_text, gpu_rows, gpu_title, load_text,
                                  topology_text)
-from sdm.ui.monitor_widgets import (CoreBars, MonitorChart, RowsGrid, TopList, card, legend,
-                                    set_text)
+from sdm.ui.monitor_widgets import (CoreBars, MonitorChart, RowsGrid, TopList, card,
+                                    chart_heading, set_text)
 from sdm.ui.pages.monitor_page import CARD_MIN_WIDTH, Header, MonitorPage, card_flow, note
 from sdm.ui.theme import SERIES
 from sdm.ui.widgets import box, clear, label
 
 PERCENT = 100
-CHART_NOTE = "最近 2 分鐘"
 NO_TEMPERATURES = "這台電腦沒有回報可用的溫度感測器"
 NO_FANS = "沒有偵測到可讀取的風扇轉速"
-
-
-def chart_heading(entries):
-    heading = box(False, 8)
-    heading.pack_start(legend(entries), False, False, 0)
-    heading.pack_end(label(CHART_NOTE, "muted"), False, False, 0)
-    return heading
 
 
 class CpuPage(MonitorPage):

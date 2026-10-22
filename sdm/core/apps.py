@@ -129,7 +129,7 @@ class AppTracker:
 
 
 def rank(items, name_for, limit=Monitor.TOP_APPS):
-    """(App 代號, 數值) → 依顯示名稱合併、由大到小的前幾名；沒有數值或為 0 的不列入。"""
+    """（App 代號、數值）→ 依顯示名稱合併、由大到小的前幾名；沒有數值或為 0 的不列入。"""
     totals, members = {}, {}
     for app_id, value in items:
         if value is None or value <= 0:
