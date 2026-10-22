@@ -260,8 +260,9 @@ class RowsGrid(Gtk.Grid):
                 self.cells.append(value)
             self.show_all()
         for widget, row in zip(self.cells, rows):
-            set_text(widget, row[1])
-            widget.set_tooltip_text(row[1])
+            if widget.get_text() != row[1]:
+                widget.set_text(row[1])
+                widget.set_tooltip_text(row[1])     # 欄位太窄被截斷時可以看到完整內容
             set_tone(widget, row[2] if len(row) > 2 else None)
 
 
