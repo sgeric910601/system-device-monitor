@@ -6,8 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from sdm.data import power_supply
-from sdm.data.power_supply import (AdapterReading, BatteryReading, has_system_battery,
-                                   read_adapters, read_batteries)
+from sdm.data.power_supply import AdapterReading, BatteryReading, read_adapters, read_batteries
 from tests.fixtures import sysfs
 
 
@@ -63,7 +62,6 @@ class ThinkPad(Tree):
         with patch.object(power_supply, "read", side_effect=spy):
             read_batteries(self.root)
             read_adapters(self.root)
-            has_system_battery(self.root)
         self.assertTrue(opened)
         self.assertFalse({"serial_number", "uevent"} & set(opened))
 
@@ -138,10 +136,8 @@ class OtherStyles(Tree):
     def test_peripheral_battery_is_ignored(self):
         sysfs.peripheral(self.root)
         self.assertEqual(read_batteries(self.root), ())
-        self.assertFalse(has_system_battery(self.root))
         sysfs.thinkpad(self.root)
         self.assertEqual([battery.name for battery in read_batteries(self.root)], ["BAT0"])
-        self.assertTrue(has_system_battery(self.root))
 
     def test_empty_battery_slot_is_ignored(self):
         sysfs.absent_slot(self.root)
@@ -150,7 +146,6 @@ class OtherStyles(Tree):
     def test_missing_directory(self):
         self.assertEqual(read_batteries(self.root), ())
         self.assertEqual(read_adapters(self.root), ())
-        self.assertFalse(has_system_battery(self.root))
 
 
 class Garbage(Tree):

@@ -36,7 +36,6 @@ TIMEOUT_ERRORS = ("org.freedesktop.DBus.Error.NoReply", "org.freedesktop.DBus.Er
 TYPE_BATTERY = 2              # UPower 裝置類型：電池（3 是不斷電系統）
 STATE_MAX = 6
 SECONDS_PER_MINUTE = 60
-PERCENT_MAX = 100
 
 
 @dataclass(frozen=True)
@@ -88,7 +87,7 @@ def device_fields(get):
         return get(DESTINATION, DISPLAY_PATH, DEVICE_INTERFACE, name)
     state = number(prop("State"), 0, STATE_MAX)
     return dict(state=None if state is None else int(state),
-                percentage=number(prop("Percentage"), 0, PERCENT_MAX),
+                percentage=number(prop("Percentage"), 0, Battery.PERCENT),
                 time_to_empty_s=seconds(prop("TimeToEmpty")),
                 time_to_full_s=seconds(prop("TimeToFull")),
                 energy_rate_w=number(prop("EnergyRate"), 0, Battery.MAX_W))

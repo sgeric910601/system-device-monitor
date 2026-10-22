@@ -12,17 +12,12 @@ from pathlib import Path
 import re
 from typing import Optional
 
-from sdm.constants import Battery
+from sdm.constants import Battery, Supply
 from sdm.core.fmt import number
 from sdm.data.sources import clean_text, read
 
 MICRO = 1_000_000           # µWh、µAh、µV、µA、µW → Wh、Ah、V、A、W
 TENTHS = 10                 # temp 以 0.1 °C 為單位
-PERCENT_MAX = 100
-TYPE_BATTERY = "Battery"
-SCOPE_DEVICE = "Device"
-ADAPTER_TYPES = ("Mains", "USB")
-USB_TYPE = "USB"
 PD_MARKER = "[PD"           # usb_type 中以方括號標示目前使用的類型，例如「C [PD] PD_PPS」
 UCSI_PREFIX = "ucsi-source-psy-"
 ACTIVE_CHOICE = re.compile(r"\[([^\]]+)\]")
@@ -138,14 +133,14 @@ def electrical_fields(directory):
 def descriptive_fields(directory):
     return dict(
         status=text(directory, "status", Battery.STATUS_MAX_CHARS),
-        capacity=integer(directory, "capacity", 0, PERCENT_MAX),
+        capacity=integer(directory, "capacity", 0, Battery.PERCENT),
         capacity_level=text(directory, "capacity_level", Battery.STATUS_MAX_CHARS),
         health=text(directory, "health", Battery.STATUS_MAX_CHARS),
         technology=text(directory, "technology"),
         manufacturer=text(directory, "manufacturer"),
         model=text(directory, "model_name"),
-        start_threshold=integer(directory, "charge_control_start_threshold", 0, PERCENT_MAX),
-        end_threshold=integer(directory, "charge_control_end_threshold", 0, PERCENT_MAX),
+        start_threshold=integer(directory, "charge_control_start_threshold", 0, Battery.PERCENT),
+        end_threshold=integer(directory, "charge_control_end_threshold", 0, Battery.PERCENT),
         behaviour=active_choice(text(directory, "charge_behaviour")))
 
 
@@ -164,16 +159,17 @@ def supply_directories(root=Path("/")):
 
 
 def is_system_battery(directory):
-    return (read(directory/"type") == TYPE_BATTERY and read(directory/"scope") != SCOPE_DEVICE
+    return (read(directory/"type") == Supply.TYPE_BATTERY
+            and read(directory/"scope") != Supply.SCOPE_DEVICE
             and read(directory/"present") != "0")
 
 
 def is_adapter(directory):
     """Mains，或正在以 USB-C PD 供電的 USB 項目（ucsi 來源）；周邊的電源不算。"""
     kind = read(directory/"type")
-    if kind not in ADAPTER_TYPES or read(directory/"scope") == SCOPE_DEVICE:
+    if kind not in Supply.ADAPTER_TYPES or read(directory/"scope") == Supply.SCOPE_DEVICE:
         return False
-    if kind != USB_TYPE:
+    if kind != Supply.TYPE_USB:
         return True
     return PD_MARKER in read(directory/"usb_type") or directory.name.startswith(UCSI_PREFIX)
 
@@ -204,7 +200,3 @@ def read_batteries(root=Path("/")):
 def read_adapters(root=Path("/")):
     return tuple(adapter_reading(directory) for directory in supply_directories(root)
                  if is_adapter(directory))
-
-
-def has_system_battery(root=Path("/")):
-    return any(is_system_battery(directory) for directory in supply_directories(root))

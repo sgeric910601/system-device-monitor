@@ -30,7 +30,6 @@ STATUS_UNKNOWN = "Unknown"
 PLUGGED_STATUSES = (STATUS_CHARGING, STATUS_FULL, STATUS_NOT_CHARGING)
 UNIT_WATTS = "W"
 UNIT_AMPS = "A"
-PERCENT = 100
 
 
 @dataclass(frozen=True)
@@ -112,7 +111,7 @@ class BatterySnapshot:
             return LIMIT_REACHED
         if self.draining:
             return PLUGGED_IDLE
-        if self.full_flag or self.level >= PERCENT:
+        if self.full_flag or self.level >= Battery.PERCENT:
             return FULL
         return PLUGGED_IDLE
 
@@ -134,7 +133,7 @@ class BatterySnapshot:
         for full, design in ((self.energy_full_wh, self.energy_design_wh),
                              (self.charge_full_ah, self.charge_design_ah)):
             if full is not None and design:
-                return full / design * PERCENT
+                return full / design * Battery.PERCENT
         return None
 
 
@@ -215,7 +214,7 @@ def combined_percent(batteries, energies):
         return capacities[0]
     now, full = total(item[0] for item in energies), total(item[1] for item in energies)
     if now is not None and full:
-        return min(PERCENT, round_half_up(now / full * PERCENT))
+        return min(Battery.PERCENT, round_half_up(now / full * Battery.PERCENT))
     return round_half_up(sum(capacities) / len(capacities)) if capacities else None
 
 
@@ -255,8 +254,8 @@ def limit_fields(batteries):
     if battery is None:
         return dict()
     end = battery.end_threshold
-    return dict(limit=end if 0 < end < PERCENT else None, limit_start=battery.start_threshold,
-                limit_supported=True)
+    return dict(limit=end if 0 < end < Battery.PERCENT else None,
+                limit_start=battery.start_threshold, limit_supported=True)
 
 
 def rate_unit(batteries, energy_now, battery_w, charge_now, current_a):

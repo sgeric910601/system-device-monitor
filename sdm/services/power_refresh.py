@@ -5,21 +5,18 @@
 系統電池本身的事件只立即讀一次；周邊（scope 為 Device）的事件交給設備頁處理。
 沒有收到變壓器事件、但兩次取樣之間接電狀態改變時，也補排後續的重新讀取。
 """
-from sdm.constants import Battery
+from sdm.constants import Battery, Supply
 
-ADAPTER_TYPES = ("Mains", "USB")
-BATTERY_TYPE = "Battery"
-SCOPE_DEVICE = "Device"
 NOW = 0
 
 
 def refresh_delays(supply_type, scope):
     """power_supply 事件 → 要在哪些時間（秒）重新讀取；不需要時回傳空 tuple。"""
-    if scope == SCOPE_DEVICE:
+    if scope == Supply.SCOPE_DEVICE:
         return ()
-    if supply_type in ADAPTER_TYPES:
+    if supply_type in Supply.ADAPTER_TYPES:
         return (NOW,) + Battery.REFRESH_DELAYS
-    return (NOW,) if supply_type == BATTERY_TYPE else ()
+    return (NOW,) if supply_type == Supply.TYPE_BATTERY else ()
 
 
 class PowerRefresh:

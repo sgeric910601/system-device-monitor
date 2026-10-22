@@ -56,9 +56,18 @@ class Power:
     COMPONENT_MAX_W = 1000      # 單一元件合理上限（不含）
 
 
+class Supply:
+    """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
+    TYPE_BATTERY = "Battery"
+    TYPE_USB = "USB"
+    ADAPTER_TYPES = ("Mains", "USB")
+    SCOPE_DEVICE = "Device"         # 滑鼠、鍵盤等周邊自己的電池
+
+
 class Battery:
     """筆電電池：sysfs power_supply 讀值範圍，以及沿用參考專案的判斷門檻。"""
     SUPPLY_DIR = "sys/class/power_supply"
+    PERCENT = 100               # 百分比的滿刻度
     TEXT_MAX_CHARS = 64         # 廠商、型號等文字
     STATUS_MAX_CHARS = 32
     MAX_WH = 1000               # 能量讀值上限（瓦時）
@@ -74,6 +83,7 @@ class Battery:
     DRAIN_W = -0.5              # 接電時電池功率低於此值，視為電池仍在放電
     DRAIN_A = -0.05             # 沒有功率讀值時改看電流（參考專案的 -50 mA）
     LIMIT_MARGIN = 1            # 電量 ≥ 上限 − 1 視為已達上限
+    ICON_LEVEL_STEP = 10        # 電池圖示以 10% 為一級（與 GNOME Shell 相同）
     FULL_PERCENT = 100
     FULL_RELEASE_PERCENT = 98   # 已充飽的狀態維持到電量低於 98%
     CONFIRM_SECONDS = 10        # 接電中的狀態變化要持續 10 秒才切換顯示

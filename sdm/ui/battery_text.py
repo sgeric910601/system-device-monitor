@@ -24,7 +24,6 @@ MINUTES_PER_HOUR = 60
 SECONDS_PER_MINUTE = 60
 STATE_TITLES = {DISCHARGING: "放電中", CHARGING: "充電中", PLUGGED_IDLE: "接電・未充電",
                 FULL: "已充飽"}
-LEVEL_STEP = 10
 
 
 @dataclass(frozen=True)
@@ -206,7 +205,8 @@ def drain_minutes(power):
     rate = averages.discharge
     if full is None or rate is None or rate <= 0:
         return None
-    return round_half_up(full * (battery.level - battery.limit) / 100 / rate * MINUTES_PER_HOUR)
+    share = (battery.level - battery.limit) / Battery.PERCENT
+    return round_half_up(full * share / rate * MINUTES_PER_HOUR)
 
 
 def plugged_message(power, now):
@@ -307,9 +307,10 @@ def tray_icon(power):
     percent = power.percent
     if percent is None:
         return "battery-missing-symbolic"
-    level = LEVEL_STEP * math.floor(min(100, max(0, percent)) / LEVEL_STEP)
+    step = Battery.ICON_LEVEL_STEP
+    level = step * math.floor(min(Battery.PERCENT, max(0, percent)) / step)
     charging = power.state == CHARGING
-    if power.state == FULL or (charging and level == 100):
+    if power.state == FULL or (charging and level == Battery.PERCENT):
         return "battery-level-100-charged-symbolic"
     suffix = "-charging" if charging else ""
     if level == 0:

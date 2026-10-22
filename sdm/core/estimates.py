@@ -19,7 +19,6 @@ from sdm.core.ema import ema
 from sdm.core.presentation import raw_flow_kind
 
 MINUTES = 60
-PERCENT = 100
 HOLDING_STATES = (FULL, LIMIT_REACHED, PLUGGED_IDLE)
 
 
@@ -137,10 +136,10 @@ def minutes_to_charge(target, snapshot, estimates):
     averages = estimates.averages
     _, full = capacities(snapshot, averages.unit)
     if full is not None and usable_rate(averages.charge, averages.unit):
-        needed = full * (target - pct) / PERCENT
+        needed = full * (target - pct) / Battery.PERCENT
         return round_half_up(needed / averages.charge * MINUTES)
-    if estimates.to_full is not None and pct < PERCENT:
-        return estimates.to_full * (target - pct) // (PERCENT - pct)
+    if estimates.to_full is not None and pct < Battery.PERCENT:
+        return estimates.to_full * (target - pct) // (Battery.PERCENT - pct)
     return None
 
 
