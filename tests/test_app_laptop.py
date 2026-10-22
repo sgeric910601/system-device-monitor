@@ -166,6 +166,17 @@ class PreviewMode(unittest.TestCase):
         self.assertFalse(app.settings["cpu"])
         self.assertFalse(app.preferences.tray_power)
 
+    def test_closing_the_window_quits_because_there_is_no_tray(self):
+        hidden, stopped = [], []
+        window = type("Window", (), {"hide": staticmethod(lambda: hidden.append(True))})()
+        for scenario, expected in ((None, ([True], [])), ("laptop-limit", ([], [True]))):
+            hidden.clear(), stopped.clear()
+            app = ui_app.Monitor.__new__(ui_app.Monitor)
+            app.preview, app.window = scenario, window
+            app.stop = lambda: stopped.append(True)
+            self.assertTrue(app.hide_window())
+            self.assertEqual((hidden, stopped), expected)
+
     def test_smoke_report_without_an_output_directory_writes_nothing(self):
         with tempfile.TemporaryDirectory() as temp:
             app = ui_app.Monitor.__new__(ui_app.Monitor)

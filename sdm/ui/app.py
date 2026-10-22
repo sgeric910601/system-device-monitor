@@ -428,7 +428,11 @@ class Monitor(PowerMixin, SmokeMixin, Gtk.Application):
         self.window.present()
 
     def hide_window(self, *_):
-        self.window.hide()
+        """關閉視窗只是隱藏（仍在頂端列運作）；示範模式沒有頂端列，關閉就結束。"""
+        if self.preview:
+            self.stop()
+        else:
+            self.window.hide()
         return True
 
     def render(self):
