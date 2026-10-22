@@ -203,7 +203,7 @@ class DiskMeta(unittest.TestCase):
 
     def test_physical_disks_and_mounted_volumes(self):
         collector = Collectors.__new__(Collectors)
-        collector.last_disk_meta = 0
+        collector.last_disk_meta = None
         with patch("sdm.data.collectors.command", return_value=self.lsblk()) as run, \
                 patch("sdm.data.collectors.os.statvfs", return_value=StatvfsResult()):
             collector.refresh_disk_meta()
@@ -228,9 +228,23 @@ class DiskMeta(unittest.TestCase):
             collector.refresh_disk_meta()
             run.assert_called_once()            # 總覽或磁碟頁顯示時每 30 秒
 
+    def test_first_listing_is_not_delayed_soon_after_boot(self):
+        from gi.repository import GLib
+        with patch("sdm.data.collectors.Gio.bus_get_sync", side_effect=GLib.Error("none")), \
+                patch("sdm.data.collectors.load_json", return_value={}):
+            collector = Collectors()
+        # 開機 60 秒時單調時鐘只有 60：第一次仍要立刻列出磁碟，不能等到 5 分鐘後
+        with patch("sdm.data.collectors.time.monotonic", return_value=60.0), \
+                patch("sdm.data.collectors.command", return_value=self.lsblk()) as run, \
+                patch("sdm.data.collectors.os.statvfs", return_value=StatvfsResult()):
+            collector.refresh_disk_meta()
+            run.assert_called_once()
+            collector.refresh_disk_meta()
+            run.assert_called_once()
+
     def test_failure_clears_the_list_and_cadence_is_respected(self):
         collector = Collectors.__new__(Collectors)
-        collector.last_disk_meta, collector.disk_meta = 0, ["old"]
+        collector.last_disk_meta, collector.disk_meta = None, ["old"]
         with patch("sdm.data.collectors.command", side_effect=OSError("missing")):
             collector.refresh_disk_meta()
         self.assertEqual(collector.disk_meta, [])

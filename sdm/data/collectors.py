@@ -80,7 +80,7 @@ class Collectors:
             self.bus = None
         self.updates = {}
         self.disk_meta = []
-        self.last_disk_meta = 0
+        self.last_disk_meta = None   # None：還沒列過磁碟，下一次慢速收集立刻執行 lsblk
         self.nvidia = NvidiaStream()  # 由 App 在啟動時 start()、結束時 stop()
         self.power = self.make_power_service()
         self.smart = SmartSource(bus_getter(self.bus), bus_caller(self.bus))
@@ -196,10 +196,11 @@ class Collectors:
     def refresh_disk_meta(self):
         """慢速收集與磁碟頁都可能呼叫：用鎖避免同時執行兩次 lsblk。"""
         with self.disk_lock:
-            interval = meta_interval(self.storage_visible)
-            if time.monotonic() - self.last_disk_meta < interval:
+            now = time.monotonic()
+            last = self.last_disk_meta
+            if last is not None and now - last < meta_interval(self.storage_visible):
                 return
-            self.last_disk_meta = time.monotonic()
+            self.last_disk_meta = now
             try:
                 self.disk_meta = parse_lsblk(command(lsblk_command(), Collect.LSBLK_TIMEOUT))
             except (OSError, subprocess.SubprocessError, ValueError, KeyError):

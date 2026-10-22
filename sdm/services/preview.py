@@ -254,7 +254,7 @@ class PreviewCollectors(Collectors):
     def __init__(self, scenario):
         self.aliases, self.logitech_battery, self.bus, self.updates = {}, None, None, {}
         self.cpu_info = DEMO_CPU_INFO
-        self.disk_meta, self.last_disk_meta = list(DEMO_DISKS), 0
+        self.disk_meta, self.last_disk_meta = list(DEMO_DISKS), None
         self.nvidia = DemoStream()
         self.power = power_service(scenario)
 
