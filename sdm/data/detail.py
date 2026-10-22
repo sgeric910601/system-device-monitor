@@ -64,7 +64,7 @@ class DetailCollector:
         """溫度與風扇每 5 秒讀一次，中間的取樣沿用上一次的結果。"""
         if self.thermal_cache is not None and now - self.thermal_at < Thermal.INTERVAL:
             return self.thermal_cache
-        temperatures = hwmon_temperatures(self.root)
+        temperatures = hwmon_temperatures(self.root, include_unreadable=True)
         gpus = tuple(self.gpus())
         readings = thermal_readings(temperatures, self.root,
                                     self.disk_temperatures(temperatures), gpus)
@@ -86,12 +86,9 @@ class DetailCollector:
         return self.smart.cached(name) if self.smart is not None else None
 
     def disk_temperatures(self, temperatures):
-        found = {}
-        for disk in self.disk_meta():
-            value = self.disk_temperature(temperatures, disk["name"])
-            if value is not None:
-                found[disk["name"]] = value
-        return found
+        """每顆已知的磁碟 → 溫度；讀不到時為 None（溫度分組會沿用最近的讀值）。"""
+        return {disk["name"]: self.disk_temperature(temperatures, disk["name"])
+                for disk in self.disk_meta()}
 
     def apps_detail(self, request):
         readings = cgroups.scan(self.root, self.uid, cpu=request.apps_cpu,

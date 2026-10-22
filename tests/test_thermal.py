@@ -105,6 +105,28 @@ class Hold(unittest.TestCase):
         self.assertEqual(thermal.summary(hold.apply(readings(*asleep), T0 + 1))[CPU].average, 51)
 
 
+class MissingReads(unittest.TestCase):
+    """讀取失敗時感測器可能直接從清單消失：只要在 120 秒內有過有效值就沿用。"""
+
+    def test_a_sensor_that_disappears_keeps_its_last_value(self):
+        hold = ThermalHold()
+        hold.apply(readings(("A", CPU, 50), ("B", CPU, 60)), T0)
+        held = hold.apply(readings(("B", CPU, 61)), T0 + 1)
+        self.assertEqual(sorted((r.key, r.group, r.value) for r in held),
+                         [("A", CPU, 50), ("B", CPU, 61)])
+        self.assertEqual(thermal.summary(held)[CPU], Stat(55.5, 61))
+        late = hold.apply(readings(("B", CPU, 62)), T0 + 122)
+        self.assertEqual([(r.key, r.value) for r in late], [("B", 62)])
+        self.assertEqual(sorted(hold.held), ["B"])
+
+    def test_removed_disks_are_forgotten_after_the_window(self):
+        hold = ThermalHold()
+        hold.apply(readings(("disk:sdb", STORAGE, 35)), T0)
+        self.assertEqual([r.value for r in hold.apply((), T0 + 100)], [35])
+        self.assertEqual(hold.apply((), T0 + 130), ())
+        self.assertEqual(hold.held, {})
+
+
 class Fans(unittest.TestCase):
     def test_fan_fraction_is_clamped_and_safe_without_max(self):
         # ThermalTests.testFanFractionIsClampedAndSafeWithoutMax（Linux 沒有最低轉速欄位）

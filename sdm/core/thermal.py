@@ -54,23 +54,27 @@ class Stat(NamedTuple):
 
 
 class ThermalHold:
-    """每個感測器最近一次有效的讀值與時間；讀到無效值時沿用，超過 120 秒才放棄。"""
+    """每個感測器最近一次有效的讀值、時間與群組；讀到無效值或這次沒出現（讀取失敗）時沿用，
+    超過 120 秒沒有有效值就放棄並忘掉這個感測器（例如已拔掉的外接碟）。"""
 
     def __init__(self):
         self.held = {}
 
     def apply(self, readings, now):
-        result, held = [], dict(self.held)
-        for reading in readings:
+        previous, held, result = self.held, {}, []
+        batch = list(readings)
+        seen = {reading.key for reading in batch}
+        missing = [ThermalReading(key, group, None) for key, (_, _, group) in previous.items()
+                   if key not in seen]
+        for reading in batch + missing:
             if plausible(reading.value):
-                held[reading.key] = (reading.value, now)
+                held[reading.key] = (reading.value, now, reading.group)
                 result.append(reading)
                 continue
-            previous = held.get(reading.key)
-            if previous is not None and now - previous[1] <= Thermal.HOLD_SECONDS:
-                result.append(reading._replace(value=previous[0]))
-            else:
-                held.pop(reading.key, None)
+            old = previous.get(reading.key)
+            if old is not None and now - old[1] <= Thermal.HOLD_SECONDS:
+                held[reading.key] = old
+                result.append(reading._replace(value=old[0]))
         self.held = held
         return tuple(result)
 

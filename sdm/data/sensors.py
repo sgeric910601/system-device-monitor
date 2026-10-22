@@ -29,16 +29,20 @@ def label_of(path, suffix):
                 path.name.removesuffix("_input"))
 
 
-def hwmon_temperatures(root=Path("/")):
-    """每個溫度感測器：晶片、標籤、°C 與硬體路徑（device 的實際位置）。"""
+def hwmon_temperatures(root=Path("/"), include_unreadable=False):
+    """每個溫度感測器：晶片、標籤、°C 與硬體路徑（device 的實際位置）。
+
+    include_unreadable 為 True 時，這次讀不到的感測器也列出（值為 None），
+    溫度分組才知道要沿用它最近的讀值。
+    """
     temperatures = []
     for hw in hwmon_directories(root):
         chip = read(hw / "name")
         for path in sorted(hw.glob("temp*_input")):
             value = number(read(path))
-            if value is not None:
+            if value is not None or include_unreadable:
                 temperatures.append(dict(chip=chip, label=label_of(path, "_label"),
-                                         value=value / MILLIDEGREES,
+                                         value=None if value is None else value / MILLIDEGREES,
                                          device=str((hw/"device").resolve())))
     return temperatures
 
@@ -64,7 +68,8 @@ def hwmon_fans(root=Path("/")):
 
 def cpu_temperature(temperatures):
     for chip, prefix in CPU_SENSORS:
-        found = [s for s in temperatures if s["chip"] == chip and s["label"].startswith(prefix)]
+        found = [s for s in temperatures if s["chip"] == chip and s["label"].startswith(prefix)
+                 and s["value"] is not None]
         if found:
             chosen = max(found, key=lambda s: s["value"])
             return chosen["value"], chosen["label"]
@@ -85,8 +90,9 @@ def device_temperatures(temperatures, device_path):
 
 
 def storage_temperature(sensors):
-    composite = [s for s in sensors if s["label"].lower() == "composite"]
-    return max((s["value"] for s in (composite or sensors)), default=None)
+    readable = [s for s in sensors if s["value"] is not None]
+    composite = [s for s in readable if s["label"].lower() == "composite"]
+    return max((s["value"] for s in (composite or readable)), default=None)
 
 
 def network_devices(root):
@@ -97,7 +103,10 @@ def network_devices(root):
 
 
 def thermal_readings(temperatures, root, disk_temperatures, gpus):
-    """溫度分組用的讀值：hwmon（磁碟與網路卡依路徑配對）、每顆磁碟一點、NVIDIA 顯示卡。"""
+    """溫度分組用的讀值：hwmon（磁碟與網路卡依路徑配對）、每顆磁碟一點、NVIDIA 顯示卡。
+
+    讀不到的感測器與沒有溫度的磁碟也列出（值為 None），交給保留邏輯沿用最近的讀值。
+    """
     skipped, readings = set(), []
     for name in disk_temperatures:
         skipped.update(id(s) for s in device_temperatures(

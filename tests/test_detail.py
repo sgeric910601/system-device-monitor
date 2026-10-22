@@ -85,6 +85,15 @@ class Detail(unittest.TestCase):
         self.assertIsNone(usages["example-browser"].memory)   # CPU 頁不讀記憶體
         self.assertEqual((snapshot.apps.has_cpu, snapshot.apps.has_memory), (True, False))
 
+    def test_a_disk_temperature_that_stops_reporting_is_held(self):
+        request = DetailRequest(thermal=True)
+        first = dict(self.collector.sample(request).thermal.groups)[STORAGE]
+        self.assertAlmostEqual(first.average, (40.85 + 37.0) / 2)
+        self.smart.values.clear()                       # SATA 硬碟這次讀不到溫度
+        self.clock[0] += 5
+        held = dict(self.collector.sample(request).thermal.groups)[STORAGE]
+        self.assertAlmostEqual(held.average, (40.85 + 37.0) / 2)
+
     def test_thermal_is_read_every_five_seconds(self):
         request = DetailRequest(thermal=True)
         first = self.collector.sample(request).thermal

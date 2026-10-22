@@ -48,6 +48,22 @@ class Hwmon(unittest.TestCase):
         keys = [reading.key for reading in readings if reading.group == STORAGE]
         self.assertEqual(keys, ["disk:nvme0n1", "disk:sda"])
 
+    def test_unreadable_sensors_can_be_listed_as_unknown(self):
+        (self.root/"sys/class/hwmon/hwmon0/temp3_input").write_text("garbage\n")
+        self.assertEqual([s["label"] for s in sensors.hwmon_temperatures(self.root)
+                          if s["chip"] == "k10temp"], ["Tctl"])
+        found = sensors.hwmon_temperatures(self.root, include_unreadable=True)
+        self.assertEqual([(s["label"], s["value"]) for s in found if s["chip"] == "k10temp"],
+                         [("Tctl", 47.125), ("Tccd1", None)])
+        self.assertEqual(sensors.storage_temperature([dict(label="Composite", value=None)]), None)
+        self.assertEqual(sensors.cpu_temperature([dict(chip="k10temp", label="Tctl", value=None)]),
+                         (None, sensors.CPU_MISSING))
+
+    def test_known_disks_without_a_reading_are_listed_as_unknown(self):
+        readings = sensors.thermal_readings((), self.root, {"sda": None, "nvme0n1": 41.0}, ())
+        self.assertEqual([(r.key, r.value) for r in readings],
+                         [("disk:sda", None), ("disk:nvme0n1", 41.0)])
+
     def test_gpu_fans_come_from_the_nvidia_stream(self):
         gpus = (GpuReading(vendor="nvidia", index=0, name="Example A", fan_pct=30.0),
                 GpuReading(vendor="nvidia", index=1, name="Example B"),
