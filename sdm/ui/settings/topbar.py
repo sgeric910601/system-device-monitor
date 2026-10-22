@@ -26,12 +26,12 @@ def display_note(laptop, threshold):
 
 def build(controls, context):
     store, page = controls.store, box(spacing=16)
-    word = text.power_word(context.laptop)
+    item = "電池" if context.laptop else "耗電"
     page.pack_start(card("顯示方式", controls.radios("tray_mode", text.TRAY_MODES),
                          controls.note(lambda: MODE_NOTES[store.preferences.tray_mode],
                                        {"tray_mode"})), False, False, 0)
     page.pack_start(card(
-        f"{'電池' if context.laptop else '耗電'}項目",
+        f"{item}項目",
         controls.choice("tray_display", "顯示格式", text.DISPLAY_FORMATS),
         controls.note(lambda: display_note(context.laptop, store.preferences.low_threshold),
                       {"low_threshold"})), False, False, 0)
@@ -39,7 +39,7 @@ def build(controls, context):
     for key, title in ITEMS:
         checks.append(controls.check(key, title, when=lambda key=key: module_enabled(
             store.preferences, key)))
-    page.pack_start(card(f"頂端列項目（{word}在最左邊）", *checks,
+    page.pack_start(card(f"頂端列項目（{item}在最左邊）", *checks,
                          wrapped(ITEMS_NOTE, "muted")), False, False, 0)
     return page
 
