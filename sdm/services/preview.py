@@ -180,12 +180,13 @@ def laptop_history(scenario, now):
 
 
 def desktop_history(now):
+    """上班時段約 300 W、其他時間約 120 W；最後一筆用目前的示範讀值。"""
     rows = []
     for stamp in stamps(now):
         hour = datetime.fromtimestamp(stamp).hour
         base = 300 if BUSY_HOURS[0] <= hour < BUSY_HOURS[1] else 120
-        rows.append(HistorySample(t=stamp, pct=None,
-                                  watts=round(base + 40 * wave(stamp, 1380), 2), plugged=True,
+        watts = DEMO_UPS.load_w if stamp == now else round(base + 40 * wave(stamp, 1380), 2)
+        rows.append(HistorySample(t=stamp, pct=None, watts=watts, plugged=True,
                                   charging=False, ups_pct=100.0, ups_online=True))
     return tuple(rows)
 

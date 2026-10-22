@@ -77,6 +77,7 @@ class DemoHistory(unittest.TestCase):
         # 最後一筆的整機耗電與目前的讀值相同，圖表與之後的紀錄接得起來
         self.assertEqual((battery[-1].watts, charging[-1].watts), (6.5, 7.0))
         self.assertIsNone(preview.demo_history("laptop-limit", NOW)[-1].watts)
+        self.assertEqual(preview.demo_history("desktop", NOW)[-1].watts, 288.0)
 
     def test_today_has_a_recap(self):
         recap = make_recap(preview.demo_history("laptop-battery", NOW), NOW)
