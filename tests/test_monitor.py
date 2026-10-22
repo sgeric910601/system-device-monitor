@@ -12,7 +12,9 @@ from sdm.core.devices import battery, battery_menu_rows, normalize_usb, parse_ap
 from sdm.core.fmt import number
 from sdm.data.collectors import Collectors
 from sdm.data.gpu import GpuReading
+from sdm.data.power_supply import BatteryReading
 from sdm.data.ups import UpsReading
+from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import PowerService
 from sdm.ui import app as ui_app
 
@@ -394,7 +396,8 @@ class Devices(unittest.TestCase):
         self.assertEqual(len(result["devices"]), 1)
         self.assertTrue(result["errors"])
 
-    def slow(self, gpus=(), amd=(), pending=False, ups="STATUS : ONLINE\nBCHARGE : 30 Percent\n"):
+    def slow(self, gpus=(), amd=(), pending=False, ups="STATUS : ONLINE\nBCHARGE : 30 Percent\n",
+             batteries=(), method="slow"):
         self.collector.disk_meta = []
         self.collector.last_disk_meta = time.monotonic()
         self.collector.nvidia = FakeStream(gpus, pending)
@@ -405,9 +408,27 @@ class Devices(unittest.TestCase):
             if isinstance(ups, Exception):
                 raise ups
             return ups
+        # 測試不讀這台電腦真正的電池：預設沒有系統電池（桌機）
         with patch("sdm.data.collectors.command", side_effect=command), \
-                patch("sdm.data.collectors.read_amd_gpus", return_value=amd):
-            return self.collector.slow()
+                patch("sdm.data.collectors.read_amd_gpus", return_value=amd), \
+                patch("sdm.data.collectors.read_batteries", return_value=batteries), \
+                patch("sdm.data.collectors.read_adapters", return_value=()):
+            return getattr(self.collector, method)()
+
+    def test_laptop_battery_gives_a_laptop_snapshot(self):
+        battery = BatteryReading(name="BAT0", status="Discharging", capacity=82, power_w=15.0)
+        result = self.slow(batteries=(battery,))
+        power = result["power"]
+        self.assertIsInstance(power, LaptopPower)
+        self.assertEqual((power.percent, power.system_w), (82, 15.0))
+        self.assertTrue(result["ups"].online)
+        self.assertIs(result["ups"], power.ups)
+
+    def test_power_refresh_samples_only_the_power_snapshot(self):
+        battery = BatteryReading(name="BAT0", status="Discharging", capacity=82, power_w=15.0)
+        result = self.slow(batteries=(battery,), method="power_refresh")
+        self.assertEqual(sorted(result), ["power", "stamp"])
+        self.assertIsInstance(result["power"], LaptopPower)
 
     def test_missing_gpu_preserves_ups_reading(self):
         result = self.slow()
