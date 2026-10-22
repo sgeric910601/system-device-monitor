@@ -9,7 +9,6 @@ import unittest
 from unittest.mock import patch
 
 from sdm.constants import Preview
-from sdm.core.settings import Preferences
 from sdm.data.power_supply import BatteryReading
 from sdm.data.ups import UpsReading
 from sdm.core.history import HistorySample
@@ -17,6 +16,7 @@ from sdm.services import preview
 from sdm.services.history_service import HistoryService
 from sdm.services.battery_service import LaptopPower
 from sdm.services.power_service import PowerService
+from sdm.services import settings_store
 from sdm.ui import app as ui_app
 from sdm.ui import power_wiring
 
@@ -219,21 +219,22 @@ class PreviewMode(unittest.TestCase):
         self.assertIsNone(history.path)
         self.assertGreater(len(history.samples), 1000)
 
-    def test_settings_toggles_do_not_write(self):
-        app = ui_app.Monitor.__new__(ui_app.Monitor)
-        app.preview = "desktop"
-        app.settings = {key: True for key in ui_app.LEGACY_KEYS}
-        app.preferences = Preferences.defaults()
-        app.render_indicator = lambda: None
-        check = type("Check", (), {"get_active": staticmethod(lambda: False)})()
-        with patch.object(ui_app, "save_legacy", side_effect=AssertionError("write")), \
-                patch.object(ui_app, "save_preferences", side_effect=AssertionError("write")), \
-                patch.object(ui_app, "set_autostart", side_effect=AssertionError("write")):
-            app.toggle_setting(check, "cpu")
-            app.toggle_power_tray(check)
-            app.toggle_autostart(check)
+    def test_settings_changes_apply_but_are_never_written(self):
+        app = ui_app.Monitor(preview="desktop")
+        self.addCleanup(app.pool.shutdown)
+        with patch.object(settings_store, "save_legacy", side_effect=AssertionError("write")), \
+                patch.object(settings_store, "save_preferences",
+                             side_effect=AssertionError("write")):
+            app.store.update(cpu=False, tray_power=False, autostart=True)
+            app.store.flush()
         self.assertFalse(app.settings["cpu"])
         self.assertFalse(app.preferences.tray_power)
+        self.assertTrue(app.store.autostart)
+
+    def test_smoke_test_settings_are_not_written_either(self):
+        app = ui_app.Monitor(smoke=True)
+        self.addCleanup(app.pool.shutdown)
+        self.assertFalse(app.store.persist)
 
     def test_closing_the_window_quits_because_there_is_no_tray(self):
         hidden, stopped = [], []

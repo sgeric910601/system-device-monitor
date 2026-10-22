@@ -18,12 +18,12 @@ from sdm import paths
 from sdm.constants import Collect, History, Preview, Smoke, Solaar, Ui
 from sdm.core.devices import battery_menu_rows
 from sdm.core.fmt import percent, size, temperature, value_text
-from sdm.core.settings import (LEGACY_KEYS, PreferencesReadOnlyError, load_settings,
-                               save_legacy, save_preferences)
+from sdm.core.settings import LEGACY_KEYS, load_settings
 from sdm.data.collectors import Collectors
 from sdm.data.ups import UpsReading
 from sdm.services import preview as demo
 from sdm.services.autostart import set_autostart, initialize_preferences
+from sdm.services.settings_store import SettingsStore
 from sdm.services.history_service import HistoryService, read_boot_time
 from sdm.services.power_refresh import PowerRefresh
 from sdm.services.ui_state import PageMemory
@@ -35,15 +35,13 @@ from sdm.ui.pages.overview import OverviewPage
 from sdm.ui.pages.power import PowerPage
 from sdm.ui.power_text import menu_line
 from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
+from sdm.ui.settings_wiring import SettingsMixin
 from sdm.ui.smoke import SMOKE_PAGES, SmokeMixin
-from sdm.ui.widgets import label
 
 PAGE_TITLES = dict(PAGES)
 
 APP_ID = "tw.local.SystemDeviceMonitor"
 MENU_INDENT = "    "
-READ_ONLY_TIP = "設定檔目前無法寫入（可能由較新版本建立），此項目暫時無法變更"
-SAVE_FAILED_TIP = "無法儲存設定：這次執行期間仍會套用，重新啟動後恢復原本的選擇"
 
 
 def create_history(smoke, preview=None):
@@ -59,7 +57,7 @@ class RunResult(NamedTuple):
     report: Optional[dict]
 
 
-class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
+class Monitor(PowerMixin, SettingsMixin, SmokeMixin, MonitorMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -91,8 +89,13 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         loaded = demo.preview_settings() if preview else load_settings(paths.CONFIG,
                                                                       paths.PREFERENCES)
         self.settings = dict(loaded.legacy)
-        self.preferences = loaded.preferences  # 新版設定：後續階段才使用
+        self.preferences = loaded.preferences
         self.first_run = loaded.first_run
+        # 所有設定變更的唯一入口；示範模式與模擬測試不寫入任何檔案
+        self.store = SettingsStore(loaded.legacy, loaded.preferences, paths.CONFIG,
+                                   paths.PREFERENCES, GLib.timeout_add, self.remove_source,
+                                   persist=not (smoke or preview), write_autostart=set_autostart)
+        self.store.subscribe(self.settings_changed)
         self.timers, self.subscriptions = [], []
         self.graphs = []
         self.event_timer = 0
@@ -115,6 +118,7 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         self.hold()
         if not (self.smoke or self.preview):
             initialize_preferences()
+            self.store.autostart = paths.AUTOSTART.exists()   # 首次啟動時剛建立
         self.collector = demo.PreviewCollectors(self.preview) if self.preview else Collectors()
         self.collector.nvidia.start()
         self.history = create_history(self.smoke, self.preview)
@@ -227,7 +231,6 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         self.build_monitor_pages()
         self.devices_page = DevicesPage()
         self.page("devices", PAGE_TITLES["devices"]).pack_start(self.devices_page, False, False, 0)
-        self.build_settings()
         self.watch_visibility()
 
     def page(self, key, title):
@@ -247,71 +250,6 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
                                     hidden_flow=lambda: self.preferences.hidden_flow_items,
                                     names=self.app_names)
         content.pack_start(self.power_page, False, False, 0)
-
-    def open_settings(self):
-        self.open_page(None, "settings")
-
-    def build_settings(self):
-        page = self.page("settings", "設定")
-        page.pack_start(label("頂端列顯示", "section"), False, False, 0)
-        for key, name in (("cpu","CPU 使用率"),("temperature","CPU 溫度"),("ram","記憶體使用率"),
-                          ("gpu","GPU 使用率"),("network","下載／上傳速度")):
-            check = Gtk.CheckButton(label=name)
-            check.set_active(self.settings[key])
-            check.connect("toggled", self.toggle_setting, key)
-            page.pack_start(check, False, False, 0)
-        self.power_check = Gtk.CheckButton(label="整機耗電")
-        self.power_check.set_active(self.preferences.tray_power)
-        self.power_check_handler = self.power_check.connect("toggled", self.toggle_power_tray)
-        if self.preferences.read_only:
-            self.lock_power_check(self.power_check)
-        page.pack_start(self.power_check, False, False, 0)
-        page.pack_start(label("啟動與背景運作", "section"), False, False, 0)
-        autostart = Gtk.CheckButton(label="登入 Ubuntu 桌面後自動啟動")
-        autostart.set_active(False if self.preview else paths.AUTOSTART.exists())
-        autostart.connect("toggled", self.toggle_autostart)
-        page.pack_start(autostart, False, False, 0)
-        page.pack_start(label("關閉視窗後仍會在頂端列運作。需要停止時，使用頂端列選單中的「退出」。", "muted", True), False, False, 0)
-        page.pack_start(label("資料更新", "section"), False, False, 0)
-        page.pack_start(label("CPU／記憶體／網速／磁碟讀寫：2 秒\nGPU／溫度／UPS：5 秒\n"
-                              "磁碟容量：總覽或磁碟頁開著時 30 秒，其他時候 5 分鐘\n"
-                              "各核心、App 排行、記憶體組成、磁碟 SMART、IPv4：只在該頁顯示時更新\n"
-                              "耗電歷史：每分鐘記錄一次，保留 7 天\n設備插拔及連線事件會即時觸發更新。",
-                              "muted", True), False, False, 0)
-
-    def toggle_setting(self, widget, key):
-        """示範模式只套用在這次執行，不寫入設定檔（其他設定項目相同）。"""
-        self.settings = {**self.settings, key: widget.get_active()}
-        if not self.preview:
-            save_legacy(paths.CONFIG, self.settings)
-        self.render_indicator()
-
-    def toggle_power_tray(self, widget):
-        """「整機耗電」寫入 preferences.json，不動舊版 settings.json。"""
-        updated = self.preferences.with_changes(tray_power=widget.get_active())
-        try:
-            if not self.preview:
-                save_preferences(paths.PREFERENCES, updated)
-        except PreferencesReadOnlyError:
-            self.lock_power_check(widget)
-            return
-        except OSError as error:
-            logging.warning("Cannot save preferences: %s", type(error).__name__)
-            widget.set_tooltip_text(SAVE_FAILED_TIP)
-        self.preferences = updated
-        self.render_indicator()
-
-    def lock_power_check(self, widget):
-        """設定唯讀：勾選框恢復目前的值並停用，滑鼠停留時說明原因。"""
-        widget.handler_block(self.power_check_handler)
-        widget.set_active(self.preferences.tray_power)
-        widget.handler_unblock(self.power_check_handler)
-        widget.set_sensitive(False)
-        widget.set_tooltip_text(READ_ONLY_TIP)
-
-    def toggle_autostart(self, widget):
-        if not self.preview:
-            set_autostart(widget.get_active())
 
     def build_indicator(self):
         self.indicator = AyatanaAppIndicator3.Indicator.new("system-device-monitor",
@@ -340,10 +278,13 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
         menu.append(self.battery_header)
         self.battery_items, self.battery_rows = [], None
         menu.append(Gtk.SeparatorMenuItem())
-        for title, page in (("開啟完整看板","overview"),("查看設備電量","devices"),("設定","settings")):
+        for title, page in (("開啟完整看板","overview"),("查看設備電量","devices")):
             item = Gtk.MenuItem(label=title)
             item.connect("activate", self.open_page, page)
             menu.append(item)
+        item = Gtk.MenuItem(label="設定…")
+        item.connect("activate", lambda *_: self.open_settings())
+        menu.append(item)
         item = Gtk.MenuItem(label="退出")
         item.connect("activate", lambda *_: self.stop())
         menu.append(item)
@@ -463,7 +404,8 @@ class Monitor(PowerMixin, SmokeMixin, MonitorMixin, Gtk.Application):
             return
         self.closing = True
         try:
-            for name, action in (("history", self.save_history), ("page", self.remember_page),
+            for name, action in (("history", self.save_history), ("settings", self.flush_settings),
+                                 ("page", self.remember_page),
                                  ("sources", self.remove_sources),
                                  ("subscriptions", self.unsubscribe_all),
                                  ("indicators", self.hide_indicators),

@@ -12,9 +12,12 @@ from gi.repository import Gdk, GLib, Gtk
 
 from sdm.constants import Smoke
 
-# 模擬測試依序顯示的頁面；LOWER_CAPTURES 另外截一張捲到底部的畫面
-SMOKE_PAGES = ("power", "overview", "cpu", "memory", "disk", "network", "devices", "settings")
-LOWER_CAPTURES = ("power", "cpu", "memory", "disk")
+# 模擬測試依序顯示的頁面，再依序打開設定視窗的各分類；LOWER_CAPTURES 另外截一張捲到底部的畫面
+SMOKE_PAGES = ("power", "overview", "cpu", "memory", "disk", "network", "devices")
+SETTINGS_SECTIONS = ("general", "tray", "monitors", "display", "about")
+STEPS = tuple(("page", name) for name in SMOKE_PAGES) + tuple(
+    ("settings", name) for name in SETTINGS_SECTIONS)
+LOWER_CAPTURES = ("power", "cpu", "memory", "disk", "general", "tray", "display")
 
 
 class SmokeMixin:
@@ -27,35 +30,48 @@ class SmokeMixin:
         self.smoke_show(0)
         return False
 
+    def smoke_target(self, kind):
+        """（頁面堆疊、各頁捲動容器、視窗）：主視窗或設定視窗。"""
+        if kind == "page":
+            return self.stack, self.scrolls, self.window
+        settings = self.settings_window
+        return settings.stack, settings.scrolls, settings.window
+
     def smoke_show(self, index):
-        self.stack.set_visible_child_name(SMOKE_PAGES[index])
+        kind, name = STEPS[index]
+        if kind == "page":
+            self.stack.set_visible_child_name(name)
+        else:
+            self.open_settings(name)
         GLib.timeout_add(Smoke.CAPTURE_DELAY_MS, self.smoke_capture, index)
         return False
 
     def smoke_capture(self, index):
         """確認頁面已切換並顯示，選用時截圖，再排下一頁或結束。"""
-        name = SMOKE_PAGES[index]
-        if self.stack.get_visible_child_name() == name and self.scrolls[name].get_mapped():
-            self.smoke_pages.append(name)
-        self.capture(name, name)
+        kind, name = STEPS[index]
+        stack, scrolls, window = self.smoke_target(kind)
+        if stack.get_visible_child_name() == name and scrolls[name].get_mapped():
+            self.smoke_pages.append(name if kind == "page" else "settings:" + name)
+        file_name = name if kind == "page" else "settings-" + name
+        self.capture(file_name, scrolls[name], window)
         if name in LOWER_CAPTURES:
-            self.capture(name + "-lower", name, bottom=True)
-        if index + 1 < len(SMOKE_PAGES):
+            self.capture(file_name + "-lower", scrolls[name], window, bottom=True)
+        if index + 1 < len(STEPS):
             GLib.timeout_add(Smoke.PAGE_DELAY_MS, self.smoke_show, index + 1)
         else:
             GLib.timeout_add(Smoke.FINISH_DELAY_MS, self.smoke_finish)
         return False
 
-    def capture(self, name, page, bottom=False):
+    def capture(self, name, scroll, toplevel, bottom=False):
         """只在 --capture 時把視窗存成 name.png；bottom 為 True 時先捲到頁面底部。"""
         if not self.capture_enabled or self.output_dir is None:
             return
-        self.window.set_focus(None)
-        adjustment = self.scrolls[page].get_vadjustment()
+        toplevel.set_focus(None)
+        adjustment = scroll.get_vadjustment()
         adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size() if bottom else 0)
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
-        window = self.window.get_window()
+        window = toplevel.get_window()
         if window:
             width, height = window.get_width(), window.get_height()
             pixbuf = Gdk.pixbuf_get_from_window(window, 0, 0, width, height)

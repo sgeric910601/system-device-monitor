@@ -1,5 +1,4 @@
-"""頂端列「耗電」指示器、選單第一行與設定頁勾選框；不建立真正的 GTK 元件。"""
-import json
+"""頂端列「耗電」指示器與選單第一行；不建立真正的 GTK 元件。"""
 from pathlib import Path
 import tempfile
 import unittest
@@ -27,17 +26,6 @@ class FakeItem:
     def __init__(self, label=""): self.label, self.sets = label, 0
     def get_label(self): return self.label
     def set_label(self, label): self.label, self.sets = label, self.sets + 1
-
-
-class FakeCheck:
-    def __init__(self, active):
-        self.active, self.sensitive, self.tooltip, self.blocked = active, True, None, []
-    def get_active(self): return self.active
-    def set_active(self, value): self.active = value
-    def set_sensitive(self, value): self.sensitive = value
-    def set_tooltip_text(self, text): self.tooltip = text
-    def handler_block(self, handler): self.blocked.append(("block", handler))
-    def handler_unblock(self, handler): self.blocked.append(("unblock", handler))
 
 
 def snapshot(load_w=288.0):
@@ -119,37 +107,6 @@ class LaptopIndicator(Base):
         self.monitor.render_power_tray(snapshot())
         self.assertEqual(self.monitor.power_indicator.icons[-1][0], DESKTOP_ICON)
         self.assertEqual(self.monitor.power_indicator.label, "288 W")
-
-
-class Checkbox(Base):
-    def test_toggle_writes_only_preferences(self):
-        check = FakeCheck(False)
-        self.monitor.toggle_power_tray(check)
-        self.assertIs(json.loads(self.prefs_path.read_text())["tray_power"], False)
-        self.assertFalse(self.legacy_path.exists())
-        self.assertIs(self.monitor.preferences.tray_power, False)
-        self.assertEqual(self.rendered, [True])
-
-    def test_read_only_preferences_revert_and_disable_the_checkbox(self):
-        self.monitor.preferences = Preferences.defaults(read_only=True)
-        self.monitor.power_check_handler = 7
-        check = FakeCheck(False)
-        self.monitor.toggle_power_tray(check)
-        self.assertTrue(check.active)
-        self.assertFalse(check.sensitive)
-        self.assertTrue(check.tooltip)
-        self.assertEqual(check.blocked, [("block", 7), ("unblock", 7)])
-        self.assertFalse(self.prefs_path.exists())
-        self.assertIs(self.monitor.preferences.tray_power, True)
-
-    def test_write_failure_keeps_the_choice_for_this_session(self):
-        check = FakeCheck(False)
-        with patch.object(ui_app, "save_preferences", side_effect=OSError("disk full")):
-            with self.assertLogs(level="WARNING"):
-                self.monitor.toggle_power_tray(check)
-        self.assertIs(self.monitor.preferences.tray_power, False)
-        self.assertTrue(check.tooltip)
-        self.assertTrue(check.sensitive)
 
 
 if __name__ == "__main__":

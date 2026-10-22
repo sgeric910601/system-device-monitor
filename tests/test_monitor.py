@@ -223,7 +223,7 @@ class SmokePages(unittest.TestCase):
 
     def test_power_page_comes_first(self):
         self.assertEqual(ui_app.SMOKE_PAGES, ("power", "overview", "cpu", "memory", "disk",
-                                              "network", "devices", "settings"))
+                                              "network", "devices"))
 
     def test_rendered_pages_are_reported(self):
         with patch.object(ui_app.GLib, "timeout_add") as timer:
