@@ -8,6 +8,7 @@ SettingsStore 通知改變的鍵後（不需要重新啟動）：
 - 周邊設備的通知門檻（或設定檔變成唯讀）→ 連線設備頁的鈴鐺更新；寫入被拒絕時鈴鐺的提示
   與設定 → 周邊設備寫出原因。
 - 管理員 CPU 功耗取樣 → 以 pkexec 開關服務（cpu_power_wiring）。
+- 程式圖示的顏色（以及之後的夥伴與桌面寵物）→ appearance_wiring。
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
 from sdm import paths
@@ -50,6 +51,7 @@ class SettingsMixin:
             self.devices_page.thresholds_changed()
         if ADMIN_KEY in changed:
             self.cpu_power_preference_changed()
+        self.appearance_changed(changed)
 
     def set_peripheral_threshold(self, device_id, value):
         """連線設備頁的鈴鐺：寫入門檻；被拒絕時由 peripheral_problem_changed() 恢復鈴鐺並說明原因。"""

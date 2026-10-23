@@ -4,7 +4,8 @@ import argparse
 import os
 from pathlib import Path
 from sdm import paths
-from sdm.services import system_components
+from sdm.core.settings import load_preferences
+from sdm.services import app_icon, system_components
 from sdm.services.autostart import (desktop_entry, initialize_preferences,
                                     launcher_script, set_autostart)
 
@@ -25,6 +26,7 @@ def main():
     if args.uninstall:
         for path in (launcher, desktop, paths.AUTOSTART):
             path.unlink(missing_ok=True)
+        app_icon.remove_overrides()
         print("User installation removed; preferences and source files kept.")
         return
     launcher.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +34,10 @@ def main():
     launcher.chmod(0o755)
     desktop.parent.mkdir(parents=True, exist_ok=True)
     desktop.write_text(desktop_entry(launcher=launcher))
+    color = load_preferences(paths.PREFERENCES).app_icon_color
+    icon = app_icon.apply_color(color, packaged=False, keep_default=True)
+    if icon.problem:
+        print("Application icon not installed:", icon.problem)
     initialize_preferences()
     if args.autostart != "preserve":
         set_autostart(args.autostart == "on")

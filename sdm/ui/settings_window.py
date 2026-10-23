@@ -64,7 +64,6 @@ class SettingsWindow:
         self.window = Gtk.ApplicationWindow(application=application)
         self.window.set_title("設定")
         self.window.set_default_size(Ui.SETTINGS_WIDTH, Ui.SETTINGS_HEIGHT)
-        self.window.set_icon_name("utilities-system-monitor")
         self.window.connect("delete-event", self.on_delete)
         header = Gtk.HeaderBar(title="設定", subtitle="系統與裝置監看")
         header.set_show_close_button(True)

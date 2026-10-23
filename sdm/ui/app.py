@@ -27,6 +27,7 @@ from sdm.services.power_refresh import PowerRefresh
 from sdm.services.ui_state import PageMemory
 from sdm.ui.alert_wiring import AlertMixin
 from sdm.ui.app_names import AppNames
+from sdm.ui.appearance_wiring import AppearanceMixin
 from sdm.ui.cpu_power_wiring import CpuPowerMixin
 from sdm.ui.main_window import PAGES, MainWindow
 from sdm.ui.monitor_wiring import MonitorMixin
@@ -58,7 +59,7 @@ class RunResult(NamedTuple):
 
 
 class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
-              AlertMixin, CpuPowerMixin, Gtk.Application):
+              AlertMixin, CpuPowerMixin, AppearanceMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -136,6 +137,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         if not self.preview:     # 示範模式沒有頂端列，也不監看裝置事件
             self.build_tray()
             self.watch_devices()
+        self.apply_app_icon()
         self.start_profiles()
         self.start_admin()          # 只尋找元件、確認版本，不要求授權
         GLib.idle_add(self.ask_first_run)

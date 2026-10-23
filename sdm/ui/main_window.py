@@ -47,7 +47,6 @@ class MainWindow:
         self.window = Gtk.ApplicationWindow(application=application)
         self.window.set_title(TITLE)
         self.window.set_default_size(Ui.WINDOW_WIDTH, Ui.WINDOW_HEIGHT)
-        self.window.set_icon_name("utilities-system-monitor")
         self.window.connect("delete-event", on_delete)
         self.header = Gtk.HeaderBar(title=HEADER_TITLE, subtitle=HEADER_SUBTITLE)
         self.header.set_show_close_button(True)

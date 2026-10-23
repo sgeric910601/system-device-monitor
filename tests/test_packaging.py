@@ -32,7 +32,9 @@ SYSTEM = [
      "mode": "0644"},
     {"source": "helper/systemd/" + SOCKET, "target": UNITS + SOCKET, "mode": "0644"},
     {"source": "helper/systemd/" + SERVICE, "target": UNITS + SERVICE, "mode": "0644"},
-]
+] + [{"source": f"assets/app/mint-{size}.png",
+      "target": f"/usr/share/icons/hicolor/{size}x{size}/apps/system-device-monitor.png",
+      "mode": "0644"} for size in (128, 512)]      # 預設的程式圖示（薄荷綠）
 MAINTAINER = {name: "packaging/debian/" + name for name in ("postinst", "prerm", "postrm")}
 ALLOWED_SYSTEMCTL = {"daemon-reload", "is-enabled", "stop", "restart", "disable"}
 

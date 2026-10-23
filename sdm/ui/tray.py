@@ -2,7 +2,7 @@
 
 - 指示器在第一次需要時才建立，之後切換模式只改成 PASSIVE（隱藏）並重複使用：
   AppIndicator 物件無法真正移除，所以切換多少次都不會多出新的指示器。
-- 沒有任何項目要顯示時，改顯示程式圖示，讓選單仍然打得開。
+- 沒有任何項目要顯示時，改顯示程式圖示（換色後為選擇的顏色），讓選單仍然打得開。
 - 文字、圖示與狀態只在改變時才送出，避免頂端列一直重畫。
 - 耗電圖示是 tray_icons 畫的 SVG；寫不出檔案時改用 power_tray 的主題圖示。
 所有指示器共用同一個選單（tray_menu）。內容由 tray_text.tray_view() 算好。
@@ -52,6 +52,11 @@ class Tray:
     def __init__(self, factory, writer):
         self.factory, self.writer = factory, writer
         self.indicators, self.sent = {}, {}
+        self.app_icon = APP_ICON
+
+    def set_app_icon(self, icon):
+        """程式圖示（主題名稱或檔案路徑）；下次更新頂端列時送出。"""
+        self.app_icon = icon
 
     def apply(self, view):
         targets = self.targets(view)
@@ -64,10 +69,10 @@ class Tray:
     def targets(self, view):
         """要顯示的指示器 →（文字、圖示）。"""
         if view.mode == MERGED:
-            icon = self.power_icon(view) if POWER in view.visible else APP_ICON
+            icon = self.power_icon(view) if POWER in view.visible else self.app_icon
             return {POWER: (view.merged_label, icon)}
         if not view.visible:
-            return {None: ("", APP_ICON)}
+            return {None: ("", self.app_icon)}
         return {key: (view.labels[key], self.power_icon(view) if key == POWER
                       else ITEM_ICONS[key]) for key in view.visible}
 

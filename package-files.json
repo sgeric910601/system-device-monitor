@@ -61,6 +61,7 @@
     "sdm/paths.py",
     "sdm/services/__init__.py",
     "sdm/services/alert_service.py",
+    "sdm/services/app_icon.py",
     "sdm/services/autostart.py",
     "sdm/services/battery_service.py",
     "sdm/services/dump.py",
@@ -84,6 +85,7 @@
     "sdm/ui/alert_wiring.py",
     "sdm/ui/app.py",
     "sdm/ui/app_names.py",
+    "sdm/ui/appearance_wiring.py",
     "sdm/ui/battery_details.py",
     "sdm/ui/battery_flow.py",
     "sdm/ui/battery_text.py",
@@ -179,6 +181,16 @@
     {
       "source": "helper/systemd/system-device-monitor-cpu-power.service",
       "target": "/usr/lib/systemd/system/system-device-monitor-cpu-power.service",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/app/mint-128.png",
+      "target": "/usr/share/icons/hicolor/128x128/apps/system-device-monitor.png",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/app/mint-512.png",
+      "target": "/usr/share/icons/hicolor/512x512/apps/system-device-monitor.png",
       "mode": "0644"
     }
   ],
@@ -300,6 +312,7 @@
     "sdm/paths.py",
     "sdm/services/__init__.py",
     "sdm/services/alert_service.py",
+    "sdm/services/app_icon.py",
     "sdm/services/autostart.py",
     "sdm/services/battery_service.py",
     "sdm/services/dump.py",
@@ -323,6 +336,7 @@
     "sdm/ui/alert_wiring.py",
     "sdm/ui/app.py",
     "sdm/ui/app_names.py",
+    "sdm/ui/appearance_wiring.py",
     "sdm/ui/battery_details.py",
     "sdm/ui/battery_flow.py",
     "sdm/ui/battery_text.py",
@@ -389,8 +403,10 @@
     "tests/test_alert_service.py",
     "tests/test_alert_settings.py",
     "tests/test_alerts.py",
+    "tests/test_app_icon.py",
     "tests/test_app_laptop.py",
     "tests/test_app_names.py",
+    "tests/test_appearance_wiring.py",
     "tests/test_apps.py",
     "tests/test_asset_png.py",
     "tests/test_assets.py",

@@ -25,7 +25,7 @@ def desktop_entry(background=False, launcher=None):
             "Name[en]=System Device Monitor\n"
             "Comment=即時查看系統資源與周邊設備電量\n"
             f'Exec=/usr/bin/env "{value}"' + (" --background" if background else "") +
-            "\nIcon=utilities-system-monitor\nTerminal=false\nCategories=System;Monitor;\n"
+            "\nIcon=system-device-monitor\nTerminal=false\nCategories=System;Monitor;\n"
             "StartupWMClass=tw.local.SystemDeviceMonitor\n"
             "X-GNOME-Autostart-enabled=true\n")
 
