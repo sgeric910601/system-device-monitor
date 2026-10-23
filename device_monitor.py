@@ -4,6 +4,7 @@
 --version 走快速路徑，不載入 gi，讓啟動器與套件檢查不需要圖形環境。
 --dump 印出一個 JSON 自我檢查後結束，不開視窗、不寫任何檔案。
 --preview 以記憶體中的示範資料開啟視窗（截圖用），不讀寫設定與歷史。
+--test-notification 請正在執行的看板送出一則測試通知後結束（不載入 GTK、自己不送通知）。
 """
 import argparse
 import json
@@ -24,7 +25,15 @@ def build_parser():
     parser.add_argument("--capture", action="store_true", help="Opt in to local app-window screenshots")
     parser.add_argument("--preview", choices=Preview.SCENARIOS, help="Show in-memory demo data only")
     parser.add_argument("--dump", action="store_true", help="Print a JSON self-check and exit")
+    parser.add_argument("--test-notification", action="store_true",
+                        help="Ask the running instance to show a test notification")
     return parser
+
+
+def alone(options):
+    """--test-notification 只能單獨使用。"""
+    return not (options.background or options.smoke_test or options.capture or options.preview
+                or options.dump or options.output_dir is not None)
 
 
 def main(argv):
@@ -41,6 +50,11 @@ def main(argv):
     if options.preview and options.background:
         # 示範模式沒有頂端列，背景執行就看不到也關不掉
         parser.error("--preview cannot run in the background")
+    if options.test_notification:
+        if not alone(options):
+            parser.error("--test-notification cannot be combined with other options")
+        from sdm.services.remote import request_test_notification
+        return request_test_notification()
     if options.dump:
         from sdm.services import dump
         print(json.dumps(dump.build_dump(get=dump.system_getter()), ensure_ascii=False, indent=2))

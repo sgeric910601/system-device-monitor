@@ -14,7 +14,7 @@ gi.require_version("GUdev", "1.0")
 from gi.repository import Gtk, Gio, GLib, GUdev
 
 from sdm import paths
-from sdm.constants import Collect, History, Preview, Smoke, Ui
+from sdm.constants import App, Collect, History, Preview, Smoke, Ui
 from sdm.core.peripheral_alerts import threshold_for
 from sdm.core.schedule import cadence_for
 from sdm.core.settings import load_settings
@@ -40,7 +40,7 @@ from sdm.ui.smoke import SmokeMixin
 
 PAGE_TITLES = dict(PAGES)
 
-APP_ID = "tw.local.SystemDeviceMonitor"
+APP_ID = App.ID
 
 
 def create_history(smoke, preview=None):

@@ -4,6 +4,11 @@
 """
 
 
+class App:
+    """應用程式代號：單一實例與 --test-notification 的遠端動作都用它。"""
+    ID = "tw.local.SystemDeviceMonitor"
+
+
 class Collect:
     """收集器排程與外部資料來源。"""
     SYSTEM_INTERVAL = 2         # CPU／記憶體／網速／磁碟讀寫（秒）
