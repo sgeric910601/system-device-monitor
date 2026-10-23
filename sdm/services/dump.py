@@ -13,6 +13,7 @@ import subprocess
 from gi.repository import Gio, GLib
 
 from sdm.constants import Battery, Collect
+from sdm.core.fmt import MAC_ADDRESS as MAC, MAC_MASK
 from sdm.data.gpu import read_amd_gpus
 from sdm.data.power_supply import (is_adapter, is_system_battery, read_adapters, read_batteries,
                                    supply_directories)
@@ -22,8 +23,6 @@ from sdm.data.upower import bus_getter, read_power_profile, read_upower
 from sdm.paths import VERSION
 
 SENSITIVE_WORDS = ("serial", "uuid", "uevent")
-MAC = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:_-]){5}[0-9a-f]{2}(?![0-9a-f])")
-MAC_MASK = "xx:xx:xx:xx:xx:xx"
 CHASSIS = re.compile(r"[0-9]{1,3}")
 GPU_QUERY = ("--query-gpu=name", "--format=csv,noheader")
 

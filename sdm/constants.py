@@ -234,6 +234,25 @@ class Network:
     ROUTE_UP = 0x1                  # /proc/net/route 的 RTF_UP
 
 
+class Alerts:
+    """通知：遲滯、啟動與喚醒後只記錄狀態、頻率限制（規則沿用參考專案 Notifier）。"""
+    RESUME_GAP_SECONDS = 120    # 兩次取樣相隔超過 2 分鐘（含睡眠時間）視為剛喚醒，只記錄狀態
+    REARM_MARGIN = 2            # 低電量：回到門檻＋2% 以上才重新啟用
+    FULL_REARM_MARGIN = 5       # 充飽：低於 min(門檻, 充電上限) − 5% 才重新啟用
+    FULL_PERCENT = 100          # 沒有充電上限時的目標；充飽門檻 100% 時內文寫「已充飽」
+    UPS_CONFIRM_SAMPLES = 2     # 不斷電系統連續兩次取樣都在用電池才通知
+    RATE_LIMIT_SECONDS = 60     # 同一種通知（周邊為同一台設備）每 60 秒最多一則
+    PERIPHERAL_DEFAULT = 20     # 周邊設備沒有設定時的低電量門檻
+    LEVEL_ONLY_MIN_THRESHOLD = 10   # 只回報電量等級的設備：門檻至少 10% 才依「低電量」等級通知
+    NAME_MAX_CHARS = 64         # 通知中的設備名稱長度上限
+    MAX_LIVE = 32               # 最多同時保留幾則通知（點通知時才找得到要開的頁面）
+    APP_NAME = "系統與裝置監看"
+    DESKTOP_ENTRY = "system-device-monitor"
+    TEST_ACTION = "test-notification"   # 正在執行的看板提供的動作（--test-notification 使用）
+    BUS_NAME = "org.freedesktop.Notifications"
+    PROBE_TIMEOUT_MS = 1500     # 確認通知服務是否存在的 D-Bus 呼叫逾時
+
+
 class Solaar:
     """選用的 Solaar CLI 電量查詢。"""
     INTERVAL = 60               # 查詢間隔（秒）

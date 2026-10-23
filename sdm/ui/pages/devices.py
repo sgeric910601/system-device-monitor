@@ -9,6 +9,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from sdm.constants import Ui
+from sdm.core.devices import icon_for
 from sdm.core.fmt import age
 from sdm.ui.widgets import box, clear, label
 
@@ -24,19 +25,6 @@ def accent_for(device):
     if "Razer" in name:
         return "gpu"
     return "network" if device["kind"] == "藍牙" else "temperature"
-
-
-def icon_for(device):
-    name = device["name"]
-    if device["kind"] == "UPS":
-        return "battery-symbolic"
-    if device["kind"] == "藍牙":
-        return "bluetooth-symbolic"
-    if "鍵盤" in name:
-        return "input-keyboard-symbolic"
-    if "Mouse" in name:
-        return "input-mouse-symbolic"
-    return "audio-headphones-symbolic" if "Razer" in name else "drive-removable-media-symbolic"
 
 
 class DevicesPage(Gtk.Box):

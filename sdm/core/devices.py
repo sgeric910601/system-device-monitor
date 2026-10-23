@@ -1,10 +1,12 @@
-"""裝置正規化：電量等級、選單列、USB 名稱、UPS 與磁碟判斷。"""
+"""裝置正規化：電量等級、選單列、USB 名稱、圖示、UPS 與磁碟判斷。"""
 import math
 
 from sdm.core.fmt import percent
 
 LEVELS = {3: "低電量", 4: "極低電量", 6: "正常", 7: "充足", 8: "已滿"}
+LOW_LEVELS = (3, 4)             # UPower 的低電量與極低電量
 LEVEL_PREFIX = "電量等級："
+LEVEL_LABELS = {LEVEL_PREFIX + text: level for level, text in LEVELS.items()}
 BATTERY_LOADING = "讀取中…"
 NO_BATTERY = "目前沒有設備回報電量"
 STATES = {0: "狀態未知", 1: "充電中", 2: "電池供電", 3: "電池已空",
@@ -22,6 +24,27 @@ def battery(level, value, valid=True):
 def reports_charge(device):
     """有百分比或 battery() 的電量等級才算回報；「未回報」標籤兩者皆無。"""
     return device["percent"] is not None or device["battery"].startswith(LEVEL_PREFIX)
+
+
+def battery_level(device):
+    """只回報電量等級的設備：UPower 的等級代碼；有百分比或沒有等級時回傳 None。"""
+    if device.get("percent") is not None:
+        return None
+    return LEVEL_LABELS.get(device.get("battery", ""))
+
+
+def icon_for(device):
+    """設備列與通知使用的圖示名稱（依種類與名稱）。"""
+    name = device["name"]
+    if device["kind"] == "UPS":
+        return "battery-symbolic"
+    if device["kind"] == "藍牙":
+        return "bluetooth-symbolic"
+    if "鍵盤" in name:
+        return "input-keyboard-symbolic"
+    if "Mouse" in name:
+        return "input-mouse-symbolic"
+    return "audio-headphones-symbolic" if "Razer" in name else "drive-removable-media-symbolic"
 
 
 def battery_menu_rows(payload):

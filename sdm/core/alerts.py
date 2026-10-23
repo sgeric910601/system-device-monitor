@@ -1,0 +1,215 @@
+"""通知的狀態機（純邏輯，不載入 GTK）：筆電低電量與充飽、不斷電系統、啟動與喚醒閘門、頻率限制。
+
+每個狀態都是不可變的資料類別；轉移函式回傳（新狀態, 要送出的通知）。
+規則沿用參考專案 Notifier.evaluate：
+- 跨過門檻只通知一次，離開門檻一段距離後才重新啟用（遲滯）；關閉提醒時照樣記錄狀態，
+  之後再打開不會立刻補發。
+- record_only：啟動後第一次評估，以及偵測到喚醒（兩次取樣相隔超過 2 分鐘，含睡眠時間）
+  後的那一次，只記錄目前狀態、不通知；登入或喚醒時不會跳出「充電完成」或「改用電池」。
+- 低電量：正在放電（或接著電源但電池仍在放電）且電量 ≤ 門檻時通知；
+  不再放電或電量回到門檻＋2% 以上才重新啟用。
+- 充飽：接著電源且電量 ≥ 門檻（或已達充電上限），而且這次接上電源後看過「充電中」才通知；
+  拔掉電源或電量低於 min(門檻, 上限) − 5% 才重新啟用。
+- 不斷電系統：連續兩次取樣都在用電池才通知（緊急）；送出過這則通知，恢復市電時才通知
+  「已恢復市電」。確認停電後電量 ≤ 門檻再通知一次（緊急），電量回到門檻＋2% 以上才重新啟用。
+  通訊曾經正常、之後變成 COMMLOST 時通知一次，通訊恢復後重新啟用。
+- 頻率限制：同一種通知（周邊為同一台設備）每 60 秒最多一則；期間內再來的只保留最新的一則，
+  時間到才送出。
+"""
+from dataclasses import dataclass, replace
+from types import MappingProxyType
+from typing import Mapping, Optional
+
+from sdm.constants import Alerts
+from sdm.core import alert_messages as messages
+
+EMPTY = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class Gate:
+    """上一次取樣的時間（含睡眠時間的時鐘）；None 代表還沒取樣過。"""
+    last: Optional[float] = None
+
+
+def pass_gate(gate, now):
+    """回傳（新閘門, 這次是否只記錄）：第一次、相隔超過 2 分鐘或時鐘倒退時只記錄。"""
+    record_only = gate.last is None or not 0 <= now - gate.last <= Alerts.RESUME_GAP_SECONDS
+    return Gate(now), record_only
+
+
+@dataclass(frozen=True)
+class BatteryInput:
+    """筆電電池在某次取樣的狀態（顯示狀態，與畫面一致）。"""
+    percent: int
+    plugged: bool
+    draining: bool          # 放電中，或接著電源但電池仍在放電
+    weak_charger: bool      # 接著電源但充電器功率不足
+    charging: bool          # 顯示為充電中
+    limit_reached: bool     # 顯示為已達充電上限
+    limit: Optional[int]    # 充電上限（沒有設定時為 None）
+
+
+@dataclass(frozen=True)
+class LaptopAlertState:
+    low_fired: bool = False
+    full_fired: bool = False
+    saw_charging: bool = False      # 這次接上電源後是否看過「充電中」
+
+
+def low_now(reading, prefs):
+    return reading.draining and reading.percent <= prefs.low_threshold
+
+
+def full_now(reading, prefs):
+    return reading.plugged and (reading.percent >= prefs.full_threshold or reading.limit_reached)
+
+
+def step_low(fired, reading, prefs):
+    if low_now(reading, prefs):
+        due = prefs.low_alert_enabled and not fired
+        return True, (messages.low_battery(reading.percent, prefs.low_threshold,
+                                           reading.weak_charger),) if due else ()
+    if not reading.draining or reading.percent > prefs.low_threshold + Alerts.REARM_MARGIN:
+        return False, ()
+    return fired, ()
+
+
+def step_full(fired, saw_charging, reading, prefs):
+    limit = Alerts.FULL_PERCENT if reading.limit is None else reading.limit
+    target = min(prefs.full_threshold, limit)
+    if full_now(reading, prefs):
+        due = prefs.full_alert_enabled and not fired and saw_charging
+        alert = messages.battery_full(reading.percent, prefs.full_threshold,
+                                      reading.limit_reached, reading.limit)
+        return True, (alert,) if due else ()
+    if not reading.plugged or reading.percent < target - Alerts.FULL_REARM_MARGIN:
+        return False, ()
+    return fired, ()
+
+
+def evaluate_laptop(state, reading, prefs, record_only=False):
+    """prefs 需要 low_alert_enabled、low_threshold、full_alert_enabled、full_threshold。"""
+    saw = (state.saw_charging and reading.plugged) or reading.charging
+    if record_only:
+        return LaptopAlertState(low_now(reading, prefs), full_now(reading, prefs), saw), ()
+    low_fired, low = step_low(state.low_fired, reading, prefs)
+    full_fired, full = step_full(state.full_fired, saw, reading, prefs)
+    return LaptopAlertState(low_fired, full_fired, saw), low + full
+
+
+@dataclass(frozen=True)
+class UpsAlertState:
+    battery_samples: int = 0        # 連續幾次取樣都在用電池
+    outage_handled: bool = False    # 這次停電已處理過（已通知，或啟動／喚醒時就在停電）
+    battery_notified: bool = False  # 送出過「改用電池」：恢復市電時要通知
+    low_fired: bool = False
+    seen: bool = False              # 曾經通訊正常
+    comm_fired: bool = False
+
+
+def step_ups_low(fired, reading, prefs, may_fire, record_only):
+    """電量回到門檻＋2% 以上重新啟用；用電池且電量 ≤ 門檻時通知（停電確認後）。"""
+    charge, threshold = reading.charge_pct, prefs.ups_low_threshold
+    if charge is None:
+        return fired, ()
+    if charge > threshold + Alerts.REARM_MARGIN:
+        return False, ()
+    if not (reading.on_battery and charge <= threshold):
+        return fired, ()
+    if record_only:
+        return True, ()
+    if not may_fire:
+        return fired, ()
+    due = prefs.ups_alerts_enabled and not fired
+    return True, (messages.ups_low(reading, threshold),) if due else ()
+
+
+def on_battery(state, reading, prefs, record_only):
+    samples = state.battery_samples + 1
+    confirmed = samples >= Alerts.UPS_CONFIRM_SAMPLES
+    handled, notified, alerts = state.outage_handled, state.battery_notified, ()
+    if record_only:
+        handled = True
+    elif confirmed and not handled:
+        handled = True
+        if prefs.ups_alerts_enabled:
+            alerts, notified = (messages.ups_on_battery(reading),), True
+    low_fired, low = step_ups_low(state.low_fired, reading, prefs, confirmed, record_only)
+    return replace(state, battery_samples=samples, outage_handled=handled,
+                   battery_notified=notified, low_fired=low_fired), alerts + low
+
+
+def on_mains(state, reading, prefs, record_only):
+    due = state.battery_notified and prefs.ups_alerts_enabled and not record_only
+    low_fired, _ = step_ups_low(state.low_fired, reading, prefs, False, record_only)
+    return replace(state, battery_samples=0, outage_handled=False, battery_notified=False,
+                   low_fired=low_fired), (messages.ups_on_mains(reading),) if due else ()
+
+
+def comm_lost(state, prefs, record_only):
+    if record_only:
+        return replace(state, comm_fired=True), ()
+    if not state.seen or state.comm_fired:
+        return state, ()
+    alerts = (messages.ups_comm_lost(),) if prefs.ups_alerts_enabled else ()
+    return replace(state, comm_fired=True), alerts
+
+
+def evaluate_ups(state, reading, prefs, record_only=False):
+    """reading 為 UpsReading 或 None（讀不到 apcaccess：狀態不變）。
+
+    prefs 需要 ups_alerts_enabled 與 ups_low_threshold。"""
+    if reading is None:
+        return state, ()
+    if reading.comm_lost:
+        return comm_lost(state, prefs, record_only)
+    state = replace(state, seen=True, comm_fired=False)
+    if reading.on_battery:
+        return on_battery(state, reading, prefs, record_only)
+    return on_mains(state, reading, prefs, record_only)
+
+
+@dataclass(frozen=True)
+class RateLimit:
+    sent: Mapping = EMPTY       # 通知的鍵 → 上次送出的時間（單調時鐘秒數）
+    pending: Mapping = EMPTY    # 通知的鍵 → 等待中的通知（新的取代舊的）
+
+
+def allowed(limit, key, now):
+    last = limit.sent.get(key)
+    return last is None or not 0 <= now - last < Alerts.RATE_LIMIT_SECONDS
+
+
+def pruned(sent, pending, now):
+    """只留還在限制期間內或有通知在等待的鍵，對照表不會一直變大。"""
+    return MappingProxyType({key: stamp for key, stamp in sent.items()
+                             if key in pending or 0 <= now - stamp < Alerts.RATE_LIMIT_SECONDS})
+
+
+def offer(limit, alert, now):
+    """回傳（新狀態, 現在就送出的通知）；限制期間內的通知改為等待（只保留最新的一則）。"""
+    if allowed(limit, alert.key, now):
+        pending = {key: item for key, item in limit.pending.items() if key != alert.key}
+        sent = {**limit.sent, alert.key: now}
+        return RateLimit(pruned(sent, pending, now), MappingProxyType(pending)), (alert,)
+    pending = MappingProxyType({**limit.pending, alert.key: alert})
+    return RateLimit(pruned(limit.sent, pending, now), pending), ()
+
+
+def release(limit, now):
+    """限制期間已過的等待中通知：回傳（新狀態, 要送出的通知）。"""
+    due = tuple(alert for key, alert in limit.pending.items() if allowed(limit, key, now))
+    if not due:
+        return limit, ()
+    pending = {key: item for key, item in limit.pending.items()
+               if key not in {alert.key for alert in due}}
+    sent = {**limit.sent, **{alert.key: now for alert in due}}
+    return RateLimit(pruned(sent, pending, now), MappingProxyType(pending)), due
+
+
+def next_release(limit):
+    """最早可以送出等待中通知的時間；沒有等待中的通知時回傳 None。"""
+    times = [limit.sent[key] + Alerts.RATE_LIMIT_SECONDS for key in limit.pending
+             if key in limit.sent]
+    return min(times) if times else None
