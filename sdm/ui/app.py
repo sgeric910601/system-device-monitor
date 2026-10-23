@@ -15,7 +15,6 @@ from gi.repository import Gtk, Gio, GLib, GUdev
 
 from sdm import paths
 from sdm.constants import App, Collect, History, Preview, Smoke, Ui
-from sdm.core.peripheral_alerts import threshold_for
 from sdm.core.schedule import cadence_for
 from sdm.core.settings import load_settings
 from sdm.data.collectors import Collectors
@@ -23,6 +22,7 @@ from sdm.services import preview as demo
 from sdm.services.autostart import set_autostart, initialize_preferences
 from sdm.services.settings_store import SettingsStore
 from sdm.services.history_service import HistoryService, read_boot_time
+from sdm.services.peripheral_settings import PeripheralSettings
 from sdm.services.power_refresh import PowerRefresh
 from sdm.services.ui_state import PageMemory
 from sdm.ui.alert_wiring import AlertMixin
@@ -97,6 +97,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
                                    paths.PREFERENCES, GLib.timeout_add, self.remove_source,
                                    persist=not (smoke or preview), write_autostart=set_autostart)
         self.store.subscribe(self.settings_changed)
+        self.peripheral_settings = PeripheralSettings(self.store)
         self.timers, self.subscriptions = [], []
         self.graphs = []
         self.event_timer = 0
@@ -236,10 +237,9 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.graphs = overview.graphs
         self.page("overview", PAGE_TITLES["overview"]).pack_start(overview, False, False, 0)
         self.build_monitor_pages()
-        self.devices_page = DevicesPage(
-            threshold_for=lambda device_id: threshold_for(self.preferences.peripheral_thresholds,
-                                                          device_id),
-            choose=self.set_peripheral_threshold, writable=lambda: not self.store.read_only)
+        self.devices_page = DevicesPage(threshold_for=self.peripheral_settings.threshold,
+                                        choose=self.set_peripheral_threshold,
+                                        writable=lambda: not self.store.read_only)
         self.page("devices", PAGE_TITLES["devices"]).pack_start(self.devices_page, False, False, 0)
         self.watch_visibility()
         self.window.connect("map", lambda *_: self.refresh_stale_pages())

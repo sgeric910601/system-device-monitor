@@ -39,6 +39,7 @@ class SettingsContext:
     external_power: Callable[[], bool]  # 目前是否接著外部電源（省電說明）
     ups_present: Callable[[], bool] = bool          # 目前有不斷電系統（顯示不斷電系統提醒）
     peripherals: Callable[[], tuple] = tuple        # 回報電量的周邊（PeripheralReading）
+    peripheral_settings: object = None              # PeripheralSettings（周邊門檻的寫入點）
     notice: Callable[[], str] = str                 # 通知服務的狀態說明；沒有問題時為空字串
     send_test: Callable[[], Optional[bool]] = nothing
     probe: Callable[[], None] = nothing             # 重新確認通知服務（非同步）

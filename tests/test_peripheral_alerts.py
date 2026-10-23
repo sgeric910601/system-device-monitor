@@ -1,17 +1,19 @@
 """周邊設備低電量通知（純邏輯）：參考專案 PeripheralTests 的數值、只有電量等級的設備、
 斷線的設備、啟動時只記錄，以及設定視窗與鈴鐺按鈕寫入的門檻。"""
 import hashlib
+import hmac
 import unittest
 
 from sdm.core.peripheral_alerts import (BELL_CHOICES, DEFAULT_THRESHOLD, THRESHOLD_CHOICES,
                                         PeripheralAlertState, PeripheralReading, bell_icon,
-                                        bell_tooltip, evaluate_peripherals, peripheral_key,
-                                        peripheral_readings, present_keys, threshold_changes,
-                                        threshold_for, with_all, with_threshold)
+                                        bell_tooltip, evaluate_peripherals, migrated, new_salt,
+                                        peripheral_key, peripheral_readings, present_keys,
+                                        storage_key, threshold_changes, threshold_for, with_all)
 from sdm.core.preference_specs import PERIPHERAL_LEVELS
 from sdm.core.settings import Preferences
 
 MOUSE, PODS = peripheral_key("mouse"), peripheral_key("pods")
+SALT = "0123456789abcdef" * 2
 FROM_READINGS = object()       # 連線中的設備＝這次有讀值的設備
 
 
@@ -182,37 +184,70 @@ class Settings(unittest.TestCase):
         self.assertEqual(BELL_CHOICES[0][1], "不通知")
         self.assertEqual(BELL_CHOICES[1][1], "低於 10% 時通知")
 
-    def test_choosing_a_value_writes_the_hashed_key(self):
-        key = hashlib.sha256("bt:/org/bluez/hci0/dev_x".encode()).hexdigest()[:16]
-        changes = threshold_changes({}, "bt:/org/bluez/hci0/dev_x", 10)
-        self.assertEqual(changes, {"peripheral_thresholds": {key: 10}})
-        updated = Preferences.defaults().with_changes(**changes)
-        self.assertEqual(threshold_for(updated.peripheral_thresholds, "bt:/org/bluez/hci0/dev_x"),
-                         10)
+    def test_first_write_creates_a_salt_and_uses_hmac_keys(self):
+        prefs = Preferences.defaults()
+        changes = threshold_changes(prefs, ("bt:/org/bluez/hci0/dev_x",), 10, make_salt=lambda: SALT)
+        key = hmac.new(bytes.fromhex(SALT), b"bt:/org/bluez/hci0/dev_x",
+                       hashlib.sha256).hexdigest()[:16]
+        self.assertEqual(changes, {"peripheral_key_salt": SALT, "peripheral_thresholds": {key: 10}})
+        updated = prefs.with_changes(**changes)
+        self.assertEqual(threshold_for(updated.peripheral_thresholds, SALT,
+                                       "bt:/org/bluez/hci0/dev_x"), 10)
         self.assertNotIn("dev_x", str(updated.to_json()))
+        again = threshold_changes(updated, ("k",), 30, make_salt=self.fail)
+        self.assertNotIn("peripheral_key_salt", again)
+        self.assertEqual(again["peripheral_thresholds"],
+                         {key: 10, storage_key(SALT, "k"): 30})
+
+    def test_salts_are_random_hex(self):
+        first, second = new_salt(), new_salt()
+        self.assertRegex(first, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(storage_key(first, "m"), storage_key(second, "m"))
+
+    def test_without_a_salt_the_first_version_keys_are_read(self):
+        self.assertEqual(storage_key("", "m"), peripheral_key("m"))
+        self.assertEqual(threshold_for({peripheral_key("m"): 0}, "", "m"), 0)
+        self.assertEqual(threshold_for({peripheral_key("m"): 0}, SALT, "m"), DEFAULT_THRESHOLD)
+
+    def test_old_keys_of_present_devices_are_migrated_and_stale_ones_dropped(self):
+        old = {peripheral_key("m"): 0, peripheral_key("gone"): 50}
+        self.assertEqual(migrated(old, SALT, ("m", "k")), {storage_key(SALT, "m"): 0})
+        prefs = Preferences.defaults().with_changes(peripheral_thresholds=old)
+        changes = threshold_changes(prefs, ("k",), 30, known_ids=("m", "k"),
+                                    make_salt=lambda: SALT)
+        self.assertEqual(changes["peripheral_thresholds"],
+                         {storage_key(SALT, "m"): 0, storage_key(SALT, "k"): 30})
 
     def test_every_bell_choice_round_trips_through_preferences(self):
         prefs = Preferences.defaults()
         for value, _ in BELL_CHOICES:
-            prefs = prefs.with_changes(**threshold_changes(prefs.peripheral_thresholds, "m",
-                                                           value))
-            self.assertEqual(threshold_for(prefs.peripheral_thresholds, "m"), value)
+            prefs = prefs.with_changes(**threshold_changes(prefs, ("m",), value))
+            self.assertEqual(threshold_for(prefs.peripheral_thresholds,
+                                           prefs.peripheral_key_salt, "m"), value)
 
     def test_default_value_removes_the_entry(self):
-        start = {peripheral_key("m"): 10, peripheral_key("k"): 50}
-        self.assertEqual(with_threshold(start, "m", DEFAULT_THRESHOLD), {peripheral_key("k"): 50})
-        self.assertEqual(start, {peripheral_key("m"): 10, peripheral_key("k"): 50})
+        start = {storage_key(SALT, "m"): 10, storage_key(SALT, "k"): 50}
+        self.assertEqual(with_all(start, SALT, ("m",), DEFAULT_THRESHOLD),
+                         {storage_key(SALT, "k"): 50})
+        self.assertEqual(len(start), 2)
 
     def test_set_all_connected_devices(self):
-        start = {peripheral_key("old"): 30}
-        self.assertEqual(with_all(start, ("m", "k"), 0),
-                         {peripheral_key("old"): 30, peripheral_key("m"): 0,
-                          peripheral_key("k"): 0})
-        self.assertEqual(with_all({peripheral_key("m"): 0}, ("m",), 20), {})
+        start = {storage_key(SALT, "old"): 30}
+        self.assertEqual(with_all(start, SALT, ("m", "k"), 0),
+                         {storage_key(SALT, "old"): 30, storage_key(SALT, "k"): 0,
+                          storage_key(SALT, "m"): 0})
+        self.assertEqual(with_all({storage_key(SALT, "m"): 0}, SALT, ("m",), 20), {})
 
     def test_invalid_value_is_rejected(self):
         with self.assertRaises(ValueError):
-            with_threshold({}, "m", 25)
+            with_all({}, SALT, ("m",), 25)
+
+    def test_evaluation_reads_salted_thresholds(self):
+        thresholds = {storage_key(SALT, "mouse"): 0}
+        _, alerts = evaluate_peripherals(PeripheralAlertState(), [reading("mouse", 5)],
+                                         thresholds, frozenset({MOUSE}), salt=SALT)
+        self.assertEqual(alerts, ())
 
     def test_bell_icon_and_tooltip(self):
         self.assertEqual(bell_icon(0), "notifications-disabled-symbolic")

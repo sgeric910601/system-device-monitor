@@ -74,7 +74,7 @@ class AlertService:
         self.devices_gate, record_only = self.gate(self.devices_gate)
         self.peripherals, alerts = evaluate_peripherals(
             self.peripherals, peripheral_readings(payload), prefs.peripheral_thresholds,
-            present_keys(payload), record_only)
+            present_keys(payload), record_only, prefs.peripheral_key_salt)
         self.deliver(alerts)
 
     def gate(self, gate):

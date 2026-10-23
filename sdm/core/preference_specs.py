@@ -13,6 +13,7 @@ SCHEMA_VERSION = 2
 MAX_ITEMS = 64                                    # 清單與對照表的項目上限
 NAME_PATTERN = re.compile(r"[a-z_]{1,32}")        # 隱藏項目名稱
 PERIPHERAL_KEY_PATTERN = re.compile(r"[0-9a-f]{16}")
+SALT_PATTERN = re.compile(r"[0-9a-f]{32}")       # 周邊設備鍵的 HMAC 金鑰（每次安裝隨機產生）
 PERIPHERAL_LEVELS = (0, 10, 15, 20, 30, 50)       # 周邊低電量鈴鐺門檻；0 代表關閉
 
 
@@ -89,6 +90,15 @@ def thresholds():
     return Spec(MappingProxyType({}), check, choices=PERIPHERAL_LEVELS)
 
 
+def salt():
+    """32 個小寫十六進位字元；空字串代表還沒產生（第一次設定周邊門檻時才產生）。"""
+    def check(raw):
+        if type(raw) is not str or (raw and not SALT_PATTERN.fullmatch(raw)):
+            raise ValueError("invalid salt")
+        return raw, False
+    return Spec("", check)
+
+
 PREFERENCE_SPECS = MappingProxyType({
     "tray_mode": choice("split", ("split", "merged")),
     "tray_display": choice("icon_percent", ("icon_percent", "icon_only", "percent_only",
@@ -111,6 +121,7 @@ PREFERENCE_SPECS = MappingProxyType({
     "ups_alerts_enabled": boolean(True),
     "ups_low_threshold": integer(50, 10, 90),
     "peripheral_thresholds": thresholds(),
+    "peripheral_key_salt": salt(),
     "admin_cpu_sampling": boolean(False),
     "app_icon_color": choice("mint", ("mint", "peach", "night", "sky")),
     "auto_check_updates": boolean(True),

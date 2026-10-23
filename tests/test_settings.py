@@ -121,7 +121,7 @@ class PreferenceDefaults(TempConfig):
 
     def test_documented_defaults(self):
         prefs = Preferences.defaults()
-        self.assertEqual(len(PREFERENCE_SPECS), 35)
+        self.assertEqual(len(PREFERENCE_SPECS), 36)
         expected = dict(tray_mode="split", tray_display="icon_percent", refresh_interval=2,
                         tray_power=True,
                         power_saving=False, system_monitors=True, low_threshold=20,
@@ -135,6 +135,7 @@ class PreferenceDefaults(TempConfig):
                 self.assertIs(type(prefs[key]), type(value))
         self.assertEqual(prefs.hidden_flow_items, ())
         self.assertEqual(dict(prefs.peripheral_thresholds), {})
+        self.assertEqual(prefs.peripheral_key_salt, "")
 
     def test_corrupt_file_gives_defaults_and_warns(self):
         self.prefs.write_text("[1, 2")
@@ -229,6 +230,18 @@ class PreferenceValidation(TempConfig):
                                                 "peripheral_thresholds").peripheral_thresholds, {})
         with self.assertRaises(ValueError):
             Preferences.defaults().with_changes(peripheral_thresholds={"XYZ": 10})
+
+    def test_peripheral_key_salt_is_32_lowercase_hex(self):
+        salt = "0123456789abcdef" * 2
+        self.write_prefs({"peripheral_key_salt": salt})
+        self.assertEqual(load_preferences(self.prefs).peripheral_key_salt, salt)
+        for raw in (salt.upper(), salt[:-1], salt + "0", 5, None, ["a"]):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.load_with_warning({"peripheral_key_salt": raw},
+                                                        "peripheral_key_salt").peripheral_key_salt,
+                                 "")
+                with self.assertRaises(ValueError):
+                    Preferences.defaults().with_changes(peripheral_key_salt=raw)
 
     def test_name_lists_are_deduplicated_and_bounded(self):
         loaded = self.load_with_warning(

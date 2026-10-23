@@ -2,15 +2,19 @@
 from types import SimpleNamespace
 import unittest
 
-from sdm.core.peripheral_alerts import PeripheralReading, peripheral_key
+from sdm.core.peripheral_alerts import PeripheralReading, peripheral_key, storage_key
 from sdm.core.preference_specs import PREFERENCE_SPECS
 from sdm.core.settings import LEGACY_DEFAULTS, Preferences, PreferencesReadOnlyError
 from sdm.data.ups import UpsReading
+from sdm.services.peripheral_settings import PeripheralSettings
 from sdm.services.settings_store import STATUS, SettingsStore
 from sdm.ui import app as ui_app
 from sdm.ui import smoke
 from sdm.ui.settings import notifications, peripherals, text
 from sdm.ui.settings_window import SECTIONS, SettingsContext
+
+
+SALT = "fedcba9876543210" * 2
 
 
 def store(preferences=None):
@@ -61,32 +65,62 @@ class NotificationKeys(unittest.TestCase):
             settings.update(low_alert_enabled=False)
 
 
-class PeripheralKeys(unittest.TestCase):
-    def test_one_device(self):
-        settings = store()
-        settings.update(**peripherals.one_change(settings.value("peripheral_thresholds"),
-                                                 "bt:/dev_x", 0))
-        self.assertEqual(dict(settings.preferences.peripheral_thresholds),
-                         {peripheral_key("bt:/dev_x"): 0})
+def payload(*ids, errors=()):
+    return {"devices": [dict(id=device_id) for device_id in ids], "errors": list(errors),
+            "stamp": 1.0}
+
+
+class PeripheralWrites(unittest.TestCase):
+    """設定視窗的下拉選單與鈴鐺共用的寫入點。"""
+
+    def make(self, preferences=None):
+        self.store = store(preferences)
+        return PeripheralSettings(self.store, make_salt=lambda: SALT)
+
+    def thresholds(self):
+        return dict(self.store.preferences.peripheral_thresholds)
+
+    def test_first_write_creates_the_salt(self):
+        settings = self.make()
+        self.assertTrue(settings.choose(("bt:/dev_x",), 0))
+        self.assertEqual(self.store.preferences.peripheral_key_salt, SALT)
+        self.assertEqual(self.thresholds(), {storage_key(SALT, "bt:/dev_x"): 0})
+        self.assertEqual(settings.threshold("bt:/dev_x"), 0)
+        self.assertEqual(settings.threshold("other"), 20)
 
     def test_set_all_connected_devices(self):
-        settings = store()
-        found = (reading("a"), reading("b"))
-        settings.update(**peripherals.all_change(settings.value("peripheral_thresholds"),
-                                                 found, 50))
-        self.assertEqual(dict(settings.preferences.peripheral_thresholds),
-                         {peripheral_key("a"): 50, peripheral_key("b"): 50})
-        settings.update(**peripherals.all_change(settings.value("peripheral_thresholds"),
-                                                 found, 20))
-        self.assertEqual(dict(settings.preferences.peripheral_thresholds), {})
+        settings = self.make()
+        settings.choose(("a", "b"), 50)
+        self.assertEqual(self.thresholds(), {storage_key(SALT, "a"): 50,
+                                             storage_key(SALT, "b"): 50})
+        settings.choose(("a", "b"), 20)
+        self.assertEqual(self.thresholds(), {})
+
+    def test_old_keys_of_listed_devices_are_migrated(self):
+        old = Preferences.defaults().with_changes(
+            peripheral_thresholds={peripheral_key("m"): 0, peripheral_key("gone"): 50})
+        settings = self.make(old)
+        settings.observe(payload("m", "k"))
+        settings.observe({"devices": [], "errors": ["設備資料暫時無法取得"]})   # 失敗：不算
+        self.assertEqual(settings.threshold("m"), 0)
+        settings.choose(("k",), 30)
+        self.assertEqual(self.thresholds(), {storage_key(SALT, "m"): 0,
+                                             storage_key(SALT, "k"): 30})
+
+    def test_read_only_preferences_are_rejected(self):
+        settings = self.make(Preferences.defaults(read_only=True))
+        self.assertFalse(settings.choose(("m",), 0))
+        self.assertEqual(self.thresholds(), {})
 
     def test_set_all_shows_the_shared_value_or_nothing(self):
+        settings = self.make()
         found = (reading("a"), reading("b"))
-        self.assertEqual(peripherals.common_threshold({}, found), 20)
-        self.assertIsNone(peripherals.common_threshold({peripheral_key("a"): 0}, found))
-        self.assertEqual(peripherals.common_threshold(
-            {peripheral_key("a"): 0, peripheral_key("b"): 0}, found), 0)
-        self.assertIsNone(peripherals.common_threshold({}, ()))
+        self.assertEqual(peripherals.common_threshold(settings.threshold, found), 20)
+        settings.choose(("a",), 0)
+        self.assertIsNone(peripherals.common_threshold(settings.threshold, found))
+        settings.choose(("b",), 0)
+        self.assertEqual(peripherals.common_threshold(settings.threshold, found), 0)
+        self.assertIsNone(peripherals.common_threshold(settings.threshold, ()))
 
     def test_composition_changes_only_with_devices(self):
         self.assertEqual(peripherals.composition((reading("a"),)),
@@ -122,6 +156,7 @@ def monitor(preferences=None):
     app.devices_page, app.settings_window = Recorder(), Recorder()
     app.render_indicator = lambda: None
     app.store.subscribe(app.settings_changed)
+    app.peripheral_settings = PeripheralSettings(app.store, make_salt=lambda: SALT)
     return app
 
 
@@ -130,15 +165,15 @@ class Wiring(unittest.TestCase):
         app = monitor()
         app.set_peripheral_threshold("power:/mouse", 30)
         self.assertEqual(dict(app.preferences.peripheral_thresholds),
-                         {peripheral_key("power:/mouse"): 30})
+                         {storage_key(SALT, "power:/mouse"): 30})
         self.assertIn("thresholds_changed", app.devices_page.calls)
 
     def test_rejected_bell_choice_is_logged_and_the_bells_restored(self):
         app = monitor(Preferences.defaults(read_only=True))
-        with self.assertLogs("sdm.ui.settings_wiring", level="WARNING"):
+        with self.assertLogs("sdm.services.peripheral_settings", level="WARNING"):
             app.set_peripheral_threshold("power:/mouse", 30)
         self.assertEqual(app.devices_page.calls, ["thresholds_changed"])
-        with self.assertLogs("sdm.ui.settings_wiring", level="WARNING"):
+        with self.assertLogs("sdm.services.peripheral_settings", level="WARNING"):
             app.set_peripheral_threshold("power:/mouse", 25)
 
     def test_status_change_redraws_the_bells(self):

@@ -64,6 +64,8 @@ class AlertMixin:
                 self.settings_window.power_changed()
 
     def device_alerts(self):
+        if self.peripheral_settings is not None:
+            self.peripheral_settings.observe(self.data["devices"])
         if self.alerts is not None:
             self.alerts.devices(self.data["devices"], self.preferences)
         if self.settings_window is not None:
