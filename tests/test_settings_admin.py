@@ -25,5 +25,11 @@ class Registration(unittest.TestCase):
         self.assertIsNone(fields["admin"].default)
 
 
+class Docs(unittest.TestCase):
+    def test_about_page_links_the_security_notes(self):
+        from sdm.ui.settings import text
+        self.assertIn(("安全說明", "docs/SECURITY.md"), text.DOCS)
+
+
 if __name__ == "__main__":
     unittest.main()

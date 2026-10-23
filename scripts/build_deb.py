@@ -21,7 +21,8 @@ APP_DIR = PurePosixPath("usr/share/system-device-monitor")
 LAUNCHER = PurePosixPath("usr/bin/system-device-monitor")
 DESKTOP = PurePosixPath("usr/share/applications/system-device-monitor.desktop")
 DOC_DIR = PurePosixPath("usr/share/doc/system-device-monitor")
-DOCS = ("README.md", "CHANGELOG.md", "docs/USAGE.md", "docs/PRIVACY.md", "docs/BUILD.md")
+DOCS = ("README.md", "CHANGELOG.md", "docs/USAGE.md", "docs/PRIVACY.md", "docs/BUILD.md",
+        "docs/SECURITY.md")
 MAINTAINER_SCRIPTS = frozenset({"preinst", "postinst", "prerm", "postrm"})
 SYSTEM_PREFIXES = tuple(PurePosixPath(prefix) for prefix in Packaging.SYSTEM_PREFIXES)
 FILE_MODE = 0o644

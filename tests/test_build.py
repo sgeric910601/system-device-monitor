@@ -9,7 +9,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = ("README.md", "CHANGELOG.md", "docs/USAGE.md", "docs/PRIVACY.md", "docs/BUILD.md", "LICENSE")
+DOCS = ("README.md", "CHANGELOG.md", "docs/USAGE.md", "docs/PRIVACY.md", "docs/BUILD.md",
+        "docs/SECURITY.md", "LICENSE")
 APP = "usr/share/system-device-monitor"
 
 

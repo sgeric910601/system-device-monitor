@@ -29,6 +29,7 @@
   - 顯示項目：電力流向細項與詳細資訊欄位要不要顯示，以及「全部顯示」。
   - 通知：低電量與充飽提醒（有電池時）、不斷電系統提醒（有不斷電系統時）、傳送測試通知（見「通知」）。
   - 周邊設備：目前連線、回報電量的每台設備的低電量通知門檻，以及「全部設為」。
+  - 管理員功能：管理員元件的安裝狀態與選用的 CPU 功耗取樣（見下方「管理員功能」）。
   - 關於：版本與本機說明文件的位置。
 - 所有變更立即套用、不需要重新啟動；連續調整時在最後一次之後 0.5 秒才寫入設定檔。
   舊版的五個頂端列項目（CPU、CPU 溫度、記憶體、GPU、網速）仍寫在 settings.json，
@@ -108,9 +109,13 @@ CPU／GPU 包含 CPU 使用率、CPU 溫度、GPU 使用率與其他感測器；
 包含螢幕、喇叭等所有插在上面的設備，不只是電腦本身。負載以百分比回報，
 所以數字會以約額定功率 1% 為一格跳動。
 
-- 拆解：已知元件（目前為 NVIDIA 顯示卡與 AMD 獨立顯示卡）各自列出，
-  「其他」＝整機減去已知元件，含螢幕與電源損耗。CPU 功耗需要管理員權限，之後的版本才提供。
-- AMD 內建顯示（處理器內的顯示晶片）的功耗讀值代表整顆處理器，單位尚未校正，暫不顯示。
+- 拆解：已知元件（NVIDIA 顯示卡、AMD 獨立顯示卡，以及開啟管理員 CPU 功耗取樣時的 CPU）各自列出，
+  「其他」＝整機減去已知元件，含螢幕與電源損耗。CPU 底下再分「核心」與「插槽其餘」
+  （只在清單中縮排顯示，不重複計入）；CPU 讀值超過慢速間隔的 3 倍（預設 15 秒）沒有更新就不列入。
+- AMD 內建顯示（處理器內的顯示晶片）的功耗讀值（PPT）代表整顆處理器，單位沒有文件可查。
+  CPU 功耗取樣開啟期間，看板每累積 30 筆就比對一次 PPT ÷ 1000 與 RAPL 的比例，中位數在 ±25% 內
+  才記為「已確認」（存在 ~/.local/state/system-device-monitor/cpu-calibration.json）。
+  之後關閉取樣時，只有已確認的校正才會把 PPT 顯示成「CPU（插槽功耗估算）」，未確認時一律不顯示。
 - 沒有不斷電系統時，只能顯示已知元件合計，並註明無法取得整機耗電。
 - 改由不斷電系統電池供電時，標題改成橘色並顯示剩餘分鐘數；電池電量低時改為紅色。
 - 3 分鐘平均為指數移動平均（時間常數 180 秒）。
@@ -131,9 +136,50 @@ history-<時間>.json.bak（不覆寫既有備份）再從空白開始；
   省電模式沒有生效時播放，其他時候改為在流帶末端畫箭頭的靜態圖，不留任何計時器。
   「設定 → 顯示項目」可以隱藏顯示卡（含 NVIDIA、AMD）、處理器與「其他」，整機瓦數不變。
 - 電源模式：見下方「電源模式」。
-- 耗電排行：CPU 用量最高的 5 個 App（同一個 App 的子程序合併）。之後的版本取得 CPU 功耗時，
-  改以「CPU 功耗 × 該 App 佔所有 App CPU 時間的比例」估算瓦數並註明「依 CPU 佔比估算」；
-  目前無法取得 CPU 功耗，依 CPU 使用率排序並註明原因。只在「電源」頁顯示時取樣。
+- 耗電排行：CPU 用量最高的 5 個 App（同一個 App 的子程序合併）。拆解中有 CPU 時，
+  以「CPU 功耗 × 該 App 佔所有 App CPU 時間的比例」估算瓦數並註明「依 CPU 佔比估算」；
+  沒有 CPU 功耗時依 CPU 使用率排序並註明原因。只在「電源」頁顯示時取樣。
+
+## 管理員功能：CPU 功耗取樣
+
+Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選用功能安裝一個很小的系統服務：
+它以 root 開好計數器後立即切換成 nobody、沒有任何能力，只回答開啟它的使用者，數值四捨五入到
+0.1 W。威脅模型與每個元件的限制見 [SECURITY.md](SECURITY.md)。
+
+安裝管理員元件：
+- .deb：已包含，不需要另外安裝。安裝時不會啟用任何服務。
+- 原始碼：在原始碼資料夾執行（會跳出管理員密碼視窗或在終端機詢問密碼）：
+
+      /usr/bin/python3 -B install.py --system-components install
+
+  只安裝已提交（git HEAD）的版本；相關檔案有未提交的修改時會拒絕。已安裝 .deb 時不需要也不能安裝。
+  檔案安裝到 /usr/local/libexec/system-device-monitor、/usr/local/share/polkit-1/actions
+  與 /etc/systemd/system（名稱含 -local-）。
+
+開啟與關閉：
+- 「設定 → 管理員功能」顯示元件狀態：已安裝（.deb）、已安裝（原始碼）或未安裝；
+  原始碼資料夾還沒安裝時顯示上面的指令，可按「複製」貼到終端機。
+- 開啟「CPU 功耗取樣」會跳出管理員授權視窗；授權後 socket 只允許你的帳號連線。
+  取消授權或密碼錯誤時選項自動恢復，並在「上次的錯誤」說明原因。關閉時同樣需要授權。
+- 開啟程式時只確認元件與版本，不會要求密碼；選項開著但服務沒有為你開啟（例如元件被移除），
+  會直接關閉選項並說明。
+- 開啟後只在「電源」頁顯示時連線，每個更新間隔讀一次；離開頁面就斷線，服務閒置 30 秒後自行結束。
+- 版本不符時顯示「需要重新安裝管理員元件」：原始碼安裝重新執行上面的安裝指令，.deb 重新安裝套件。
+
+不經由看板操作時（例如遠端維護），也可以直接執行：
+
+    pkexec /usr/libexec/system-device-monitor/sdm-cpu-power enable
+    pkexec /usr/libexec/system-device-monitor/sdm-cpu-power status
+    pkexec /usr/libexec/system-device-monitor/sdm-cpu-power disable
+    systemctl status system-device-monitor-cpu-power.socket
+
+原始碼安裝把路徑換成 /usr/local/libexec/system-device-monitor/sdm-cpu-power，
+單元名稱換成 system-device-monitor-local-cpu-power.socket。
+
+移除管理員元件：
+- 原始碼：`/usr/bin/python3 -B install.py --system-components remove`（會先停用服務）。
+- .deb：sudo apt remove system-device-monitor 會停用服務並移除所有元件；
+  sudo apt purge system-device-monitor 另外清除 drop-in 與 /var/lib/system-device-monitor。
 
 ## 系統監控頁（CPU／GPU、記憶體、磁碟、網路）
 
@@ -368,12 +414,17 @@ Piper 可能辨識滑鼠，卻對作用中的設定檔或 DPI／回報率呈現�
 .deb 版本下載新版本，以 sudo apt install ./新版本.deb 更新後重啟應用程式。
 兩種方式都保留顯示項目及自動啟動設定。
 
+原始碼安裝過管理員元件時，git pull 之後若「設定 → 管理員功能」顯示需要重新安裝，
+再執行一次 /usr/bin/python3 -B install.py --system-components install；
+CPU 功耗取樣原本開著時會自動重新啟動 socket。
+
 ## 移除
 
 先使用頂端列「退出」，並在設定關閉登入自啟。
 
-原始碼安裝：
+原始碼安裝（安裝過管理員元件時先移除它）：
 
+    /usr/bin/python3 -B install.py --system-components remove
     /usr/bin/python3 install.py --uninstall
 
 .deb 安裝：
@@ -400,6 +451,10 @@ Piper 可能辨識滑鼠，卻對作用中的設定檔或 DPI／回報率呈現�
 - 沒有收到通知：先用「設定 → 通知 → 傳送測試通知」或 system-device-monitor --test-notification
   確認；設定視窗說明找不到通知服務時，表示目前的桌面沒有通知服務。GNOME 開啟「勿擾」時只會跳出
   緊急通知（不斷電系統改用電池與電量低），其他提醒仍會留在通知清單中。
+- 開啟 CPU 功耗取樣時顯示「未授權」：取消了授權或密碼不正確；從遠端或非作用中的工作階段
+  一律不允許。從登入自動啟動的看板若一直顯示未授權，請從應用程式選單重新開啟看板再試。
+- 開啟了但拆解沒有 CPU：這台電腦沒有 RAPL（/sys/class/powercap/intel-rapl:0），
+  或服務回報讀取失敗；可用 systemctl status system-device-monitor-cpu-power.service 查看。
 
 ## 本機診斷
 

@@ -70,6 +70,22 @@ CI 也對解包後的 .deb 執行同一檢查，確認套件內容完整：
 
     /usr/bin/python3 -B scripts/import_check.py --root 解包目錄/usr/share/system-device-monitor
 
+管理員元件（helper/）以 root 執行，測試一律不需要 root：開關小程式與原始碼安裝腳本以
+假根目錄（擁有者＝執行測試的使用者）、假的 systemctl 與 dpkg-query 測試參數表、權限、
+O_NOFOLLOW 與信任檢查；取樣服務以暫存檔代替 energy_uj、暫存目錄的 Unix socket 代替
+systemd 交來的 socket，並以假的系統呼叫測試放棄權限的順序與檢查。單元檔測試確認每個強化設定、
+.deb 與原始碼安裝版只差名稱與路徑；polkit 測試確認 exec.path 與預設授權；
+安裝前後腳本以 DPKG_ROOT 指向暫存目錄實際執行。
+
+單元檔可以在解包後的 .deb 上驗證（只讀，不需要 root）：把主機的 target 單元複製到解包目錄的
+usr/lib/systemd/system 後執行
+
+    systemd-analyze --root=解包目錄 verify 解包目錄/usr/lib/systemd/system/system-device-monitor-cpu-power.socket 解包目錄/usr/lib/systemd/system/system-device-monitor-cpu-power.service
+    systemd-analyze security --offline=true --root=解包目錄 解包目錄/usr/lib/systemd/system/system-device-monitor-cpu-power.service
+
+CI 安裝 .deb 後另外檢查權限、pkaction 的預設授權、以 sudo 執行小程式的錯誤參數、
+開啟後服務確實以 nobody 執行且沒有能力，以及移除與清除後沒有留下任何單元或 drop-in。
+
 GUI smoke test 需要桌面或 Xvfb、system bus 與 session bus。
 CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。
 
@@ -122,7 +138,16 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
   power_flow 電力流向圖；charts 耗電歷史圖；power_text 頁面文字（不載入 GTK）；
   pages/laptop_power、battery_flow、battery_text、battery_details 為筆電版面與文字；
   power_tray、power_wiring 為頂端列「耗電」與耗電快照的接線；smoke 為模擬測試；
-  widgets 為共用元件與曲線圖；theme 為配色與 CSS。
+  widgets 為共用元件與曲線圖；theme 為配色與 CSS；cpu_power_wiring、admin_text、
+  settings/admin 為管理員 CPU 功耗取樣的接線、文字與設定分類。
+- 管理員元件：helper/sdm-cpu-power（pkexec 執行的開關小程式）、helper/sdm-cpu-power-service
+  （socket 啟動的 RAPL 取樣服務）、helper/policy（polkit 動作）、helper/systemd（單元檔，
+  .deb 與原始碼安裝各一組）、packaging/debian（安裝前後腳本）、scripts/install_system.py
+  （原始碼安裝的 root 端）。它們只用標準函式庫、不載入 sdm；常數與 sdm/constants.py 的
+  CpuPower 相同（測試確認）。sdm/services/privileged.py 尋找元件並以 pkexec 開關，
+  sdm/services/system_components.py 為 install.py --system-components 的使用者端，
+  sdm/data/cpu_power_client.py 為 socket 客戶端，sdm/core/cpu_power.py 與 ppt_calibration.py
+  為 CPU 項目與 APU PPT 校正。威脅模型見 SECURITY.md。
 
 設定分成兩個檔案。settings.json 維持舊格式，只存五個頂端列開關，
 舊版與退回舊版都能照常讀寫；新設定存在同目錄的 preferences.json（schema 2），

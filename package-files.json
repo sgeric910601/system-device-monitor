@@ -179,6 +179,7 @@
     "device_monitor.py",
     "docs/BUILD.md",
     "docs/PRIVACY.md",
+    "docs/SECURITY.md",
     "docs/USAGE.md",
     "helper/policy/tw.local.system-device-monitor.local.policy",
     "helper/policy/tw.local.system-device-monitor.policy",

@@ -16,7 +16,8 @@ DISPLAY_FORMATS = (("icon_percent", "圖示＋百分比"), ("icon_only", "只有
 TRAY_MODES = (("split", "分開顯示（每個項目一個圖示）"), ("merged", "合併成一個"))
 SAVING_BASE = "省電模式：電力流向改用靜態圖、不播放動畫，更新頻率至少每 2 秒。"
 PACKAGE_DOCS = Path("/usr/share/doc/system-device-monitor")
-DOCS = (("專案說明", "README.md"), ("使用說明", "docs/USAGE.md"), ("隱私說明", "docs/PRIVACY.md"))
+DOCS = (("專案說明", "README.md"), ("使用說明", "docs/USAGE.md"), ("隱私說明", "docs/PRIVACY.md"),
+        ("安全說明", "docs/SECURITY.md"))
 SECONDS_PER_MINUTE = 60
 UPS_OPTION_STEP = 5         # 不斷電系統低電量門檻的下拉選單每 5% 一格（設定檔可存任何整數）
 
