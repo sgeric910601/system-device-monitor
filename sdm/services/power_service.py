@@ -1,6 +1,8 @@
 """耗電快照：有系統電池時產生筆電快照（LaptopPower），否則產生桌機快照（DesktopPower）。
 
 桌機：每次慢速收集時讀取不斷電系統與顯示卡，產生拆解與 3 分鐘平均。
+CPU：管理員 CPU 功耗取樣的最新讀值（read_cpu）在 3 × 慢速間隔內才加入拆解；沒有時改用
+已確認校正的 APU PPT（calibration）。兩者同時存在時把這一筆交給校正比對。
 筆電：sysfs 電池與變壓器為主，UPower 提供系統預估，電源模式服務提供省電狀態。
 sample() 在收集執行緒中呼叫；插拔電源時也會另外觸發。讀取（sysfs、D-Bus、外部命令）
 在鎖外進行，只有更新平均、顯示濾波與 sequence 時持有鎖；sequence 依處理先後遞增，
@@ -13,6 +15,7 @@ from typing import NamedTuple, Optional
 
 from sdm.constants import Battery, Collect, Power
 from sdm.core.battery import combine
+from sdm.core.cpu_power import apu_ppt, ppt_component, rapl_component
 from sdm.core.ema import Ema
 from sdm.core.estimates import SystemTimes
 from sdm.core.history import HistorySample
@@ -53,6 +56,7 @@ class LaptopReadings(NamedTuple):
     profile: Optional[str]
     ups: Optional[UpsReading]
     gpus: tuple
+    cpu: object = None                # 管理員 CPU 功耗取樣的最新讀值（CpuPowerReading）
 
 
 def supply_label(supply):
@@ -69,12 +73,14 @@ class PowerService:
     def __init__(self, read_ups, read_gpus, gpus_pending=lambda: False, processor="",
                  model="", read_uptime=default_uptime, clock=time.monotonic, wall=time.time,
                  interval=Collect.SLOW_INTERVAL, read_batteries=lambda: (),
-                 read_adapters=lambda: (), read_upower=lambda: None, read_profile=lambda: None):
+                 read_adapters=lambda: (), read_upower=lambda: None, read_profile=lambda: None,
+                 read_cpu=lambda: None, calibration=None):
         self.read_ups, self.read_gpus, self.gpus_pending = read_ups, read_gpus, gpus_pending
         self.processor, self.model, self.read_uptime = processor, model, read_uptime
         self.clock, self.wall, self.interval = clock, wall, interval
         self.read_batteries, self.read_adapters = read_batteries, read_adapters
         self.read_upower, self.read_profile = read_upower, read_profile
+        self.read_cpu, self.calibration = read_cpu, calibration
         self.average = Ema()
         self.source = None
         self.tracker = None
@@ -87,9 +93,9 @@ class PowerService:
         if batteries:
             readings = LaptopReadings(batteries, tuple(self.read_adapters()), self.read_upower(),
                                       self.read_profile(), self.read_ups(),
-                                      tuple(self.read_gpus()))
+                                      tuple(self.read_gpus()), self.read_cpu())
         else:
-            readings = (self.read_ups(), tuple(self.read_gpus()))
+            readings = (self.read_ups(), tuple(self.read_gpus()), self.read_cpu())
         with self.lock:
             self.sequence += 1
             if batteries:
@@ -119,18 +125,33 @@ class PowerService:
         return LaptopPower(
             stamp=wall, battery=snapshot, estimates=estimates,
             breakdown=make_breakdown(None, gpu_components(gpus), now, self.interval,
-                                     sampling=self.gpus_pending()),
+                                     sampling=self.gpus_pending(),
+                                     cpu=self.cpu_component(readings.cpu, gpus, now)),
             upower=upower, profile=readings.profile, unplugged_at=self.tracker.unplugged_at,
             plugged_in_at=self.tracker.plugged_in_at, ups=readings.ups,
             gpus=tuple(gpu for gpu in gpus if 0 <= now - gpu.stamp <= limit),
             processor=self.processor, model=self.model, uptime_s=self.read_uptime(),
             sequence=self.sequence)
 
-    def desktop(self, ups, gpus):
+    def cpu_component(self, reading, gpus, now):
+        """新鮮的 RAPL 讀值優先；沒有時才用已確認校正的 PPT（在鎖內呼叫）。"""
+        max_age = self.interval * Power.STALE_FACTOR
+        component = rapl_component(reading, now, max_age)
+        ppt = apu_ppt(gpus, now, max_age)
+        calibration = self.calibration
+        if component is not None:
+            if calibration is not None and ppt is not None:
+                calibration.observe(ppt[0], component.watts)
+            return component
+        watts = calibration.watts(ppt[0]) if calibration is not None and ppt is not None else None
+        return ppt_component(watts, ppt[1]) if watts is not None else None
+
+    def desktop(self, ups, gpus, cpu=None):
         # 讀完才取時間：讀取期間打上的時間戳記不會晚於 now 而被當成未來樣本
         now = self.clock()
         breakdown = make_breakdown(ups.load_w if ups else None, gpu_components(gpus), now,
-                                   self.interval, sampling=self.gpus_pending())
+                                   self.interval, sampling=self.gpus_pending(),
+                                   cpu=self.cpu_component(cpu, gpus, now))
         if breakdown.source != self.source:
             # 整機讀值與已知元件合計不能混在同一個平均裡
             self.average.reset()

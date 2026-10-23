@@ -8,11 +8,13 @@ import gi
 gi.require_version("GUdev", "1.0")
 from gi.repository import Gio, GLib, GUdev
 from sdm import paths
-from sdm.constants import Collect
+from sdm.constants import Collect, CpuPower
 from sdm.core.counters import Counters, CpuCounter
 from sdm.core.devices import battery, normalize_usb, STATES
 from sdm.core.jsonfile import load_json
 from sdm.core.power_breakdown import SAMPLING
+from sdm.core.ppt_calibration import PptCalibration, load_state, save_state
+from sdm.data.cpu_power_client import CpuPowerClient
 from sdm.data.detail import DetailCollector
 from sdm.data.gpu import NvidiaStream, primary_gpu, read_amd_gpus
 from sdm.data.logitech_battery import SolaarBattery, apply_battery
@@ -48,6 +50,13 @@ def usb_parent(path):
         pass
     return None
 
+def calibration_store(persist):
+    """APU PPT 的校正：一般執行讀寫 XDG 狀態目錄的檔案；模擬測試只存在記憶體。"""
+    if not persist:
+        return PptCalibration()
+    path = paths.STATE/CpuPower.CALIBRATION_FILE
+    return PptCalibration(load=lambda: load_state(path), save=lambda value: save_state(path, value))
+
 def cpu_info():
     records = read("/proc/cpuinfo").split("\n\n")
     names, cores, threads = [], set(), 0
@@ -71,7 +80,7 @@ class Collectors:
     # 總覽頁顯示中（由介面設定）：磁碟讀寫、風扇、其他感測器、磁碟與網路卡溫度只有總覽用得到
     overview_visible = True
 
-    def __init__(self):
+    def __init__(self, persist=True):
         self.aliases = load_json(paths.ALIASES)
         self.logitech_battery = SolaarBattery()
         self.cpu_info = cpu_info()
@@ -85,6 +94,8 @@ class Collectors:
         self.disk_meta = []
         self.last_disk_meta = None   # None：還沒列過磁碟，下一次慢速收集立刻執行 lsblk
         self.nvidia = NvidiaStream()  # 由 App 在啟動時 start()、結束時 stop()
+        self.cpu_power = CpuPowerClient()     # 管理員 CPU 功耗取樣；由介面設定位置與啟用
+        self.calibration = calibration_store(persist)
         self.power = self.make_power_service()
         self.smart = SmartSource(bus_getter(self.bus), bus_caller(self.bus))
         self.details = DetailCollector(root=self.root, smart=self.smart,
@@ -160,13 +171,16 @@ class Collectors:
     def make_power_service(self, model=None):
         """各讀取函式都在呼叫時才查模組層級名稱，測試可替換；UPower 只在筆電模式讀取。"""
         nvidia, system = self.nvidia, UpowerSource(bus_getter(self.bus))
+        client = getattr(self, "cpu_power", None)
         return PowerService(
             read_ups=lambda: read_ups(command),
             read_gpus=lambda: tuple(nvidia.latest()) + tuple(read_amd_gpus()),
             gpus_pending=nvidia.pending, processor=self.cpu_info.get("name", ""),
             model=read_model() if model is None else model,
             read_batteries=lambda: read_batteries(), read_adapters=lambda: read_adapters(),
-            read_upower=system.upower, read_profile=system.profile)
+            read_upower=system.upower, read_profile=system.profile,
+            read_cpu=client.latest if client is not None else lambda: None,
+            calibration=getattr(self, "calibration", None))
 
     def power_refresh(self):
         """插拔電源後的重新讀取：只取耗電快照，不重跑溫度與磁碟。"""

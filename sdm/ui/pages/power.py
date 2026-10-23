@@ -18,8 +18,8 @@ from sdm.ui.app_names import AppNames
 from sdm.ui.pages.laptop_power import DetailsView, LaptopPowerView
 from sdm.ui.pages.power_extras import PowerModeCard, RankingCard
 from sdm.ui.power_flow import PowerFlow
-from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, detail_rows,
-                               flow_model, header_text)
+from sdm.ui.power_text import (TONE_CRITICAL, TONE_WARNING, breakdown_rows, cpu_watts,
+                               detail_rows, flow_model, header_text)
 from sdm.ui.widgets import box, clear, label
 
 TONE_CLASSES = {TONE_WARNING: "power-warning", TONE_CRITICAL: "power-critical"}
@@ -70,7 +70,7 @@ class PowerPage(Gtk.Box):
         # 兩種版面的顯示與隱藏由這裡控制：之後視窗的 show_all() 不會把隱藏的版面又顯示出來
         self.desktop.show_all()
         self.desktop.set_no_show_all(True)
-        self.ranking = RankingCard(names or AppNames())
+        self.ranking = RankingCard(names or AppNames(), cpu_watts=lambda: cpu_watts(self.power))
         self.pack_end(self.ranking.container, False, False, 0)
         self.modes = PowerModeCard(switch_profile)
         self.pack_end(self.modes.container, False, False, 0)

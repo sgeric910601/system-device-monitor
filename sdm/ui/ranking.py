@@ -2,7 +2,8 @@
 
 - 有 CPU 功耗時：各 App 的估算瓦數＝CPU 功耗 × 該 App 佔所有 App CPU 時間的比例，
   註明「依 CPU 佔比估算」。
-- 沒有 CPU 功耗時（目前一律如此，之後的版本才有管理員 CPU 取樣）：依 CPU 使用率排序並註明原因。
+- 沒有 CPU 功耗時（沒有開啟管理員 CPU 功耗取樣，也沒有已確認校正的 APU PPT）：
+  依 CPU 使用率排序並註明原因。
 只在「電源」頁顯示時取樣（sdm.core.tiers）。
 """
 from sdm.core.apps import rank

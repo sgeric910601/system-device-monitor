@@ -13,6 +13,7 @@ import time
 
 from sdm.constants import History, Preview
 from sdm.core.battery import combine
+from sdm.core.cpu_power import CpuPowerReading
 from sdm.core.history import HistorySample
 from sdm.core.settings import LEGACY_DEFAULTS, Preferences, Settings
 from sdm.data.collectors import GPU_UNAVAILABLE, Collectors
@@ -38,6 +39,7 @@ BEFORE_FINAL_SECONDS = 3600              # 最後一段之前一小時的接電�
 PLUGGED_HOURS = ((0, 8), (12, 13), (18, 24))   # 每天接電的時段（本機時間）
 BUSY_HOURS = (9, 18)                     # 桌機示範：上班時段耗電較高
 DEMO_PROCESSOR = "示範處理器"
+DEMO_CPU_W, DEMO_CORE_W = 48.6, 31.2         # 桌機示範的 CPU 插槽與核心功耗
 DEMO_MODEL = "示範機型"
 DEMO_UPTIME_SECONDS = (3 * 24 + 4) * 3600   # 示範的開機時間：3 天 4 小時
 GIB = 1024 ** 3
@@ -97,12 +99,17 @@ def demo_gpus():
                        watts=61.5, stamp=time.monotonic()),)
 
 
+def demo_cpu():
+    """桌機示範：管理員 CPU 功耗取樣已開啟時的讀值。"""
+    return CpuPowerReading(DEMO_CPU_W, DEMO_CORE_W, time.monotonic())
+
+
 def power_service(scenario):
     """示範用的電源服務：所有讀取函式都回傳固定的示範值。"""
     if check(scenario) == DESKTOP:
         return PowerService(read_ups=lambda: DEMO_UPS, read_gpus=demo_gpus,
                             processor=DEMO_PROCESSOR, model=DEMO_MODEL,
-                            read_uptime=lambda: DEMO_UPTIME_SECONDS)
+                            read_uptime=lambda: DEMO_UPTIME_SECONDS, read_cpu=demo_cpu)
     battery, adapters, upower, profile = LAPTOPS[scenario][:4]
     return PowerService(read_ups=lambda: None, read_gpus=lambda: (), processor=DEMO_PROCESSOR,
                         model=DEMO_MODEL, read_uptime=lambda: DEMO_UPTIME_SECONDS,

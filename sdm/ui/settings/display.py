@@ -21,7 +21,7 @@ LAPTOP_FLOW = "筆電的電力流向只有變壓器、系統與電池三個節�
 def flow_note(hidden, parent, child_titles):
     if parent.id in hidden:
         return f"隱藏{parent.title}後不會顯示{'與'.join(child_titles)}。"
-    return "讀不到的項目會自動隱藏；處理器功耗要等之後的版本才有。"
+    return "讀不到的項目會自動隱藏；處理器功耗需要在「管理員功能」開啟 CPU 功耗取樣。"
 
 
 def flow_card(controls):

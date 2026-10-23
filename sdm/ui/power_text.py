@@ -15,6 +15,8 @@ TONE_NORMAL = "normal"
 TONE_WARNING = "warning"
 TONE_CRITICAL = "critical"
 UPS_NOTE = "不斷電系統輸出（含螢幕等所有插在上面的設備）"
+CHILD_INDENT = "　"             # 下一層細項（例如 CPU 的核心）在清單中縮排一個全形空格
+CPU_ID = "cpu"
 MINUTES_PER_DAY = 24 * 60
 
 
@@ -99,19 +101,30 @@ def menu_line(power):
     return text + f"（3 分鐘平均 {watts_short(power.average_w)}）"
 
 
+def share_text(watts, system):
+    return f"{watts / system * 100:.0f}%" if system and watts is not None else ""
+
+
 def breakdown_rows(breakdown, hidden=()):
     """（id、名稱、瓦數、占整機比例）；只有整機讀值來自不斷電系統時才顯示比例。
-    hidden 為使用者隱藏的電力流向細項。"""
+    下一層細項緊接在上層之後、名稱縮排；hidden 為使用者隱藏的電力流向細項（上層隱藏時
+    下一層一起隱藏）。"""
     system = breakdown.system_w if breakdown.source == SOURCE_UPS else None
     rows = []
     for item in breakdown.items:
         if hidden and flow_hidden(item.id, hidden):
             continue
-        share = ""
-        if system and item.watts is not None:
-            share = f"{item.watts / system * 100:.0f}%"
-        rows.append((item.id, item.label, watts_text(item.watts), share))
+        for row in (item,) + tuple(item.children):
+            label = row.label if row is item else CHILD_INDENT + row.label
+            rows.append((row.id, label, watts_text(row.watts), share_text(row.watts, system)))
     return tuple(rows)
+
+
+def cpu_watts(power):
+    """拆解中 CPU 的瓦數（耗電排行依 CPU 佔比估算用）；沒有時為 None。"""
+    breakdown = getattr(power, "breakdown", None)
+    items = breakdown.items if breakdown is not None else ()
+    return next((item.watts for item in items if item.id == CPU_ID), None)
 
 
 def flow_model(power, hidden=()) -> Optional[FlowModel]:

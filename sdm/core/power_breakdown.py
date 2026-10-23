@@ -1,7 +1,8 @@
 """Linux 桌機的電力拆解：整機耗電減去已知元件，差值歸為「其他」。
 
 整機耗電來自不斷電系統輸出（含螢幕等所有插在上面的設備）；沒有不斷電系統時，
-只能把已知元件相加。CPU 欄位先保留，第 6 階段才有可信的 CPU 功耗。
+只能把已知元件相加。CPU 只在管理員 CPU 功耗取樣開啟（或 APU 的 PPT 校正確認過）時才有，
+由 make_breakdown 的 cpu 參數傳入；它的下一層（核心、插槽其餘）只供清單顯示，不計入合計。
 狀態名稱沿用參考專案 PowerBreakdown（available／sampling／incomplete／
 inconsistent／stale），但判斷規則與訊息依 Linux 的資料來源改寫：沒有取樣窗對齊的概念，
 上下限不同，缺少的元件一律算進「其他」並標為資料不完整。
@@ -39,18 +40,21 @@ MESSAGE_NONE = "無法取得整機耗電與元件功耗"
 
 
 class Component(NamedTuple):
-    """一個已知元件的讀值；stamp 為單調時鐘秒數，watts 讀不到時為 None。"""
+    """一個已知元件的讀值；stamp 為單調時鐘秒數，watts 讀不到時為 None。
+    children 為（id、名稱、瓦數）的下一層細項，只供清單顯示。"""
     id: str
     label: str
     watts: Optional[float]
     stamp: float
+    children: tuple = ()
 
 
 class Item(NamedTuple):
-    """拆解結果中的一列：（id、名稱、瓦數）。"""
+    """拆解結果中的一列：（id、名稱、瓦數）；children 為下一層的 Item（不計入合計）。"""
     id: str
     label: str
     watts: Optional[float]
+    children: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -84,14 +88,19 @@ def make_breakdown(system_w, components=(), now=0.0, interval=Collect.SLOW_INTER
     source = SOURCE_UPS if system is not None else SOURCE_NONE
     if any(is_stale(component, now, interval) for component in parts):
         return Breakdown(system, source, (), None, STALE, MESSAGES[STALE])
-    items = tuple(Item(component.id, component.label,
-                       valid_watts(component.watts, Power.COMPONENT_MAX_W))
-                  for component in parts)
+    items = tuple(item_of(component) for component in parts)
     if sampling:
         return Breakdown(system, source, items, None, SAMPLING, MESSAGES[SAMPLING])
     if system is None:
         return components_only(items)
     return with_system(system, items)
+
+
+def item_of(component):
+    children = tuple(Item(child_id, label, valid_watts(watts, Power.COMPONENT_MAX_W))
+                     for child_id, label, watts in component.children)
+    return Item(component.id, component.label,
+                valid_watts(component.watts, Power.COMPONENT_MAX_W), children)
 
 
 def components_only(items):

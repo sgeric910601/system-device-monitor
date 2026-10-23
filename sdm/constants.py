@@ -101,6 +101,12 @@ class CpuPower:
     MAX_REPLY_BYTES = 256
     BACKOFF_INITIAL = 1         # 客戶端失敗後重試的等待（秒），每次加倍
     BACKOFF_MAX = 60
+    PPT_SCALE = 1000            # AMD APU 的 PPT 原始值 ÷ 1000 ＝ 瓦（需要校正確認）
+    CALIBRATION_SAMPLES = 30    # 每 30 筆同時有 RAPL 與 PPT 的取樣判斷一次
+    CALIBRATION_TOLERANCE = 0.25    # 比例中位數在 ±25% 內才確認
+    CALIBRATION_MIN_W = 1.0     # RAPL 低於 1 W 時不比對（比例不穩定）
+    CALIBRATION_MAX_W = 1000    # 與 Power.COMPONENT_MAX_W 相同（不含）
+    CALIBRATION_FILE = "cpu-calibration.json"   # XDG 狀態目錄
 
 
 class Supply:

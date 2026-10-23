@@ -123,7 +123,8 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         if not (self.smoke or self.preview):
             initialize_preferences()
             self.store.autostart = paths.AUTOSTART.exists()   # 首次啟動時剛建立
-        self.collector = demo.PreviewCollectors(self.preview) if self.preview else Collectors()
+        self.collector = (demo.PreviewCollectors(self.preview) if self.preview
+                          else Collectors(persist=not self.smoke))
         # 先換成目前設定的間隔再啟動 nvidia-smi，啟動後不必馬上重新啟動
         self.collector.nvidia.set_interval_ms(cadence_for(self.preferences, None).nvidia_ms)
         self.collector.nvidia.start()
