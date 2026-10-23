@@ -69,6 +69,29 @@ class Power:
     COMPONENT_MAX_W = 1000      # 單一元件合理上限（不含）
 
 
+class CpuPower:
+    """選用的管理員 CPU 功耗取樣（RAPL）：元件位置、socket 與通訊協定。
+
+    helper/ 底下的小程式以 root 執行、不載入本套件，所以各自保留同樣的值；
+    tests/test_system_units 等測試確認兩邊一致。
+    """
+    PROTOCOL = 1
+    EXIT_CODES = (0, 2, 3, 4)   # 成功、參數錯誤、執行失敗、沒有權限
+    DEB_HELPER_DIR = "/usr/libexec/system-device-monitor"
+    LOCAL_HELPER_DIR = "/usr/local/libexec/system-device-monitor"
+    DEB_SERVICE_HELPER = DEB_HELPER_DIR + "/sdm-cpu-power-service"
+    LOCAL_SERVICE_HELPER = LOCAL_HELPER_DIR + "/sdm-cpu-power-service"
+    DEB_SOCKET = "/run/system-device-monitor/cpu-power.sock"
+    LOCAL_SOCKET = "/run/system-device-monitor/cpu-power-local.sock"
+    REQUEST = b"r\n"
+    MIN_SPACING = 1.0           # 服務端兩次計算至少相隔 1 秒（秒）
+    MAX_WINDOW = 30.0           # 兩次計算最多相隔 30 秒，超過就重新建立基準
+    MAX_CLIENTS = 8
+    IDLE_EXIT = 30.0            # 服務沒有連線多久後結束（秒）
+    CLIENT_IDLE = 30.0          # 連線多久沒有請求就被關閉（秒）
+    WATTS_DIGITS = 1            # 回傳的瓦數四捨五入到 0.1 W
+
+
 class Supply:
     """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
     TYPE_BATTERY = "Battery"

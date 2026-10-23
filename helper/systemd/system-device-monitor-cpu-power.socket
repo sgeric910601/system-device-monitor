@@ -1,0 +1,16 @@
+# 系統與裝置監看：CPU 功耗取樣的 socket。安裝後預設不啟用。
+# 使用者在設定裡開啟「CPU 功耗取樣」並通過管理員授權後，sdm-cpu-power enable 才會
+# 寫入 drop-in（SocketUser＝該使用者）並啟用這個 socket；只有該使用者（與 root）能連線。
+[Unit]
+Description=System Device Monitor CPU power sampling socket
+
+[Socket]
+ListenStream=/run/system-device-monitor/cpu-power.sock
+SocketMode=0600
+DirectoryMode=0755
+RemoveOnStop=yes
+Accept=no
+Service=system-device-monitor-cpu-power.service
+
+[Install]
+WantedBy=sockets.target

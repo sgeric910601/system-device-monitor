@@ -1,0 +1,35 @@
+# 系統與裝置監看：CPU 功耗取樣服務，只由同名的 socket 啟動（沒有 [Install]）。
+# 以 root 啟動但只保留三種能力：開好 RAPL 計數器後立即切換到 nobody，所有能力隨之消失。
+# 沒有網路、看不到其他程序與家目錄，整個檔案系統唯讀。
+[Unit]
+Description=System Device Monitor CPU power sampler
+Requires=system-device-monitor-cpu-power.socket
+After=system-device-monitor-cpu-power.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/system-device-monitor/sdm-cpu-power-service
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=64M
+TasksMax=4
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+UMask=0077

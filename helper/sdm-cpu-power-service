@@ -1,0 +1,467 @@
+#!/usr/bin/python3 -IB
+"""系統與裝置監看：CPU 功耗取樣服務（由 systemd socket 啟動，Accept=no）。
+
+以 root 啟動，systemd 只留下 CAP_DAC_READ_SEARCH、CAP_SETUID、CAP_SETGID 三種能力：
+1. 確認 systemd 交來的監聽 socket（LISTEN_FDS=1、LISTEN_PID＝自己、fd 3 是正在監聽的
+   AF_UNIX 串流 socket），並記下 socket 檔的擁有者（drop-in 的 SocketUser）。
+2. 以唯讀開啟 RAPL 的 package 與 core 能量計數器（energy_uj），並讀一次計數上限
+   （max_energy_range_uj）。
+3. 立即放棄權限：setgroups([])、setresgid／setresuid 到 nobody（65534），所有能力隨之消失；
+   確認無法再切回 root、有效能力為 0，否則結束。之後只對已開啟的描述子做 pread()。
+4. 服務客戶端：只接受 socket 擁有者（或 root）；每個請求是一行「r」，回一行 JSON
+   {"v":1,"status":"ok|sampling|error","package_w":x,"core_w":y,"interval_s":s}。
+   每個連線有自己的基準；距離上次計算不到 1 秒時回傳上次的結果；數值四捨五入到 0.1 W。
+   其他任何輸入立即斷線；最多 8 個連線；30 秒沒有請求的連線會被關閉；
+   沒有任何連線 30 秒後結束（下次連線時 systemd 再啟動）。
+只使用標準函式庫；不執行外部程式，不寫入任何檔案。
+"""
+import json
+import math
+import os
+import selectors
+import socket
+import stat
+import struct
+import sys
+import syslog
+import time
+from typing import NamedTuple, Optional
+
+PROTOCOL = 1
+EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
+POWERCAP = "/sys/class/powercap"
+PACKAGE_ZONE = "intel-rapl:0"           # 第一個處理器插槽
+PACKAGE_NAME = "package-0"
+CORE_NAME = "core"
+LISTEN_FD = 3                           # sd_listen_fds 的第一個描述子
+LISTEN_VARIABLES = ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES")
+NOBODY = 65534                          # nobody／nogroup
+PROC_STATUS = "/proc/self/status"
+MICROJOULES = 1_000_000
+MAX_WATTS = 1000                        # 與 sdm.constants.Power.COMPONENT_MAX_W 相同（不含）
+MAX_WINDOW_S = 30.0                     # 兩次計算最多相隔 30 秒（計數器最多只可能繞回一次）
+MIN_SPACING_S = 1.0                     # 兩次計算至少相隔 1 秒，期間回傳上次的結果
+MAX_CLIENTS = 8
+IDLE_EXIT_S = 30.0                      # 沒有任何連線多久後結束
+CLIENT_IDLE_S = 30.0                    # 連線多久沒有請求就關閉
+WATTS_DIGITS = 1
+INTERVAL_DIGITS = 2
+COUNTER_BYTES = 32
+COUNTER_MAX_DIGITS = 20
+RECV_BYTES = 64
+REQUEST = b"r\n"
+COMPLETE, INCOMPLETE, INVALID = "complete", "incomplete", "invalid"
+STATUS_OK, STATUS_SAMPLING, STATUS_ERROR = "ok", "sampling", "error"
+PEERCRED = struct.Struct("iII")         # struct ucred：pid、uid、gid
+LOG_IDENT = "sdm-cpu-power-service"
+
+
+class Failure(Exception):
+    """無法安全地啟動或繼續服務；訊息只含固定的英文代號。"""
+
+
+class Channel(NamedTuple):
+    fd: int                             # energy_uj 的唯讀描述子
+    max_range: Optional[int]            # 計數上限（微焦耳）；讀不到時不處理繞回
+
+
+class Ranges(NamedTuple):
+    package: Optional[int]
+    core: Optional[int]
+
+
+class Sample(NamedTuple):
+    stamp: float                        # 單調時鐘秒數
+    package: Optional[int]              # 微焦耳
+    core: Optional[int]
+
+
+class Limits(NamedTuple):
+    clients: int = MAX_CLIENTS
+    idle_exit: float = IDLE_EXIT_S
+    client_idle: float = CLIENT_IDLE_S
+    min_spacing: float = MIN_SPACING_S
+
+
+def log(message):
+    syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_DAEMON)
+    syslog.syslog(syslog.LOG_INFO, message)
+
+
+# ── 能量計數器 ──────────────────────────────────────────────
+
+def parse_counter(data):
+    """energy_uj 的內容：只接受十進位非負整數。"""
+    text = data.strip()
+    if not text or len(text) > COUNTER_MAX_DIGITS or not text.isdigit():
+        return None
+    return int(text)
+
+
+def read_counter(fd):
+    try:
+        return parse_counter(os.pread(fd, COUNTER_BYTES, 0))
+    except OSError:
+        return None
+
+
+def read_small(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(COUNTER_BYTES)
+    except OSError:
+        return b""
+
+
+def zone_name(path):
+    return read_small(os.path.join(path, "name")).strip().decode("ascii", "replace")
+
+
+def core_zone(base):
+    """package 底下名稱為 core 的子區域；不存在或不只一個時為 None（不猜）。"""
+    prefix = PACKAGE_ZONE + ":"
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return None
+    matches = [os.path.join(base, entry) for entry in sorted(entries)
+               if entry.startswith(prefix) and entry[len(prefix):].isdigit()
+               and zone_name(os.path.join(base, entry)) == CORE_NAME]
+    return matches[0] if len(matches) == 1 else None
+
+
+def open_channel(zone):
+    if zone is None:
+        return None
+    try:
+        fd = os.open(os.path.join(zone, "energy_uj"),
+                     os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    return Channel(fd, parse_counter(read_small(os.path.join(zone, "max_energy_range_uj"))))
+
+
+def open_channels(base=POWERCAP):
+    """（package、core）；package 不存在或名稱不符時兩者都不開。"""
+    package_zone = os.path.join(base, PACKAGE_ZONE)
+    if zone_name(package_zone) != PACKAGE_NAME:
+        return None, None
+    package = open_channel(package_zone)
+    if package is None:
+        return None, None
+    return package, open_channel(core_zone(base))
+
+
+class Sampler:
+    """讀取已開啟的計數器（放棄權限之後仍可 pread）。"""
+
+    def __init__(self, channels, clock=time.monotonic):
+        self.package, self.core = channels
+        self.clock = clock
+
+    def __call__(self):
+        stamp = self.clock()
+        return Sample(stamp, read_counter(self.package.fd) if self.package else None,
+                      read_counter(self.core.fd) if self.core else None)
+
+
+# ── 能量差與瓦數 ────────────────────────────────────────────
+
+def energy_delta(prior, current, max_range):
+    """兩次讀值的能量差（微焦耳）；計數器變小時只在知道上限時視為繞回一次。"""
+    if prior is None or current is None:
+        return None
+    if current >= prior:
+        return current - prior
+    if max_range is None or max_range <= prior:
+        return None
+    return max_range - prior + current
+
+
+def to_watts(delta, elapsed):
+    if delta is None:
+        return None
+    value = delta / MICROJOULES / elapsed
+    if not math.isfinite(value) or not 0 <= value < MAX_WATTS:
+        return None
+    return round(value, WATTS_DIGITS)
+
+
+def measure(previous, current, ranges):
+    """（package W、core W、間隔秒數）；無法得到可信的 package 瓦數時為 None。"""
+    elapsed = current.stamp - previous.stamp
+    if not 0 < elapsed <= MAX_WINDOW_S:
+        return None
+    package = to_watts(energy_delta(previous.package, current.package, ranges.package), elapsed)
+    if package is None:
+        return None
+    core = to_watts(energy_delta(previous.core, current.core, ranges.core), elapsed)
+    if core is not None and core > package:
+        core = None
+    return package, core, round(elapsed, INTERVAL_DIGITS)
+
+
+def reply(status, package_w=None, core_w=None, interval_s=None):
+    body = {"v": PROTOCOL, "status": status, "package_w": package_w, "core_w": core_w,
+            "interval_s": interval_s}
+    return (json.dumps(body, separators=(",", ":")) + "\n").encode("ascii")
+
+
+class Client:
+    """一個連線：自己的基準、上次的回應與最後一次請求的時間。"""
+
+    def __init__(self, sock, now):
+        self.sock, self.buffer, self.last_seen = sock, b"", now
+        self.baseline, self.cached = None, None
+
+
+def respond(client, now, take, ranges, min_spacing=MIN_SPACING_S):
+    """回應一個請求；距離上次計算不到 min_spacing 秒時回傳上次的結果。"""
+    baseline = client.baseline
+    if baseline is not None and client.cached is not None and now - baseline.stamp < min_spacing:
+        return client.cached
+    current = take()
+    if current.package is None:
+        client.baseline, client.cached = None, reply(STATUS_ERROR)
+        return client.cached
+    client.baseline = current
+    result = None if baseline is None else measure(baseline, current, ranges)
+    client.cached = reply(STATUS_SAMPLING) if result is None else reply(STATUS_OK, *result)
+    return client.cached
+
+
+def parse_request(buffer):
+    """請求只有「r\\n」一種；之前的部分可以分段到達，其他一律無效。"""
+    if buffer == REQUEST:
+        return COMPLETE
+    if REQUEST.startswith(buffer):
+        return INCOMPLETE
+    return INVALID
+
+
+# ── 服務迴圈 ────────────────────────────────────────────────
+
+def peer_uid(sock):
+    return PEERCRED.unpack(sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                           PEERCRED.size))[1]
+
+
+class Server:
+    def __init__(self, listener, take, ranges, owner, limits=Limits(), clock=time.monotonic,
+                 peer=peer_uid):
+        self.listener, self.take, self.ranges, self.owner = listener, take, ranges, owner
+        self.limits, self.clock, self.peer = limits, clock, peer
+        self.selector = selectors.DefaultSelector()
+        self.clients = []
+        self.idle_since = clock()
+
+    def run(self):
+        """服務到沒有任何連線超過 idle_exit 秒為止；回傳結束碼。"""
+        self.listener.setblocking(False)
+        self.selector.register(self.listener, selectors.EVENT_READ, None)
+        while True:
+            now = self.clock()
+            if not self.clients and now - self.idle_since >= self.limits.idle_exit:
+                return EXIT_OK
+            for key, _ in self.selector.select(self.timeout(now)):
+                if key.data is None:
+                    self.accept()
+                else:
+                    self.handle(key.data)
+            self.expire(self.clock())
+
+    def timeout(self, now):
+        if not self.clients:
+            return max(0.0, self.idle_since + self.limits.idle_exit - now)
+        oldest = min(client.last_seen for client in self.clients)
+        return max(0.0, oldest + self.limits.client_idle - now)
+
+    def allowed(self, sock):
+        try:
+            uid = self.peer(sock)
+        except OSError:
+            return False
+        return self.owner is not None and uid in (self.owner, 0)
+
+    def accept(self):
+        try:
+            sock, _ = self.listener.accept()
+        except OSError:
+            return
+        if len(self.clients) >= self.limits.clients or not self.allowed(sock):
+            sock.close()
+            return
+        sock.setblocking(False)
+        client = Client(sock, self.clock())
+        self.clients.append(client)
+        self.selector.register(sock, selectors.EVENT_READ, client)
+
+    def handle(self, client):
+        try:
+            data = client.sock.recv(RECV_BYTES)
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError:
+            data = b""
+        state = parse_request(client.buffer + data) if data else INVALID
+        if state == INVALID:
+            self.drop(client)
+            return
+        client.buffer += data
+        if state == INCOMPLETE:
+            return
+        client.buffer, client.last_seen = b"", self.clock()
+        payload = respond(client, client.last_seen, self.take, self.ranges,
+                          self.limits.min_spacing)
+        try:
+            sent = client.sock.send(payload)
+        except OSError:
+            sent = 0
+        if sent != len(payload):
+            self.drop(client)
+
+    def expire(self, now):
+        for client in [c for c in self.clients if now - c.last_seen >= self.limits.client_idle]:
+            self.drop(client)
+
+    def drop(self, client):
+        self.selector.unregister(client.sock)
+        client.sock.close()
+        self.clients.remove(client)
+        if not self.clients:
+            self.idle_since = self.clock()
+
+    def close(self):
+        for client in list(self.clients):
+            self.drop(client)
+        self.selector.close()
+        self.listener.close()
+
+
+# ── 啟動：socket、計數器與放棄權限 ─────────────────────────────
+
+def inherited_listener(env, pid, fd=LISTEN_FD):
+    """systemd 交來的監聽 socket；成功時清除 LISTEN_* 環境變數。"""
+    if env.get("LISTEN_PID") != str(pid) or env.get("LISTEN_FDS") != "1":
+        raise Failure("no-socket")
+    try:
+        if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+            raise Failure("not-a-socket")
+        sock = socket.socket(fileno=fd)
+    except OSError:
+        raise Failure("not-a-socket") from None
+    try:
+        listening = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
+    except OSError:
+        listening = 0
+    if sock.family != socket.AF_UNIX or sock.type != socket.SOCK_STREAM or not listening:
+        sock.detach()
+        raise Failure("wrong-socket")
+    os.set_inheritable(sock.fileno(), False)
+    for name in LISTEN_VARIABLES:
+        env.pop(name, None)
+    return sock
+
+
+def socket_owner(listener):
+    """監聽 socket 檔的擁有者 uid（drop-in 的 SocketUser）；不是檔案系統 socket 時為 None。"""
+    name = listener.getsockname()
+    if not isinstance(name, str) or not name.startswith("/"):
+        return None
+    try:
+        return os.stat(name).st_uid
+    except OSError:
+        return None
+
+
+def capabilities(status_text):
+    """/proc/self/status 的 CapPrm 與 CapEff 合併；格式不符時為 None。"""
+    values = {}
+    for line in status_text.splitlines():
+        key, _, value = line.partition(":")
+        if key in ("CapPrm", "CapEff"):
+            try:
+                values[key] = int(value.strip(), 16)
+            except ValueError:
+                return None
+    if set(values) != {"CapPrm", "CapEff"}:
+        return None
+    return values["CapPrm"] | values["CapEff"]
+
+
+def read_proc_status():
+    with open(PROC_STATUS, encoding="ascii", errors="replace") as handle:
+        return handle.read()
+
+
+def drop_privileges(system=os, read_status=read_proc_status, uid=NOBODY, gid=NOBODY):
+    """切換到 nobody 並確認所有能力都已消失；任何一項不符都拋出 Failure。"""
+    system.setgroups([])
+    system.setresgid(gid, gid, gid)
+    system.setresuid(uid, uid, uid)
+    if tuple(system.getresuid()) != (uid,) * 3 or tuple(system.getresgid()) != (gid,) * 3 \
+            or list(system.getgroups()):
+        raise Failure("drop")
+    try:
+        system.setuid(0)
+    except PermissionError:
+        pass
+    else:
+        raise Failure("regained")
+    try:
+        remaining = capabilities(read_status())
+    except OSError:
+        remaining = None
+    if remaining != 0:
+        raise Failure("capabilities")
+
+
+def prepare(env, pid, base, drop, fd=LISTEN_FD):
+    """確認 socket、開好計數器，再放棄權限；失敗時關閉所有已開啟的描述子。"""
+    listener = inherited_listener(env, pid, fd)
+    channels = (None, None)
+    try:
+        owner = socket_owner(listener)
+        channels = open_channels(base)
+        drop()
+    except BaseException:
+        listener.close()
+        for channel in channels:
+            if channel is not None:
+                os.close(channel.fd)
+        raise
+    ranges = Ranges(*(channel.max_range if channel else None for channel in channels))
+    return Server(listener, Sampler(channels), ranges, owner)
+
+
+def start(env, pid=None):
+    """實際啟動：systemd 的環境、/sys/class/powercap 與真正的放棄權限。"""
+    server = prepare(env, os.getpid() if pid is None else pid, POWERCAP, drop_privileges)
+    log("started" if server.take().package is not None else "started without rapl")
+    code = server.run()
+    log("idle exit")
+    return code
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def main(argv, env, geteuid=os.geteuid, start=start, emit=emit_json, report=log):
+    if argv:
+        emit({"ok": False, "error": "usage"})
+        return EXIT_USAGE
+    if geteuid() != 0:
+        emit({"ok": False, "error": "not-permitted"})
+        return EXIT_NOT_PERMITTED
+    try:
+        return start(env)
+    except (Failure, OSError) as error:
+        report("failed: " + (str(error) if isinstance(error, Failure) else type(error).__name__))
+        emit({"ok": False, "error": "failed"})
+        return EXIT_FAILED
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:], os.environ))
