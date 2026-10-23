@@ -6,10 +6,11 @@ import unittest
 
 from sdm.core.peripheral_alerts import (BELL_CHOICES, DEFAULT_THRESHOLD, THRESHOLD_CHOICES,
                                         PeripheralAlertState, PeripheralReading, bell_icon,
-                                        bell_tooltip, evaluate_peripherals, migrated, new_salt,
+                                        bell_tooltip, evaluate_peripherals, fitted, migrated,
+                                        new_salt,
                                         peripheral_key, peripheral_readings, present_keys,
                                         storage_key, threshold_changes, threshold_for, with_all)
-from sdm.core.preference_specs import PERIPHERAL_LEVELS
+from sdm.core.preference_specs import MAX_ITEMS, PERIPHERAL_LEVELS
 from sdm.core.settings import Preferences
 
 MOUSE, PODS = peripheral_key("mouse"), peripheral_key("pods")
@@ -238,6 +239,31 @@ class Settings(unittest.TestCase):
                          {storage_key(SALT, "old"): 30, storage_key(SALT, "k"): 0,
                           storage_key(SALT, "m"): 0})
         self.assertEqual(with_all({storage_key(SALT, "m"): 0}, SALT, ("m",), 20), {})
+
+    def test_map_within_the_limit_is_untouched(self):
+        start = {f"{index:016x}": 10 for index in range(MAX_ITEMS)}
+        self.assertEqual(fitted(start, set(), set()), start)
+
+    def test_full_map_drops_unlisted_devices_first_then_the_oldest(self):
+        start = {f"{index:016x}": 10 for index in range(MAX_ITEMS + 3)}
+        keys = list(start)
+        known = set(keys[:2])                         # 最舊的兩台還連著
+        result = fitted(start, {keys[-1]}, known)
+        self.assertEqual(len(result), MAX_ITEMS)
+        self.assertEqual(set(start) - set(result), set(keys[2:5]))
+        everything_known = fitted(start, {keys[0]}, set(keys))
+        self.assertEqual(set(start) - set(everything_known), set(keys[1:4]))
+
+    def test_new_device_fits_into_a_full_map(self):
+        full = {f"{index:016x}": 10 for index in range(MAX_ITEMS)}
+        prefs = Preferences.defaults().with_changes(peripheral_thresholds=full,
+                                                    peripheral_key_salt=SALT)
+        changes = threshold_changes(prefs, ("new",), 30, known_ids=())
+        result = changes["peripheral_thresholds"]
+        self.assertEqual(len(result), MAX_ITEMS)
+        self.assertEqual(result[storage_key(SALT, "new")], 30)
+        self.assertNotIn(f"{0:016x}", result)
+        prefs.with_changes(**changes)
 
     def test_invalid_value_is_rejected(self):
         with self.assertRaises(ValueError):

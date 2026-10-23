@@ -6,6 +6,7 @@ from sdm.core.peripheral_alerts import PeripheralReading, peripheral_key, storag
 from sdm.core.preference_specs import PREFERENCE_SPECS
 from sdm.core.settings import LEGACY_DEFAULTS, Preferences, PreferencesReadOnlyError
 from sdm.data.ups import UpsReading
+from sdm.services import peripheral_settings
 from sdm.services.peripheral_settings import PeripheralSettings
 from sdm.services.settings_store import STATUS, SettingsStore
 from sdm.ui import app as ui_app
@@ -107,10 +108,25 @@ class PeripheralWrites(unittest.TestCase):
         self.assertEqual(self.thresholds(), {storage_key(SALT, "m"): 0,
                                              storage_key(SALT, "k"): 30})
 
-    def test_read_only_preferences_are_rejected(self):
+    def test_read_only_preferences_are_rejected_with_a_message(self):
         settings = self.make(Preferences.defaults(read_only=True))
+        heard = []
+        settings.subscribe(lambda: heard.append(settings.problem))
+        self.assertFalse(settings.choose(("m",), 0))
         self.assertFalse(settings.choose(("m",), 0))
         self.assertEqual(self.thresholds(), {})
+        self.assertIn("設定檔目前無法寫入", settings.problem)
+        self.assertEqual(len(heard), 2)                  # 每次被拒絕都通知（選項要恢復）
+
+    def test_message_clears_after_a_successful_write(self):
+        settings = self.make()
+        heard = []
+        settings.subscribe(lambda: heard.append(settings.problem))
+        settings.problem = peripheral_settings.REJECTED
+        self.assertTrue(settings.choose(("m",), 0))
+        self.assertEqual((settings.problem, heard), (None, [None]))
+        self.assertTrue(settings.choose(("m",), 10))
+        self.assertEqual(heard, [None])
 
     def test_set_all_shows_the_shared_value_or_nothing(self):
         settings = self.make()
@@ -157,6 +173,7 @@ def monitor(preferences=None):
     app.render_indicator = lambda: None
     app.store.subscribe(app.settings_changed)
     app.peripheral_settings = PeripheralSettings(app.store, make_salt=lambda: SALT)
+    app.peripheral_settings.subscribe(app.peripheral_problem_changed)
     return app
 
 
@@ -175,6 +192,14 @@ class Wiring(unittest.TestCase):
         self.assertEqual(app.devices_page.calls, ["thresholds_changed"])
         with self.assertLogs("sdm.services.peripheral_settings", level="WARNING"):
             app.set_peripheral_threshold("power:/mouse", 25)
+
+    def test_rejected_write_is_shown_in_the_settings_and_on_the_bells(self):
+        app = monitor(Preferences.defaults(read_only=True))
+        with self.assertLogs("sdm.services.peripheral_settings", level="WARNING"):
+            app.set_peripheral_threshold("power:/mouse", 30)
+        self.assertIn("peripheral_problem_changed", app.settings_window.calls)
+        self.assertIn("thresholds_changed", app.devices_page.calls)
+        self.assertIn("無法儲存", app.peripheral_problem())
 
     def test_status_change_redraws_the_bells(self):
         app = monitor()

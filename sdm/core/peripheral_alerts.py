@@ -10,7 +10,8 @@
   salt 是每次安裝隨機產生的 32 個十六進位字元（peripheral_key_salt），第一次設定門檻時才產生，
   所以檔案裡不出現藍牙位址或裝置路徑，別台電腦也無法用已知位址比對出鍵。
   第一版沒有 salt 的鍵（SHA-256 前 16 碼）在產生 salt 時，對目前看得到的設備換成新鍵，其餘丟掉。
-  設為預設的 20% 時移除該項，對照表不會一直變大。
+  設為預設的 20% 時移除該項；寫入後超過 64 項時，先丟不在目前（或上一份完整）設備清單中的設備
+  （最舊的先），還不夠再丟最舊的，這次設定的設備一定保留。
 - 記憶體中的通知狀態與頻率限制另用識別碼的 SHA-256（peripheral_key），不寫入任何檔案。
 """
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from typing import Optional
 from sdm.constants import Alerts
 from sdm.core import alert_messages as messages
 from sdm.core.devices import LOW_LEVELS, battery_level, icon_for, reports_charge
-from sdm.core.preference_specs import PERIPHERAL_LEVELS
+from sdm.core.preference_specs import MAX_ITEMS, PERIPHERAL_LEVELS
 SALT_BYTES = 16
 
 DEFAULT_THRESHOLD = Alerts.PERIPHERAL_DEFAULT
@@ -122,14 +123,31 @@ def migrated(thresholds, salt, device_ids):
     return moved
 
 
+def fitted(thresholds, keep, known, limit=MAX_ITEMS):
+    """超過 limit 項時先丟不在 known 中的鍵（最舊的先），還不夠再丟最舊的；keep 中的鍵保留。"""
+    items = list(thresholds.items())
+    excess = len(items) - limit
+    if excess <= 0:
+        return dict(items)
+    order = ([key for key, _ in items if key not in keep and key not in known]
+             + [key for key, _ in items if key not in keep and key in known])
+    dropped = set(order[:excess])
+    return {key: value for key, value in items if key not in dropped}
+
+
 def threshold_changes(preferences, device_ids, value, known_ids=(), make_salt=new_salt):
-    """交給 SettingsStore.update() 的變更；還沒有 salt 時產生一個，並轉換看得到的設備的舊鍵。"""
+    """交給 SettingsStore.update() 的變更；還沒有 salt 時產生一個，並轉換看得到的設備的舊鍵。
+
+    known_ids：目前與上一份完整設備清單中的識別碼（超過上限時優先保留）。"""
     salt, thresholds, changes = preferences[SALT_KEY], preferences[PREFERENCE_KEY], {}
     if not salt:
         salt = make_salt()
         thresholds = migrated(thresholds, salt, set(known_ids) | set(device_ids))
         changes[SALT_KEY] = salt
-    changes[PREFERENCE_KEY] = with_all(thresholds, salt, device_ids, value)
+    updated = with_all(thresholds, salt, device_ids, value)
+    keep = {storage_key(salt, device_id) for device_id in device_ids}
+    known = {storage_key(salt, device_id) for device_id in known_ids}
+    changes[PREFERENCE_KEY] = fitted(updated, keep, known)
     return changes
 
 

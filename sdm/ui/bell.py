@@ -1,7 +1,7 @@
 """連線設備頁每台回報電量的設備右邊的鈴鐺（參考專案 PeripheralsView 的鈴鐺選單）。
 
 點一下打開選單：「不通知」或「低於 N% 時通知」；圖示為鈴鐺（開啟）或劃掉的鈴鐺（關閉），
-提示文字寫出目前的門檻。設定檔唯讀時停用，提示文字說明原因。
+提示文字寫出目前的門檻。設定檔唯讀時停用，提示文字說明原因；寫入被拒絕時提示文字寫出原因。
 """
 import gi
 gi.require_version("Gtk", "3.0")
@@ -43,9 +43,10 @@ class BellButton:
         if item.get_active():
             self.choose(self.device_id, value)
 
-    def sync(self, threshold, writable):
+    def sync(self, threshold, writable, problem=""):
         self.image.set_from_icon_name(bell_icon(threshold), Gtk.IconSize.BUTTON)
-        self.button.set_tooltip_text(bell_tooltip(threshold) if writable else READ_ONLY)
+        tooltip = bell_tooltip(threshold) if writable else READ_ONLY
+        self.button.set_tooltip_text(f"{problem}\n{tooltip}" if problem else tooltip)
         self.button.set_sensitive(writable)
         for item, handler, value in self.items:
             if item.get_active() != (value == threshold):

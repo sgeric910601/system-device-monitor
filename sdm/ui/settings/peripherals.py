@@ -2,7 +2,7 @@
 （參考專案 PeripheralAlertsCard；與「連線設備」頁每台設備右邊的鈴鐺是同一個設定）。
 
 門檻經由 PeripheralSettings 寫入 peripheral_thresholds（鍵為設備識別碼加 salt 的雜湊）；
-設備組成改變時才重建列表，門檻或唯讀狀態改變時只更新下拉選單；寫入被拒絕時恢復原本的選項。
+設備組成改變時才重建列表，門檻或唯讀狀態改變時只更新下拉選單；寫入被拒絕時恢復原本的選項，並在列表下方寫出原因。
 """
 import gi
 gi.require_version("Gtk", "3.0")
@@ -15,7 +15,8 @@ from sdm.ui.settings.controls import ROW_SPACING, wrapped
 from sdm.ui.widgets import box, discard
 
 DEVICES = "_devices"    # 設備組成改變（不是設定）
-KEYS = {PREFERENCE_KEY, SALT_KEY, DEVICES, STATUS}
+PROBLEM = "_peripheral_problem"     # 門檻寫入被拒絕或原因清除（不是設定）
+KEYS = {PREFERENCE_KEY, SALT_KEY, DEVICES, STATUS, PROBLEM}
 NOTE = ("電量降到門檻以下時通知一次，充電到門檻以上 2% 才會再通知；只回報電量等級的設備在等級變成"
         "低電量時通知。設備斷線後重新連上視為新設備，仍低於門檻會再通知一次。"
         "不斷電系統的提醒在「通知」。")
@@ -33,10 +34,16 @@ def common_threshold(threshold_of, readings):
     return values.pop() if len(values) == 1 else None
 
 
-def choose(controls, settings, device_ids, value):
-    """寫入門檻；被拒絕時讓所有下拉選單恢復成實際的值。"""
-    if not settings.choose(device_ids, value):
-        controls.changed(frozenset({PREFERENCE_KEY}))
+def problem_line(controls, settings):
+    """寫入被拒絕的原因；沒有問題時隱藏。"""
+    line = wrapped("", "power-warning")
+    line.set_no_show_all(True)
+
+    def sync():
+        line.set_text(settings.problem or "")
+        line.set_visible(bool(settings.problem))
+    controls.bind({PROBLEM}, sync)
+    return line
 
 
 def threshold_combo():
@@ -88,7 +95,7 @@ class PeripheralList:
     def changed(self, combo, device_id):
         value = combo.get_active_id()
         if value is not None:
-            choose(self.controls, self.settings, (device_id,), int(value))
+            self.settings.choose((device_id,), int(value))
 
 
 def set_all_row(controls, readings, settings):
@@ -100,7 +107,7 @@ def set_all_row(controls, readings, settings):
     def changed(widget):
         value = widget.get_active_id()
         if value is not None:
-            choose(controls, settings, [reading.device_id for reading in readings()], int(value))
+            settings.choose([reading.device_id for reading in readings()], int(value))
 
     def sync():
         shared = common_threshold(settings.threshold, readings())
@@ -122,6 +129,7 @@ def build(controls, context):
     settings = context.peripheral_settings
     devices = PeripheralList(controls, context.peripherals, settings)
     page.pack_start(card("低電量通知", set_all_row(controls, context.peripherals, settings),
-                         Gtk.Separator(), devices.widget, wrapped(NOTE, "muted")),
+                         Gtk.Separator(), devices.widget, problem_line(controls, settings),
+                         wrapped(NOTE, "muted")),
                     False, False, 0)
     return page

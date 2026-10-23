@@ -77,15 +77,15 @@ def names():
 
 
 def thresholds():
-    """周邊識別碼 → 門檻：捨棄不合格的鍵或值；超過上限視為整體無效。"""
+    """周邊識別碼 → 門檻：捨棄不合格的鍵或值；超過上限時只留前 64 個合格的項目
+    （載入時記錄警告，寫入時視為無效，避免一個太大的檔案讓所有門檻回到預設值）。"""
     def check(raw):
         if not isinstance(raw, Mapping):
             raise ValueError("expected an object")
-        kept = {key: value for key, value in raw.items()
-                if isinstance(key, str) and PERIPHERAL_KEY_PATTERN.fullmatch(key)
-                and type(value) is int and value in PERIPHERAL_LEVELS}
-        if len(kept) > MAX_ITEMS:
-            raise ValueError("too many items")
+        valid = [(key, value) for key, value in raw.items()
+                 if isinstance(key, str) and PERIPHERAL_KEY_PATTERN.fullmatch(key)
+                 and type(value) is int and value in PERIPHERAL_LEVELS]
+        kept = dict(valid[:MAX_ITEMS])
         return MappingProxyType(kept), len(kept) != len(raw)
     return Spec(MappingProxyType({}), check, choices=PERIPHERAL_LEVELS)
 

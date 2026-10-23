@@ -295,8 +295,10 @@ class PreferenceValue(TempConfig):
         self.assertEqual(self.load_with_warning({"hidden_flow_items": "gpu"},
                                                 "hidden_flow_items").hidden_flow_items, ())
         many = {f"{i:016x}": 10 for i in range(65)}
-        self.assertEqual(dict(self.load_with_warning({"peripheral_thresholds": many},
-                                                     "peripheral_thresholds").peripheral_thresholds), {})
+        loaded = self.load_with_warning({"peripheral_thresholds": many}, "peripheral_thresholds")
+        self.assertEqual(list(loaded.peripheral_thresholds), list(many)[:64])   # 只留前 64 個
+        with self.assertRaises(ValueError):
+            Preferences.defaults().with_changes(peripheral_thresholds=many)
 
     def test_unknown_attribute_and_incomplete_values_are_rejected(self):
         prefs = Preferences.defaults()

@@ -5,7 +5,8 @@ SettingsStore 通知改變的鍵後（不需要重新啟動）：
 - 更新頻率與省電模式 → 重新排程（schedule_wiring.apply_cadence）。
 - 頂端列相關（顯示方式、格式、項目）→ 重新顯示頂端列。
 - 隱藏的電力流向細項或詳細欄位 → 電源頁重畫。
-- 周邊設備的通知門檻（或設定檔變成唯讀）→ 連線設備頁的鈴鐺更新。
+- 周邊設備的通知門檻（或設定檔變成唯讀）→ 連線設備頁的鈴鐺更新；寫入被拒絕時鈴鐺的提示
+  與設定 → 周邊設備寫出原因。
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
 from sdm import paths
@@ -47,10 +48,19 @@ class SettingsMixin:
             self.devices_page.thresholds_changed()
 
     def set_peripheral_threshold(self, device_id, value):
-        """連線設備頁的鈴鐺：寫入門檻；被拒絕（唯讀或無效值）時把鈴鐺恢復原狀。"""
-        if not self.peripheral_settings.choose((device_id,), value) and \
-                self.devices_page is not None:
+        """連線設備頁的鈴鐺：寫入門檻；被拒絕時由 peripheral_problem_changed() 恢復鈴鐺並說明原因。"""
+        self.peripheral_settings.choose((device_id,), value)
+
+    def peripheral_problem(self):
+        problem = self.peripheral_settings.problem if self.peripheral_settings else None
+        return problem or ""
+
+    def peripheral_problem_changed(self):
+        """周邊門檻寫入被拒絕（或原因清除）：鈴鐺與設定視窗恢復實際的值並顯示原因。"""
+        if self.devices_page is not None:
             self.devices_page.thresholds_changed()
+        if self.settings_window is not None:
+            self.settings_window.peripheral_problem_changed()
 
     def flush_settings(self):
         if self.store is not None:

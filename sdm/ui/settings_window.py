@@ -102,6 +102,9 @@ class SettingsWindow:
         """不斷電系統出現或消失。"""
         self.controls.changed(frozenset({notifications.POWER}))
 
+    def peripheral_problem_changed(self):
+        self.controls.changed(frozenset({peripherals.PROBLEM}))
+
     def notice_changed(self):
         self.controls.changed(frozenset({notifications.NOTICE}))
 

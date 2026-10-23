@@ -36,9 +36,10 @@ def has_bell(device):
 
 class DevicesPage(Gtk.Box):
     def __init__(self, threshold_for=lambda device_id: DEFAULT_THRESHOLD,
-                 choose=lambda device_id, value: None, writable=lambda: True):
+                 choose=lambda device_id, value: None, writable=lambda: True, problem=str):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.threshold_for, self.choose, self.writable = threshold_for, choose, writable
+        self.problem = problem          # 上一次寫入門檻被拒絕的原因（沒有時為空字串）
         self.bells = []
         self.heading = label("目前連線設備", "section")
         self.pack_start(self.heading, False, False, 0)
@@ -65,10 +66,10 @@ class DevicesPage(Gtk.Box):
         return any(bell.menu_open() for bell in self.bells)
 
     def thresholds_changed(self):
-        """門檻或設定檔唯讀狀態改變：只更新鈴鐺。"""
-        writable = self.writable()
+        """門檻、設定檔唯讀狀態或寫入被拒絕：只更新鈴鐺。"""
+        writable, problem = self.writable(), self.problem()
         for bell in self.bells:
-            bell.sync(self.threshold_for(bell.device_id), writable)
+            bell.sync(self.threshold_for(bell.device_id), writable, problem)
 
     def rebuild(self, devices):
         for bell in self.bells:
@@ -104,7 +105,7 @@ class DevicesPage(Gtk.Box):
         self.age_labels.append((stamp_label, device["stamp"], device["kind"]))
         if has_bell(device):
             bell = BellButton(device["id"], self.choose)
-            bell.sync(self.threshold_for(device["id"]), self.writable())
+            bell.sync(self.threshold_for(device["id"]), self.writable(), self.problem())
             self.bells.append(bell)
             row.pack_end(bell.button, False, False, 0)
         row.pack_end(power, False, False, 0)

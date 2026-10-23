@@ -98,6 +98,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
                                    persist=not (smoke or preview), write_autostart=set_autostart)
         self.store.subscribe(self.settings_changed)
         self.peripheral_settings = PeripheralSettings(self.store)
+        self.peripheral_settings.subscribe(self.peripheral_problem_changed)
         self.timers, self.subscriptions = [], []
         self.graphs = []
         self.event_timer = 0
@@ -239,7 +240,8 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.build_monitor_pages()
         self.devices_page = DevicesPage(threshold_for=self.peripheral_settings.threshold,
                                         choose=self.set_peripheral_threshold,
-                                        writable=lambda: not self.store.read_only)
+                                        writable=lambda: not self.store.read_only,
+                                        problem=self.peripheral_problem)
         self.page("devices", PAGE_TITLES["devices"]).pack_start(self.devices_page, False, False, 0)
         self.watch_visibility()
         self.window.connect("map", lambda *_: self.refresh_stale_pages())
