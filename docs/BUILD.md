@@ -10,15 +10,18 @@ Ubuntu 24.04，使用系統 Python。此專案沒有 pip 執行期依賴。
     make privacy
     make deb
 
-dist/system-device-monitor_0.2.0_all.deb 為純 Python／SVG，
+dist/system-device-monitor_0.2.0_all.deb 為純 Python／SVG／PNG，
 Architecture: all。建置不需要 sudo；版本由 VERSION 讀取。
 相依套件含 gir1.2-notify-0.7（桌面通知函式庫），供之後的通知功能使用；
 install-dependencies.sh 與 CI 也會安裝它。
 
 套件安裝：
 - /usr/bin/system-device-monitor：啟動器。
-- /usr/share/system-device-monitor：執行期程式（device_monitor.py 與 sdm/ 套件）與圖示。
-- /usr/share/applications/system-device-monitor.desktop：桌面入口。
+- /usr/share/system-device-monitor：執行期程式（device_monitor.py 與 sdm/ 套件）、圖示與
+  assets/（夥伴圖片與四種顏色的程式圖示）。
+- /usr/share/applications/system-device-monitor.desktop：桌面入口（Icon=system-device-monitor）。
+- /usr/share/icons/hicolor/128x128 與 512x512 的 apps/system-device-monitor.png：預設的薄荷綠程式圖示
+  （圖示主題的快取由 dpkg 觸發器更新）。
 - /usr/share/doc/system-device-monitor：文件與授權。
 - /usr/libexec/system-device-monitor：管理員小程式 sdm-cpu-power 與 sdm-cpu-power-service（0755）。
 - /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy：polkit 動作（0644）。
@@ -28,7 +31,7 @@ install-dependencies.sh 與 CI 也會安裝它。
 package-files.json（格式 2）明確列出：
 - runtime：複製到 /usr/share/system-device-monitor 下相同相對路徑的執行期檔案，權限 0644。
 - system：系統檔案，各自指定權限（不得超過 0755）；目前為上述管理員小程式、
-  polkit 動作與兩個 systemd 單元。
+  polkit 動作、兩個 systemd 單元與兩個尺寸的程式圖示（hicolor）。
   只能安裝到 /usr/libexec/system-device-monitor、/usr/share/system-device-monitor、
   /usr/share/polkit-1/actions、/usr/lib/systemd/system、/usr/share/applications、
   /usr/share/icons/hicolor 之下（清單在 sdm/constants.py）；套件不安裝任何 /etc 檔案。
@@ -42,6 +45,34 @@ package-files.json（格式 2）明確列出：
 建置只複製列出的檔案，拒絕符號連結、未正規化或逃出專案的路徑，
 以及重複或互相包含的安裝位置，不會打包整個工作目錄。
 目錄一律 0755，檔案時間固定，以利重現建置。
+
+## 圖檔素材（assets/）
+
+assets/ 的圖檔由開發用的 scripts/make_assets.py 從參考專案的 Resources 資料夾產生，
+提交到 Git；執行期與建置都不需要重新產生：
+
+    /usr/bin/python3 -B scripts/make_assets.py --ref 參考專案/Resources
+
+- 只用標準函式庫（scripts/asset_png.py 是純 Python 的 PNG 解碼與編碼、面積平均縮小）；
+  ffmpeg 只在這個開發腳本中選用，用來解 HEIC 大頭照（先從 HEIF 容器抽出 HEVC 串流）與影片畫格，
+  看板執行時絕不呼叫 ffmpeg。沒有 ffmpeg 時大頭照改從 icon-cat.png 裁切（眼睛位置的座標只對
+  HEIC 那張有效）。
+- app/<顏色>-128.png 與 -512.png：薄荷綠取自 AppIcon.icns 的 ic09（512 px PNG），
+  其他三色取自 AppIcons/；128 px 由 512 px 以預乘透明度的面積平均縮小。
+- companion/：companion-charging、companion-resting、pet-cat 三張貓咪圖原樣重新編碼，
+  cat-headshot.png 為 224 px 的大頭照。
+- 所有輸出都重新編碼成只含 IHDR、IDAT、IEND 的 PNG（不含文字、拍攝資訊、時間或色彩描述檔），
+  同一台機器重跑得到完全相同的位元組；tests/test_assets.py 檢查尺寸、清單與總大小不超過 2 MB
+  （目前約 0.9 MB），make privacy 只允許清單中 assets/ 底下、沒有附屬區塊的 PNG。
+
+貓咪動畫有兩種做法，由 sdm/constants.py 的 Companion.ANIMATION 選擇：
+- procedural（預設）：靜態圖加上程式畫的呼吸（以腳底為基準放大 1.00–1.02 倍）、
+  休息時的 Z 與充電火花。邊緣與原圖相同，任何背景都乾淨。
+- frames：執行 make_assets.py 時加上「--frames 輸出資料夾」，會把參考專案的 .mov 解成畫格、套上靜態圖擴張 2 px 的
+  透明度排成 <名稱>-frames.png；放進 assets/companion/ 並改成 frames 才會使用。
+  ffmpeg 解不出影片的透明度圖層，背景一律是黑色，所以淺色背景上會有一圈黑邊，
+  貓咪動到靜態輪廓外的地方（尾巴、耳朵）會被切掉或露出黑塊；三張畫格圖合計約 5.8 MB，
+  也超過素材的 2 MB 上限，因此不隨程式發布。
 
 ## 測試
 
@@ -142,6 +173,10 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
   power_tray、power_wiring 為頂端列「耗電」與耗電快照的接線；smoke 為模擬測試；
   widgets 為共用元件與曲線圖；theme 為配色與 CSS；cpu_power_wiring、admin_text、
   settings/admin 為管理員 CPU 功耗取樣的接線、文字與設定分類。
+  companion、companion_draw、sprite 為充電夥伴的元件、Cairo 圖案與動畫；
+  pet、pet_bubble、pet_menu 為桌面寵物的視窗、對話框與右鍵選單；pet_text 為夥伴表情與寵物文字；
+  companion_wiring、appearance_wiring 為夥伴、桌面寵物與程式圖示顏色的接線；
+  settings/companion、settings/pet、settings/appearance 為對應的設定分類。
 - 管理員元件：helper/sdm-cpu-power（pkexec 執行的開關小程式）、helper/sdm-cpu-power-service
   （socket 啟動的 RAPL 取樣服務）、helper/policy（polkit 動作）、helper/systemd（單元檔，
   .deb 與原始碼安裝各一組）、packaging/debian（安裝前後腳本）、scripts/install_system.py
@@ -150,6 +185,11 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
   sdm/services/system_components.py 為 install.py --system-components 的使用者端，
   sdm/data/cpu_power_client.py 為 socket 客戶端，sdm/core/cpu_power.py 與 ppt_calibration.py
   為 CPU 項目與 APU PPT 校正。威脅模型見 SECURITY.md。
+- 夥伴的純邏輯：sdm/core/companion（外觀與表情）、pet_messages（寵物的話，移植參考專案）、
+  pet_motion（摸牠、眨眼、眼睛、愛心）、pet_geometry（大小、位置、對話框）、
+  sprite_motion（動畫計時器與運動曲線）、png_chunks（PNG 區塊檢查與去除附屬資訊）。
+- sdm/services/：app_icon 程式圖示顏色（使用者圖示主題）、companion_photo 我的照片、
+  pet_state 桌面寵物的位置。
 
 設定分成兩個檔案。settings.json 維持舊格式，只存五個頂端列開關，
 舊版與退回舊版都能照常讀寫；新設定存在同目錄的 preferences.json（schema 2），
