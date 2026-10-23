@@ -9,8 +9,8 @@ import unittest
 from sdm.constants import Alerts
 from sdm.core import alert_messages as messages
 from sdm.core.alerts import (BatteryInput, Gate, LaptopAlertState, RateLimit, UpsAlertState,
-                             evaluate_laptop, evaluate_ups, next_release, offer, pass_gate,
-                             release)
+                             delivered, evaluate_laptop, evaluate_ups, failed, next_release,
+                             offer, pass_gate, release)
 from sdm.core.settings import Preferences
 from sdm.data.ups import UpsReading
 
@@ -278,9 +278,12 @@ def alert(kind="a", device="", title="t"):
 
 
 class RateLimiting(unittest.TestCase):
+    """offer() 只決定能不能送；送出成功（delivered）才記下時間，失敗（failed）改為稍後重試。"""
+
     def test_one_per_kind_per_minute_and_a_burst_is_coalesced(self):
         limit, ready = offer(RateLimit(), alert(title="1"), 0.0)
         self.assertEqual([a.title for a in ready], ["1"])
+        limit = delivered(limit, ready[0], 0.0)
         limit, ready = offer(limit, alert(title="2"), 10.0)
         self.assertEqual(ready, ())
         limit, ready = offer(limit, alert(title="3"), 20.0)
@@ -291,9 +294,50 @@ class RateLimiting(unittest.TestCase):
         limit, ready = release(limit, 60.0)
         self.assertEqual([a.title for a in ready], ["3"])     # 最新的取代較早的
         self.assertIsNone(next_release(limit))
+        limit = delivered(limit, ready[0], 60.0)
         limit, ready = offer(limit, alert(title="4"), 100.0)
         self.assertEqual(ready, ())
         self.assertEqual(next_release(limit), 120.0)
+
+    def test_an_alert_on_its_way_out_holds_back_the_next_one(self):
+        limit, first = offer(RateLimit(), alert(title="1"), 0.0)
+        limit, second = offer(limit, alert(title="2"), 0.0)
+        self.assertEqual((len(first), second), (1, ()))
+        self.assertIsNone(next_release(limit))                # 等第一則送完
+        limit = delivered(limit, first[0], 1.0)
+        self.assertEqual(next_release(limit), 61.0)
+
+    def test_failed_send_is_retried_and_never_counts_as_sent(self):
+        limit, ready = offer(RateLimit(), alert(title="1"), 0.0)
+        limit = failed(limit, ready[0], 0.0)
+        self.assertNotIn(("a", ""), limit.sent)
+        self.assertEqual(next_release(limit), Alerts.SEND_RETRY_SECONDS)
+        self.assertEqual(release(limit, 29.0)[1], ())
+        limit, ready = release(limit, 30.0)
+        self.assertEqual([a.title for a in ready], ["1"])
+        limit = delivered(limit, ready[0], 31.0)
+        self.assertEqual(limit.sent[("a", "")], 31.0)
+        self.assertEqual(dict(limit.retry), {})
+
+    def test_gives_up_after_five_attempts(self):
+        limit, ready = offer(RateLimit(), alert(), 0.0)
+        now = 0.0
+        for attempt in range(Alerts.SEND_MAX_ATTEMPTS):
+            limit = failed(limit, ready[0], now)
+            now += Alerts.SEND_RETRY_SECONDS
+            limit, ready = release(limit, now)
+            if attempt < Alerts.SEND_MAX_ATTEMPTS - 1:
+                self.assertEqual(len(ready), 1)
+        self.assertEqual((ready, dict(limit.pending), dict(limit.retry), dict(limit.sent)),
+                         ((), {}, {}, {}))
+        self.assertEqual(Alerts.SEND_MAX_ATTEMPTS, 5)
+
+    def test_newer_alert_waiting_survives_a_failure(self):
+        limit, ready = offer(RateLimit(), alert(title="1"), 0.0)
+        limit, _ = offer(limit, alert(title="2"), 0.0)
+        limit = failed(limit, ready[0], 0.0)
+        limit, ready = release(limit, 30.0)
+        self.assertEqual([a.title for a in ready], ["2"])
 
     def test_kinds_and_devices_are_limited_separately(self):
         limit, _ = offer(RateLimit(), alert("a"), 0.0)
@@ -304,14 +348,17 @@ class RateLimiting(unittest.TestCase):
         self.assertEqual((len(ready), len(other)), (1, 1))
 
     def test_after_the_window_a_new_alert_goes_out_at_once(self):
-        limit, _ = offer(RateLimit(), alert(), 0.0)
+        limit, ready = offer(RateLimit(), alert(), 0.0)
+        limit = delivered(limit, ready[0], 0.0)
         limit, ready = offer(limit, alert(title="later"), Alerts.RATE_LIMIT_SECONDS)
         self.assertEqual([a.title for a in ready], ["later"])
         self.assertEqual(Alerts.RATE_LIMIT_SECONDS, 60)
 
     def test_old_entries_are_forgotten(self):
-        limit, _ = offer(RateLimit(), alert("a"), 0.0)
-        limit, _ = offer(limit, alert("b"), 500.0)
+        limit, ready = offer(RateLimit(), alert("a"), 0.0)
+        limit = delivered(limit, ready[0], 0.0)
+        limit, ready = offer(limit, alert("b"), 500.0)
+        limit = delivered(limit, ready[0], 500.0)
         self.assertEqual(set(limit.sent), {("b", "")})
 
 

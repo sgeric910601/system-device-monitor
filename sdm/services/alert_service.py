@@ -7,14 +7,16 @@
 - 收集失敗時的設備資料沒有 stamp，不評估；清單有錯誤訊息時不移除斷線的設備。
 - 頻率限制期間內的通知等到期間結束才送出（只送最新的一則），計時器由外部提供：
   schedule(秒, 回呼) 回傳來源代號、cancel(代號) 取消。
+- 每次主迴圈最多送出一則（defer＝GLib.idle_add 逐則送出），送出可能要等通知服務回應，
+  一次送好幾則會讓介面卡住。send() 回傳 False（失敗）時不算送過，30 秒後再試，最多 5 次。
 - 測試通知不受頻率限制（使用者自己按的）。
 """
 import time
 
 from sdm.core import alert_messages as messages
 from sdm.core.alerts import (BatteryInput, Gate, LaptopAlertState, RateLimit, UpsAlertState,
-                             evaluate_laptop, evaluate_ups, next_release, offer, pass_gate,
-                             release)
+                             delivered, evaluate_laptop, evaluate_ups, failed, next_release,
+                             offer, pass_gate, release)
 from sdm.core.battery import CHARGING, DISCHARGING, LIMIT_REACHED
 from sdm.core.peripheral_alerts import (PeripheralAlertState, evaluate_peripherals,
                                         peripheral_readings, present_keys)
@@ -38,9 +40,12 @@ def battery_input(power):
 
 
 class AlertService:
-    def __init__(self, send, schedule, cancel, clock=time.monotonic, boot=boot_clock):
+    def __init__(self, send, schedule, cancel, defer=None, clock=time.monotonic,
+                 boot=boot_clock):
         self.send, self.schedule, self.cancel = send, schedule, cancel
+        self.defer = defer or (lambda callback: schedule(0, callback))
         self.clock, self.boot = clock, boot
+        self.outbox, self.dispatching = [], None
         self.laptop, self.ups = LaptopAlertState(), UpsAlertState()
         self.peripherals = PeripheralAlertState()
         self.power_gate = self.devices_gate = Gate()
@@ -76,10 +81,27 @@ class AlertService:
         now = self.clock()
         for alert in alerts:
             self.limit, ready = offer(self.limit, alert, now)
-            for item in ready:
-                self.send(item)
+            self.queue(ready)
         if alerts:
             self.reschedule()
+
+    def queue(self, ready):
+        self.outbox.extend(ready)
+        if self.outbox and self.dispatching is None:
+            self.dispatching = self.defer(self.dispatch)
+
+    def dispatch(self):
+        """送出一則；還有就留到下一次主迴圈（回傳 True）。"""
+        if self.outbox:
+            alert = self.outbox.pop(0)
+            ok, now = self.send(alert), self.clock()
+            self.limit = (delivered(self.limit, alert, now) if ok
+                          else failed(self.limit, alert, now))
+        if self.outbox:
+            return True
+        self.dispatching = None
+        self.reschedule()
+        return False
 
     def reschedule(self):
         if self.timer is not None:
@@ -93,12 +115,14 @@ class AlertService:
         """頻率限制期間結束：送出等待中的通知。"""
         self.timer = None
         self.limit, ready = release(self.limit, self.clock())
-        for alert in ready:
-            self.send(alert)
+        self.queue(ready)
         self.reschedule()
         return False
 
     def stop(self):
-        if self.timer is not None:
-            self.cancel(self.timer)
-            self.timer = None
+        """結束：取消計時器與還沒送出的通知。"""
+        for source in (self.timer, self.dispatching):
+            if source is not None:
+                self.cancel(source)
+        self.timer = self.dispatching = None
+        self.outbox = []

@@ -247,6 +247,8 @@ class Alerts:
     FULL_PERCENT = 100          # 沒有充電上限時的目標；充飽門檻 100% 時內文寫「已充飽」
     UPS_CONFIRM_SAMPLES = 2     # 不斷電系統連續兩次取樣都在用電池才通知
     RATE_LIMIT_SECONDS = 60     # 同一種通知（周邊為同一台設備）每 60 秒最多一則
+    SEND_RETRY_SECONDS = 30     # 送出失敗（例如通知服務還沒啟動）後多久再試
+    SEND_MAX_ATTEMPTS = 5       # 同一則通知最多試幾次
     PERIPHERAL_DEFAULT = 20     # 周邊設備沒有設定時的低電量門檻
     LEVEL_ONLY_MIN_THRESHOLD = 10   # 只回報電量等級的設備：門檻至少 10% 才依「低電量」等級通知
     NAME_MAX_CHARS = 64         # 通知中的設備名稱長度上限

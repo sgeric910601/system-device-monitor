@@ -9,7 +9,7 @@
 """
 import logging
 
-from gi.repository import Gio
+from gi.repository import Gio, GLib
 
 from sdm.constants import Alerts
 from sdm.services.alert_service import AlertService
@@ -29,7 +29,8 @@ class AlertMixin:
         if not (self.smoke or self.preview):
             self.notifier = Notifier(lambda page: self.open_page(None, page),
                                      connection=self.get_dbus_connection)
-            self.alerts = AlertService(self.notifier.send, self.schedule, self.remove_source)
+            self.alerts = AlertService(self.notifier.send, self.schedule, self.remove_source,
+                                       defer=GLib.idle_add)
             self.notifier.subscribe(lambda _status: self.notice_changed())
         action = Gio.SimpleAction.new(Alerts.TEST_ACTION, None)
         action.connect("activate", lambda *_: self.send_test_notification())

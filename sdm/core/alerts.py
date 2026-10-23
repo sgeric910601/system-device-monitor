@@ -14,7 +14,8 @@
   「已恢復市電」。確認停電後電量 ≤ 門檻再通知一次（緊急），電量回到門檻＋2% 以上才重新啟用。
   通訊曾經正常、之後變成 COMMLOST 時通知一次，通訊恢復後重新啟用。
 - 頻率限制：同一種通知（周邊為同一台設備）每 60 秒最多一則；期間內再來的只保留最新的一則，
-  時間到才送出。
+  時間到才送出。只有送出成功（delivered）才算送過；失敗（failed，例如沒有通知服務）
+  30 秒後再試，同一則最多試 5 次。
 """
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -172,44 +173,90 @@ def evaluate_ups(state, reading, prefs, record_only=False):
 
 @dataclass(frozen=True)
 class RateLimit:
-    sent: Mapping = EMPTY       # 通知的鍵 → 上次送出的時間（單調時鐘秒數）
+    sent: Mapping = EMPTY       # 通知的鍵 → 上次成功送出的時間（秒）
     pending: Mapping = EMPTY    # 通知的鍵 → 等待中的通知（新的取代舊的）
+    retry: Mapping = EMPTY      # 通知的鍵 →（失敗次數, 最早重試時間）
+    inflight: frozenset = frozenset()   # 已交出去、還不知道成功與否的鍵
+
+
+def frozen(mapping):
+    return MappingProxyType(dict(mapping))
+
+
+def ready_at(limit, key):
+    """這個鍵最早可以再送出的時間：頻率限制與失敗後的重試間隔取較晚者。"""
+    times = [limit.sent[key] + Alerts.RATE_LIMIT_SECONDS] if key in limit.sent else []
+    if key in limit.retry:
+        times.append(limit.retry[key][1])
+    return max(times) if times else None
 
 
 def allowed(limit, key, now):
+    if key in limit.inflight:
+        return False
     last = limit.sent.get(key)
-    return last is None or not 0 <= now - last < Alerts.RATE_LIMIT_SECONDS
+    if last is not None and 0 <= now - last < Alerts.RATE_LIMIT_SECONDS:
+        return False
+    return key not in limit.retry or now >= limit.retry[key][1]
 
 
-def pruned(sent, pending, now):
-    """只留還在限制期間內或有通知在等待的鍵，對照表不會一直變大。"""
-    return MappingProxyType({key: stamp for key, stamp in sent.items()
-                             if key in pending or 0 <= now - stamp < Alerts.RATE_LIMIT_SECONDS})
+def pruned(limit, now):
+    """只留還在限制期間內、等待中或正在送出的鍵，對照表不會一直變大。"""
+    keep = set(limit.pending) | limit.inflight
+    sent = {key: stamp for key, stamp in limit.sent.items()
+            if key in keep or 0 <= now - stamp < Alerts.RATE_LIMIT_SECONDS}
+    retry = {key: value for key, value in limit.retry.items() if key in keep}
+    return replace(limit, sent=frozen(sent), retry=frozen(retry))
 
 
 def offer(limit, alert, now):
-    """回傳（新狀態, 現在就送出的通知）；限制期間內的通知改為等待（只保留最新的一則）。"""
+    """回傳（新狀態, 現在就可以送出的通知）；送出結果要再交給 delivered() 或 failed()。
+
+    限制期間內、上一則還在送出或等待重試時，改為等待（只保留最新的一則）。"""
     if allowed(limit, alert.key, now):
         pending = {key: item for key, item in limit.pending.items() if key != alert.key}
-        sent = {**limit.sent, alert.key: now}
-        return RateLimit(pruned(sent, pending, now), MappingProxyType(pending)), (alert,)
-    pending = MappingProxyType({**limit.pending, alert.key: alert})
-    return RateLimit(pruned(limit.sent, pending, now), pending), ()
+        state = replace(limit, pending=frozen(pending), inflight=limit.inflight | {alert.key})
+        return pruned(state, now), (alert,)
+    pending = frozen({**limit.pending, alert.key: alert})
+    return pruned(replace(limit, pending=pending), now), ()
+
+
+def delivered(limit, alert, now):
+    """送出成功：記下時間，清除失敗次數。"""
+    sent = {**limit.sent, alert.key: now}
+    retry = {key: value for key, value in limit.retry.items() if key != alert.key}
+    return pruned(replace(limit, sent=frozen(sent), retry=frozen(retry),
+                          inflight=limit.inflight - {alert.key}), now)
+
+
+def failed(limit, alert, now):
+    """送出失敗：不記時間，30 秒後再試（有更新的等待中通知就改送它）；失敗 5 次就放棄。"""
+    attempts = limit.retry.get(alert.key, (0, now))[0] + 1
+    inflight = limit.inflight - {alert.key}
+    if attempts >= Alerts.SEND_MAX_ATTEMPTS:
+        pending = {key: item for key, item in limit.pending.items() if key != alert.key}
+        retry = {key: value for key, value in limit.retry.items() if key != alert.key}
+        return pruned(replace(limit, pending=frozen(pending), retry=frozen(retry),
+                              inflight=inflight), now)
+    pending = {alert.key: alert, **limit.pending}
+    retry = {**limit.retry, alert.key: (attempts, now + Alerts.SEND_RETRY_SECONDS)}
+    return pruned(replace(limit, pending=frozen(pending), retry=frozen(retry),
+                          inflight=inflight), now)
 
 
 def release(limit, now):
-    """限制期間已過的等待中通知：回傳（新狀態, 要送出的通知）。"""
+    """可以送出的等待中通知：回傳（新狀態, 要送出的通知）；結果同樣交給 delivered()／failed()。"""
     due = tuple(alert for key, alert in limit.pending.items() if allowed(limit, key, now))
     if not due:
         return limit, ()
-    pending = {key: item for key, item in limit.pending.items()
-               if key not in {alert.key for alert in due}}
-    sent = {**limit.sent, **{alert.key: now for alert in due}}
-    return RateLimit(pruned(sent, pending, now), MappingProxyType(pending)), due
+    keys = {alert.key for alert in due}
+    pending = {key: item for key, item in limit.pending.items() if key not in keys}
+    return pruned(replace(limit, pending=frozen(pending), inflight=limit.inflight | keys),
+                  now), due
 
 
 def next_release(limit):
-    """最早可以送出等待中通知的時間；沒有等待中的通知時回傳 None。"""
-    times = [limit.sent[key] + Alerts.RATE_LIMIT_SECONDS for key in limit.pending
-             if key in limit.sent]
+    """最早可以送出等待中通知的時間；沒有可排程的等待中通知時回傳 None。"""
+    times = [ready_at(limit, key) for key in limit.pending if key not in limit.inflight]
+    times = [stamp for stamp in times if stamp is not None]
     return min(times) if times else None
