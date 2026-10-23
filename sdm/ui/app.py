@@ -24,6 +24,7 @@ from sdm.services.settings_store import SettingsStore
 from sdm.services.history_service import HistoryService, read_boot_time
 from sdm.services.power_refresh import PowerRefresh
 from sdm.services.ui_state import PageMemory
+from sdm.ui.alert_wiring import AlertMixin
 from sdm.ui.app_names import AppNames
 from sdm.ui.main_window import PAGES, MainWindow
 from sdm.ui.monitor_wiring import MonitorMixin
@@ -55,7 +56,7 @@ class RunResult(NamedTuple):
 
 
 class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
-              Gtk.Application):
+              AlertMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -108,6 +109,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.signal_sources = []   # 不放進 timers：結束流程不移除正在處理中的訊號來源
         self.power_refresh = PowerRefresh(self.request_power_refresh, self.schedule,
                                           self.remove_source)
+        self.build_alerts()         # 模擬測試與示範模式不建立通知
 
     def do_activate(self):
         if self.window:
@@ -210,6 +212,9 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
             self.record_history()
         if kind in ("slow", POWER_REFRESH):
             self.power_received(kind)
+            self.power_alerts()
+        if kind == "devices":
+            self.device_alerts()
         if kind == "system":
             now = time.monotonic()
             gpu = self.data["slow"].get("gpu")
@@ -318,6 +323,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
             for name, action in (("history", self.save_history), ("settings", self.flush_settings),
                                  ("page", self.remember_page),
                                  ("sources", self.remove_sources),
+                                 ("alerts", self.stop_alerts),
                                  ("subscriptions", self.unsubscribe_all),
                                  ("indicators", self.hide_indicators),
                                  ("profiles", self.stop_profiles),

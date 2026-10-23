@@ -1,0 +1,104 @@
+"""通知的協調（不載入 GTK，只在主執行緒呼叫）：耗電快照與設備清單 → 狀態機 → 頻率限制 → 送出。
+
+- 收集結果已經由 GLib.idle_add 交回主執行緒；這裡只保存狀態，除了使用者在設定中的變更之外
+  不寫任何檔案。
+- 每份耗電快照（依 sequence）只評估一次；筆電電池與不斷電系統共用一個閘門，設備清單另一個。
+  閘門用含睡眠時間的時鐘（CLOCK_BOOTTIME）：睡眠時單調時鐘不會前進，看不出剛喚醒。
+- 收集失敗時的設備資料沒有 stamp，不評估；清單有錯誤訊息時不移除斷線的設備。
+- 頻率限制期間內的通知等到期間結束才送出（只送最新的一則），計時器由外部提供：
+  schedule(秒, 回呼) 回傳來源代號、cancel(代號) 取消。
+- 測試通知不受頻率限制（使用者自己按的）。
+"""
+import time
+
+from sdm.core import alert_messages as messages
+from sdm.core.alerts import (BatteryInput, Gate, LaptopAlertState, RateLimit, UpsAlertState,
+                             evaluate_laptop, evaluate_ups, next_release, offer, pass_gate,
+                             release)
+from sdm.core.battery import CHARGING, DISCHARGING, LIMIT_REACHED
+from sdm.core.peripheral_alerts import (PeripheralAlertState, evaluate_peripherals,
+                                        peripheral_readings, present_keys)
+
+
+def boot_clock():
+    """含睡眠時間的時鐘（秒）。"""
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
+def battery_input(power):
+    """筆電快照 → BatteryInput（用顯示狀態，與畫面一致）；桌機或讀不到電量時回傳 None。"""
+    battery = getattr(power, "battery", None)
+    if battery is None or battery.percent is None:
+        return None
+    state, weak = power.state, bool(power.estimates.draining_on_ac)
+    return BatteryInput(percent=int(battery.percent), plugged=bool(battery.ac_online),
+                        draining=state == DISCHARGING or weak, weak_charger=weak,
+                        charging=state == CHARGING, limit_reached=state == LIMIT_REACHED,
+                        limit=battery.limit)
+
+
+class AlertService:
+    def __init__(self, send, schedule, cancel, clock=time.monotonic, boot=boot_clock):
+        self.send, self.schedule, self.cancel = send, schedule, cancel
+        self.clock, self.boot = clock, boot
+        self.laptop, self.ups = LaptopAlertState(), UpsAlertState()
+        self.peripherals = PeripheralAlertState()
+        self.power_gate = self.devices_gate = Gate()
+        self.limit, self.timer, self.last_sequence = RateLimit(), None, None
+
+    def power(self, power, prefs):
+        """新的耗電快照；同一份快照（sequence 相同）只評估一次。"""
+        if power is None or power.sequence == self.last_sequence:
+            return
+        self.last_sequence = power.sequence
+        self.power_gate, record_only = pass_gate(self.power_gate, self.boot())
+        alerts = ()
+        reading = battery_input(power)
+        if reading is not None:
+            self.laptop, alerts = evaluate_laptop(self.laptop, reading, prefs, record_only)
+        self.ups, more = evaluate_ups(self.ups, getattr(power, "ups", None), prefs, record_only)
+        self.deliver(alerts + more)
+
+    def devices(self, payload, prefs):
+        """新的設備清單；收集失敗（沒有 stamp）時不評估。"""
+        if "stamp" not in payload:
+            return
+        self.devices_gate, record_only = pass_gate(self.devices_gate, self.boot())
+        self.peripherals, alerts = evaluate_peripherals(
+            self.peripherals, peripheral_readings(payload), prefs.peripheral_thresholds,
+            present_keys(payload), record_only)
+        self.deliver(alerts)
+
+    def send_test(self):
+        return self.send(messages.test_alert())
+
+    def deliver(self, alerts):
+        now = self.clock()
+        for alert in alerts:
+            self.limit, ready = offer(self.limit, alert, now)
+            for item in ready:
+                self.send(item)
+        if alerts:
+            self.reschedule()
+
+    def reschedule(self):
+        if self.timer is not None:
+            self.cancel(self.timer)
+            self.timer = None
+        due = next_release(self.limit)
+        if due is not None:
+            self.timer = self.schedule(max(0.0, due - self.clock()), self.released)
+
+    def released(self):
+        """頻率限制期間結束：送出等待中的通知。"""
+        self.timer = None
+        self.limit, ready = release(self.limit, self.clock())
+        for alert in ready:
+            self.send(alert)
+        self.reschedule()
+        return False
+
+    def stop(self):
+        if self.timer is not None:
+            self.cancel(self.timer)
+            self.timer = None
