@@ -89,7 +89,8 @@
 
 - postinst 只重新載入 systemd；socket 原本已啟用時才重新啟動它。從不自動啟用。
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結。
-- postrm（purge 時）刪除 drop-in 目錄裡本套件的檔案與 /var/lib/system-device-monitor。
+- postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄）；
+  套件不建立任何其他狀態目錄，也從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。
 
 ## RAPL 旁路

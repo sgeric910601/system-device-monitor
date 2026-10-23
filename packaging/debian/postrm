@@ -1,6 +1,6 @@
 #!/bin/sh
 # 系統與裝置監看：移除後重新載入 systemd；完全移除（purge）時再刪除本套件的 drop-in
-# （目錄裡沒有其他檔案時連同目錄）與 /var/lib/system-device-monitor。
+# （目錄裡沒有其他檔案時連同目錄）。套件不建立其他狀態目錄，所以沒有別的要清除。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只刪除檔案。
 set -e
 
@@ -15,7 +15,6 @@ fi
 if [ "$1" = "purge" ]; then
     rm -f "$UNIT_DIR/$SOCKET.d/owner.conf"
     rmdir "$UNIT_DIR/$SOCKET.d" 2>/dev/null || true
-    rm -rf "${DPKG_ROOT:-}/var/lib/system-device-monitor"
 fi
 
 exit 0

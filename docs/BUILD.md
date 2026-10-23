@@ -35,8 +35,8 @@ package-files.json（格式 2）明確列出：
 - maintainer：preinst、postinst、prerm、postrm 安裝前後腳本，權限 0755；
   目前為 packaging/debian/ 的 postinst、prerm、postrm（POSIX sh、set -e）：
   postinst 只重新載入 systemd，socket 原本已啟用時才重新啟動它，從不自動啟用；
-  prerm 在移除時停用並停止 socket 與服務、刪除 drop-in；postrm 在 purge 時刪除
-  drop-in 與 /var/lib/system-device-monitor。DPKG_ROOT 不是空的時不碰執行中的 systemd。
+  prerm 在移除時停用並停止 socket 與服務、刪除 drop-in；postrm 在 purge 時刪除 drop-in
+  （套件不建立其他狀態目錄）。DPKG_ROOT 不是空的時不碰執行中的 systemd。
 - source：公開原始碼清單，必須涵蓋所有 git 追蹤檔案。
 
 建置只複製列出的檔案，拒絕符號連結、未正規化或逃出專案的路徑，

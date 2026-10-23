@@ -99,6 +99,12 @@ class ScriptText(unittest.TestCase):
         self.assertLess(text.index("is-enabled"), text.index("restart"))
         self.assertNotIn("restart", self.text("prerm") + self.text("postrm"))
 
+    def test_scripts_never_delete_directories_recursively(self):
+        for name in MAINTAINER:
+            with self.subTest(script=name):
+                self.assertNotIn("rm -r", self.text(name))
+                self.assertNotIn("/var/lib", self.text(name))
+
     def test_unit_names_match_the_shipped_units(self):
         for name in MAINTAINER:
             text = self.text(name)
@@ -159,14 +165,14 @@ class ScriptRuns(unittest.TestCase):
         self.assertTrue((self.dropin/"owner.conf").exists())
         self.assertTrue(os.path.lexists(self.wants))
 
-    def test_postrm_purge_removes_state_and_our_dropin_only(self):
+    def test_postrm_purge_removes_only_our_dropin(self):
         self.populate()
         other = self.dropin/"admin.conf"
         other.write_text("[Socket]\n")
         self.run_script("postrm", "purge")
-        self.assertFalse(self.state.exists())
         self.assertFalse((self.dropin/"owner.conf").exists())
         self.assertTrue(other.exists())
+        self.assertTrue((self.state/"cache/file").exists())     # 套件從未建立，不屬於它
 
     def test_postrm_remove_keeps_state(self):
         self.populate()

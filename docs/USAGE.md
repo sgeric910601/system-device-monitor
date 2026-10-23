@@ -179,7 +179,7 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 移除管理員元件：
 - 原始碼：`/usr/bin/python3 -B install.py --system-components remove`（會先停用服務）。
 - .deb：sudo apt remove system-device-monitor 會停用服務並移除所有元件；
-  sudo apt purge system-device-monitor 另外清除 drop-in 與 /var/lib/system-device-monitor。
+  sudo apt purge system-device-monitor 另外清除 drop-in。
 
 ## 系統監控頁（CPU／GPU、記憶體、磁碟、網路）
 
