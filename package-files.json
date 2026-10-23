@@ -383,6 +383,7 @@
     "tests/test_history_service.py",
     "tests/test_import_check.py",
     "tests/test_install_bootstrap.py",
+    "tests/test_install_guard.py",
     "tests/test_install_system.py",
     "tests/test_laptop_service.py",
     "tests/test_live_apply.py",

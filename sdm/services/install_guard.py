@@ -2,8 +2,11 @@
 
 - 原始碼資料夾、.git（worktree 時為檔案）、實際的 git 目錄與共用 git 目錄，以及它們的每一層
   上層目錄，都必須屬於 root 或使用者、其他人不可寫；群組可寫只允許 root 擁有且有黏著位元的
-  目錄（/tmp），或使用者私人群組（與帳號同名、沒有其他成員的主要群組，Ubuntu 預設 umask 002
-  的情況）。否則別的帳號可能改掉 git 取出的內容。
+  目錄（/tmp），或使用者私人群組（與帳號同名、沒有其他成員、也不是任何其他帳號的主要群組，
+  Ubuntu 預設 umask 002 的情況）。否則別的帳號可能改掉 git 取出的內容。
+- git 目錄與共用 git 目錄裡的每一項（HEAD、config、packed-refs、refs、info、objects 等，
+  hooks 除外：git 指令一律以 core.hooksPath=/dev/null 執行）都必須是同樣規則下的目錄或一般檔案；
+  objects/info/alternates、http-alternates、info/grafts 與 replace refs 會改變取出的內容，一律拒絕。
 - 暫存目錄放在 XDG_RUNTIME_DIR（屬於使用者、0700、上層安全）；沒有時才用 root 擁有且有
   黏著位元的 /tmp。執行 pkexec 前再確認暫存目錄是使用者的 0700 目錄、每一層上層都安全
   （暫存目錄不放寬私人群組）。
@@ -21,6 +24,12 @@ import stat
 UNSAFE_REPOSITORY = ("原始碼資料夾、它的 .git 或上層目錄可以被其他帳號寫入，為了安全不安裝；"
                      "請改用只有你（或 root）能寫入的資料夾。")
 UNSAFE_STAGE = "暫存目錄或它的上層目錄不安全，已停止，沒有做任何變更。"
+UNSAFE_GIT_DATA = ("git 目錄裡有其他帳號能寫入、不是一般檔案的項目，或有 alternates、grafts、"
+                   "replace 等會改變內容的設定；為了安全不安裝。")
+SKIPPED = ("hooks",)                    # 不使用 hooks（core.hooksPath=/dev/null）
+REDIRECTIONS = ("objects/info/alternates", "objects/info/http-alternates", "info/grafts")
+REPLACE_REFS = "refs/replace/"
+PACKED_REFS = "packed-refs"
 NO_PRIVATE_TEMP = ("找不到安全的暫存位置（屬於你的 XDG_RUNTIME_DIR，或 root 擁有、有黏著位元的 "
                    "/tmp），已停止。")
 HEAD_TEXT = {"install": "將以管理員權限安裝這個提交的元件：{}",
@@ -114,14 +123,66 @@ def safe_chain(path, uid, lstat, private_gid=None, allow_file=False):
         return False
 
 
-def user_private_gid(uid):
-    """使用者私人群組的 gid：主要群組與帳號同名而且沒有其他成員；不是時為 None。"""
+def user_private_gid(uid, getpwuid=pwd.getpwuid, getgrgid=grp.getgrgid, getpwall=pwd.getpwall):
+    """使用者私人群組的 gid：主要群組與帳號同名、沒有其他成員，也不是任何其他帳號的
+    主要群組；不是時為 None。"""
     try:
-        user = pwd.getpwuid(uid)
-        group = grp.getgrgid(user.pw_gid)
+        user = getpwuid(uid)
+        group = getgrgid(user.pw_gid)
     except KeyError:
         return None
-    return user.pw_gid if group.gr_name == user.pw_name and not group.gr_mem else None
+    if group.gr_name != user.pw_name or group.gr_mem:
+        return None
+    if any(other.pw_gid == user.pw_gid and other.pw_uid != uid for other in getpwall()):
+        return None
+    return user.pw_gid
+
+
+def read_bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def scan_git_dir(top, uid, private_gid, lstat, listdir, read=read_bytes):
+    """top 底下每一項（hooks 除外）都必須是使用者或 root 擁有、別人不能寫的目錄或一般檔案，
+    而且沒有 alternates、grafts 或 replace refs。不安全時拋出 ComponentError。"""
+    pending = [""]
+    while pending:
+        relative = pending.pop()
+        try:
+            names = listdir(top + "/" + relative if relative else top)
+        except OSError:
+            raise ComponentError(UNSAFE_GIT_DATA) from None
+        for name in names:
+            child = relative + "/" + name if relative else name
+            if child in SKIPPED:
+                continue
+            try:
+                info = lstat(top + "/" + child)
+            except OSError:
+                raise ComponentError(UNSAFE_GIT_DATA) from None
+            if child in REDIRECTIONS or child.startswith(REPLACE_REFS) \
+                    or not safe_entry(info, uid, private_gid, allow_file=True):
+                raise ComponentError(UNSAFE_GIT_DATA)
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(child)
+    check_packed_refs(top, lstat, read)
+
+
+def check_packed_refs(top, lstat, read):
+    path = top + "/" + PACKED_REFS
+    try:
+        lstat(path)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise ComponentError(UNSAFE_GIT_DATA) from None
+    try:
+        data = read(path)
+    except OSError:
+        raise ComponentError(UNSAFE_GIT_DATA) from None
+    if REPLACE_REFS.encode() in data:
+        raise ComponentError(UNSAFE_GIT_DATA)
 
 
 def private_directory(path, uid, lstat):
@@ -154,8 +215,10 @@ def check_stage(stage, uid, lstat):
         raise ComponentError(UNSAFE_STAGE)
 
 
-def check_repository(root, git_base, git, uid, lstat, private_gid):
-    """原始碼資料夾、.git、git 目錄與共用 git 目錄（以及上層）都只有使用者或 root 能寫。"""
+def check_repository(root, git_base, git, uid, lstat, private_gid, listdir=os.listdir,
+                     read=read_bytes):
+    """原始碼資料夾、.git、git 目錄與共用 git 目錄（以及上層）只有使用者或 root 能寫，
+    git 目錄裡的每一項也一樣。"""
     root = str(root)
     if not safe_chain(root, uid, lstat, private_gid) or \
             not safe_chain(root + "/.git", uid, lstat, private_gid, allow_file=True):
@@ -163,9 +226,13 @@ def check_repository(root, git_base, git, uid, lstat, private_gid):
     git_dir = git(git_base + ["rev-parse", "--absolute-git-dir"]).decode("utf-8", "replace")
     common = git(git_base + ["rev-parse", "--git-common-dir"]).decode("utf-8", "replace")
     common = os.path.normpath(os.path.join(root, common.strip()))
-    for path in (git_dir.strip(), common):
+    git_dir = git_dir.strip()
+    for path in (git_dir, common):
         if not safe_chain(path, uid, lstat, private_gid):
             raise ComponentError(UNSAFE_REPOSITORY)
+    tops = [common] + ([] if git_dir == common or git_dir.startswith(common + "/") else [git_dir])
+    for top in tops:
+        scan_git_dir(top, uid, private_gid, lstat, listdir, read)
 
 
 def head_text(action, raw):

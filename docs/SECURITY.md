@@ -94,8 +94,17 @@
 
 - 以一般使用者執行。原始碼資料夾、.git、實際的 git 目錄與共用 git 目錄，以及它們的每一層
   上層目錄，都必須屬於你或 root、其他人不可寫；群組可寫只接受 root 擁有且有黏著位元的目錄
-  （/tmp），或你的使用者私人群組（與帳號同名、沒有其他成員的主要群組，Ubuntu 預設 umask 002
-  建立的資料夾就是這樣）。否則別的帳號可能改掉 git 取出的內容。
+  （/tmp），或你的使用者私人群組（與帳號同名、沒有其他成員、也不是任何其他帳號的主要群組，
+  Ubuntu 預設 umask 002 建立的資料夾就是這樣）。否則別的帳號可能改掉 git 取出的內容。
+- git 目錄與共用 git 目錄裡的每一項（HEAD、config、packed-refs、refs、info、objects 等；
+  hooks 不使用所以略過）都必須是同樣規則下的目錄或一般檔案，不接受符號連結或特殊檔案；
+  objects/info/alternates、http-alternates、info/grafts 與 replace refs（refs/replace/ 或
+  packed-refs 裡的 refs/replace/）會改變取出的內容，一律拒絕。
+- 使用者端的 git 指令只讀取（rev-parse、ls-files、status、archive、log），而且以
+  `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never` 執行，
+  環境去掉所有繼承的 GIT_* 變數，再設 GIT_CONFIG_NOSYSTEM=1、GIT_CONFIG_GLOBAL=/dev/null、
+  GIT_NO_REPLACE_OBJECTS=1、GIT_ATTR_NOSYSTEM=1：不執行 hooks、不連任何遠端、
+  不讀系統或使用者層級的 git 設定。
 - 要安裝的檔案必須已提交且沒有修改；以 git archive HEAD 取出，tar 裡只接受預期的一般檔案，
   內容由程式自己寫到新的私人暫存目錄，從不使用 tar 的解壓縮。暫存目錄放在 XDG_RUNTIME_DIR
   （屬於你、0700、上層安全），沒有時才用 root 擁有且有黏著位元的 /tmp；執行 pkexec 前

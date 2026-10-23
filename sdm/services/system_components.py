@@ -24,7 +24,8 @@ import tarfile
 import tempfile
 
 from sdm.services.install_guard import (BOOTSTRAP, ComponentError, check_repository,  # noqa: F401
-                                        check_stage, head_text, stage_parent, user_private_gid)
+                                        check_stage, head_text, read_bytes, stage_parent,
+                                        user_private_gid)
 
 SOURCES = (
     "helper/sdm-cpu-power",
@@ -39,6 +40,12 @@ DIRECTORIES = frozenset(str(parent) for name in STAGED
                         for parent in PurePosixPath(name).parents if str(parent) != ".")
 ACTIONS = ("install", "remove")
 GIT = "/usr/bin/git"
+# 使用者端 git 指令的固定選項與環境：不執行 hooks、不用 fsmonitor、不連任何遠端，
+# 不讀系統與使用者的設定檔、不套用 replace 物件與系統的屬性檔，也不繼承任何 GIT_* 變數。
+SAFE_GIT_OPTIONS = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                    "-c", "protocol.allow=never")
+SAFE_GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1"}
 PKEXEC = "/usr/bin/pkexec"
 PYTHON = "/usr/bin/python3"
 DPKG_QUERY = "/usr/bin/dpkg-query"
@@ -80,9 +87,21 @@ def remove_command(root):
     return command_for(root, "remove")
 
 
-def git_output(argv):
+def git_command(root, *args):
+    return [GIT, *SAFE_GIT_OPTIONS, "-C", str(root), *args]
+
+
+def git_environment(environ):
+    """去掉所有繼承的 GIT_* 變數（含 GIT_DIR、GIT_WORK_TREE），再加上固定的安全設定。"""
+    env = {key: value for key, value in environ.items() if not key.startswith("GIT_")}
+    env.update(SAFE_GIT_ENV)
+    return env
+
+
+def git_output(argv, environ=None):
     try:
-        return subprocess.run(argv, capture_output=True, check=True).stdout
+        return subprocess.run(argv, capture_output=True, check=True,
+                              env=git_environment(os.environ if environ is None else environ)).stdout
     except (OSError, subprocess.CalledProcessError):
         raise ComponentError(UNTRACKED) from None
 
@@ -100,15 +119,15 @@ def package_installed():
 
 
 def check_clean(root, git):
-    base = [GIT, "-C", str(root)]
-    git(base + ["ls-files", "--error-unmatch", "--", *STAGED])
-    if git(base + ["status", "--porcelain", "--untracked-files=no", "--", *STAGED]).strip():
+    git(git_command(root, "ls-files", "--error-unmatch", "--", *STAGED))
+    status = git(git_command(root, "status", "--porcelain", "--untracked-files=no", "--", *STAGED))
+    if status.strip():
         raise ComponentError(DIRTY)
 
 
 def export(root, git):
     """HEAD 中這些檔案的內容；tar 裡有任何預期以外的成員就拒絕。"""
-    data = git([GIT, "-C", str(root), "archive", "--format=tar", "HEAD", "--", *STAGED])
+    data = git(git_command(root, "archive", "--format=tar", "HEAD", "--", *STAGED))
     contents = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
@@ -169,17 +188,19 @@ def result_text(action, status):
 PRIVATE_GROUP = object()        # run() 的預設：查詢使用者私人群組
 
 
-def gather(action, root, git, uid, lstat, private_gid):
-    """檢查原始碼資料夾、取出 HEAD 的檔案與要顯示的提交；不安全時拋出 ComponentError。"""
-    base = [GIT, "-C", str(root)]
-    check_repository(root, base, git, uid, lstat, private_gid)
+def gather(action, root, git, uid, private_gid, files):
+    """檢查原始碼資料夾、取出 HEAD 的檔案與要顯示的提交；不安全時拋出 ComponentError。
+    files 為（lstat、listdir、read）。"""
+    check_repository(root, git_command(root), git, uid, files[0], private_gid, files[1], files[2])
     check_clean(root, git)
     contents = export(root, git)
-    return contents, head_text(action, git(base + ["log", "-1", "--format=%h %s", "HEAD"]))
+    return contents, head_text(action, git(git_command(root, "log", "-1", "--format=%h %s",
+                                                       "HEAD")))
 
 
 def run(action, root, say, git=git_output, call=subprocess.call, make_stage=None,
-        deb_installed=package_installed, lstat=os.lstat, uid=None, private_gid=PRIVATE_GROUP):
+        deb_installed=package_installed, lstat=os.lstat, uid=None, private_gid=PRIVATE_GROUP,
+        listdir=os.listdir, read=read_bytes):
     """安裝或移除；回傳結束碼（pkexec 的結束碼，或使用者端拒絕時的 1）。"""
     uid = os.getuid() if uid is None else uid
     if private_gid is PRIVATE_GROUP:
@@ -191,7 +212,7 @@ def run(action, root, say, git=git_output, call=subprocess.call, make_stage=None
         say(DEB_INSTALLED)
         return REFUSED
     try:
-        contents, head = gather(action, root, git, uid, lstat, private_gid)
+        contents, head = gather(action, root, git, uid, private_gid, (lstat, listdir, read))
         stage = make_stage()
     except ComponentError as error:
         say(str(error))

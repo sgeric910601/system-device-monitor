@@ -54,11 +54,13 @@ class FakeGit:
 
     def __call__(self, argv):
         self.calls.append(argv)
-        command = argv[3]
+        position = argv.index("-C") + 2
+        command = argv[position]
         if command == "ls-files" and not self.tracked:
             raise components.ComponentError("not tracked")
         if command == "rev-parse":
-            return (self.git_dir.encode() if argv[4] == "--absolute-git-dir" else self.common) \
+            wanted = argv[position + 1]
+            return (self.git_dir.encode() if wanted == "--absolute-git-dir" else self.common) \
                 + b"\n"
         return {"ls-files": b"", "status": self.status, "archive": self.archive,
                 "log": HEAD}[command]
@@ -85,6 +87,15 @@ class FakeTree:
         if path.startswith(str(CHECKOUT)):
             raise FileNotFoundError(path)
         return os.lstat(path)
+
+    def listdir(self, path):
+        prefix = str(path) + "/"
+        return sorted({key[len(prefix):].split("/")[0] for key in self.entries
+                       if key.startswith(prefix)})
+
+    @staticmethod
+    def read(path):
+        return b""
 
 
 class Run(unittest.TestCase):
@@ -115,7 +126,8 @@ class Run(unittest.TestCase):
         return components.run(action, CHECKOUT, git=self.git, call=self.call,
                               make_stage=self.make_stage, deb_installed=lambda: deb,
                               say=self.messages.append, lstat=self.tree, uid=os.getuid(),
-                              private_gid=private_gid)
+                              private_gid=private_gid, listdir=self.tree.listdir,
+                              read=self.tree.read)
 
     def test_stages_a_private_copy_and_runs_pkexec(self):
         self.assertEqual(self.run_action(), 0)
@@ -146,7 +158,8 @@ class Run(unittest.TestCase):
 
     def test_git_reads_only_the_component_paths_from_head(self):
         self.run_action()
-        prefix = ["/usr/bin/git", "-C", str(CHECKOUT)]
+        prefix = ["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                  "-c", "protocol.allow=never", "-C", str(CHECKOUT)]
         self.assertEqual(self.git.calls, [
             prefix + ["rev-parse", "--absolute-git-dir"],
             prefix + ["rev-parse", "--git-common-dir"],
@@ -194,6 +207,19 @@ class Run(unittest.TestCase):
                 tree.entries.update(change)
                 self.assertEqual(self.run_action(tree=tree, private_gid=1234), 1)
                 self.assertIn("原始碼資料夾", self.messages[-1])
+        self.assertEqual(self.seen, [])
+
+    def test_foreign_entries_inside_git_metadata_are_refused(self):
+        for name in ("objects/ab/cdef", "config", "objects/info/alternates"):
+            with self.subTest(name=name):
+                tree = FakeTree()
+                tree.entries[GIT_DIR + "/objects"] = entry()
+                tree.entries[GIT_DIR + "/objects/ab"] = entry()
+                tree.entries[GIT_DIR + "/objects/info"] = entry()
+                owner = os.getuid() if name.endswith("alternates") else os.getuid() + 9
+                tree.entries[GIT_DIR + "/" + name] = entry("file", uid=owner, mode=0o644)
+                self.assertEqual(self.run_action(tree=tree), 1)
+                self.assertIn("git 目錄", self.messages[-1])
         self.assertEqual(self.seen, [])
 
     def test_user_private_group_may_write_the_checkout(self):
@@ -256,9 +282,11 @@ class Run(unittest.TestCase):
     def test_stage_is_removed_when_pkexec_fails_to_start(self):
         def broken(argv):
             raise OSError("missing pkexec")
+        tree = FakeTree()
         result = components.run("install", CHECKOUT, git=FakeGit(), call=broken,
                                 make_stage=self.make_stage, deb_installed=lambda: False,
-                                say=self.messages.append, lstat=FakeTree(), private_gid=None)
+                                say=self.messages.append, lstat=tree, private_gid=None,
+                                listdir=tree.listdir, read=tree.read)
         self.assertEqual(result, 1)
         self.assertFalse(self.stages[0].exists())
 
@@ -270,9 +298,10 @@ class Run(unittest.TestCase):
             observed.extend(stat.S_IMODE(path.lstat().st_mode) for path in stage.rglob("*"))
             return 0
 
+        tree = FakeTree()
         components.run("install", CHECKOUT, git=FakeGit(), call=call, make_stage=self.make_stage,
-                       deb_installed=lambda: False, say=self.messages.append, lstat=FakeTree(),
-                       private_gid=None)
+                       deb_installed=lambda: False, say=self.messages.append, lstat=tree,
+                       private_gid=None, listdir=tree.listdir, read=tree.read)
         self.assertTrue(observed)
         self.assertTrue(all(mode & 0o077 == 0 for mode in observed))
 
@@ -344,6 +373,29 @@ class Commands(unittest.TestCase):
     def test_sources_match_the_root_side(self):
         self.assertEqual(components.SOURCES, tuple(source for source, _, _ in installer.FILES))
         self.assertEqual(components.STAGED, components.SOURCES + ("scripts/install_system.py",))
+
+    def test_git_runs_with_a_clean_environment(self):
+        seen = {}
+
+        def fake_run(argv, **options):
+            seen.update(options, argv=argv)
+            return SimpleNamespace(stdout=b"ok")
+        environ = {"PATH": "/usr/bin", "HOME": "/var/empty-home", "GIT_DIR": "/elsewhere",
+                   "GIT_WORK_TREE": "/x", "GIT_CONFIG_PARAMETERS": "'core.hooksPath'='/tmp'",
+                   "GIT_EXEC_PATH": "/evil", "GIT_REPLACE_REF_BASE": "refs/x/"}
+        original = components.subprocess.run
+        components.subprocess.run = fake_run
+        try:
+            argv = components.git_command(CHECKOUT, "status")
+            self.assertEqual(components.git_output(argv, environ=environ), b"ok")
+        finally:
+            components.subprocess.run = original
+        self.assertEqual(seen["argv"][:8], ["/usr/bin/git", "-c", "core.hooksPath=/dev/null",
+                                            "-c", "core.fsmonitor=false", "-c",
+                                            "protocol.allow=never", "-C"])
+        self.assertEqual(seen["env"], {"PATH": "/usr/bin", "HOME": "/var/empty-home",
+                                       "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                                       "GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1"})
 
     def test_git_runner_reports_failures(self):
         with self.assertRaises(components.ComponentError):
