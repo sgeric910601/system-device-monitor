@@ -11,6 +11,7 @@ from pathlib import Path
 import stat
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from sdm.services import system_components as components
@@ -41,9 +42,14 @@ def real_entries():
             + [(name, (ROOT/name).read_bytes(), tarfile.REGTYPE) for name in components.STAGED])
 
 
+GIT_DIR = str(CHECKOUT/".git")
+HEAD = b"abc1234 feat: add the \x1b[31mCPU\x1b[0m sampler\n"
+
+
 class FakeGit:
-    def __init__(self, status=b"", archive=None, tracked=True):
-        self.status, self.tracked, self.calls = status, tracked, []
+    def __init__(self, status=b"", archive=None, tracked=True, common=b".git", git_dir=GIT_DIR):
+        self.status, self.tracked, self.calls, self.common = status, tracked, [], common
+        self.git_dir = git_dir
         self.archive = tar_bytes(real_entries()) if archive is None else archive
 
     def __call__(self, argv):
@@ -51,7 +57,34 @@ class FakeGit:
         command = argv[3]
         if command == "ls-files" and not self.tracked:
             raise components.ComponentError("not tracked")
-        return {"ls-files": b"", "status": self.status, "archive": self.archive}[command]
+        if command == "rev-parse":
+            return (self.git_dir.encode() if argv[4] == "--absolute-git-dir" else self.common) \
+                + b"\n"
+        return {"ls-files": b"", "status": self.status, "archive": self.archive,
+                "log": HEAD}[command]
+
+
+def entry(kind="dir", uid=None, mode=0o755, gid=None):
+    uid = os.getuid() if uid is None else uid
+    bits = {"dir": stat.S_IFDIR, "file": stat.S_IFREG}[kind]
+    return SimpleNamespace(st_mode=bits | mode, st_uid=uid, st_gid=os.getgid() if gid is None
+                           else gid)
+
+
+class FakeTree:
+    """原始碼資料夾（/opt/checkout with space）用假的 stat，其他路徑（暫存目錄）用真的。"""
+
+    def __init__(self):
+        self.entries = {"/": entry(uid=0), "/opt": entry(uid=0), str(CHECKOUT): entry(),
+                        GIT_DIR: entry()}
+
+    def __call__(self, path):
+        path = str(path)
+        if path in self.entries:
+            return self.entries[path]
+        if path.startswith(str(CHECKOUT)):
+            raise FileNotFoundError(path)
+        return os.lstat(path)
 
 
 class Run(unittest.TestCase):
@@ -76,20 +109,24 @@ class Run(unittest.TestCase):
                                      for name in components.STAGED}))
         return self.exit_status
 
-    def run_action(self, action="install", git=None, deb=False):
+    def run_action(self, action="install", git=None, deb=False, tree=None, private_gid=None):
         self.git = git or FakeGit()
+        self.tree = tree or FakeTree()
         return components.run(action, CHECKOUT, git=self.git, call=self.call,
                               make_stage=self.make_stage, deb_installed=lambda: deb,
-                              say=self.messages.append)
+                              say=self.messages.append, lstat=self.tree, uid=os.getuid(),
+                              private_gid=private_gid)
 
     def test_stages_a_private_copy_and_runs_pkexec(self):
         self.assertEqual(self.run_action(), 0)
         seen = self.seen[0]
         stage = self.stages[0]
         digest = hashlib.sha256(seen["manifest"]).hexdigest()
+        script = stage/"scripts/install_system.py"
+        script_digest = hashlib.sha256((ROOT/"scripts/install_system.py").read_bytes()).hexdigest()
         self.assertEqual(seen["argv"], [
-            "/usr/bin/pkexec", "/usr/bin/python3", "-I", "-B",
-            str(stage/"scripts/install_system.py"), "install", "--stage", str(stage),
+            "/usr/bin/pkexec", "/usr/bin/python3", "-I", "-B", "-c", components.BOOTSTRAP,
+            str(script), script_digest, "install", "--stage", str(stage),
             "--manifest-sha256", digest])
         self.assertEqual(seen["mode"], 0o700)
         manifest = json.loads(seen["manifest"])
@@ -111,10 +148,71 @@ class Run(unittest.TestCase):
         self.run_action()
         prefix = ["/usr/bin/git", "-C", str(CHECKOUT)]
         self.assertEqual(self.git.calls, [
+            prefix + ["rev-parse", "--absolute-git-dir"],
+            prefix + ["rev-parse", "--git-common-dir"],
             prefix + ["ls-files", "--error-unmatch", "--", *components.STAGED],
             prefix + ["status", "--porcelain", "--untracked-files=no", "--",
                       *components.STAGED],
-            prefix + ["archive", "--format=tar", "HEAD", "--", *components.STAGED]])
+            prefix + ["archive", "--format=tar", "HEAD", "--", *components.STAGED],
+            prefix + ["log", "-1", "--format=%h %s", "HEAD"]])
+
+    def test_head_commit_is_shown_before_authorization(self):
+        order = []
+        self.messages = order
+        original = self.call
+        self.call = lambda argv: order.append("pkexec") or original(argv)
+        self.run_action()
+        self.assertEqual(order[0], "將以管理員權限安裝這個提交的元件：abc1234 feat: add the "
+                                   "[31mCPU[0m sampler")
+        self.assertEqual(order[1], "pkexec")
+
+    def test_staged_script_passes_the_bootstrap(self):
+        scope = {"__name__": "bootstrap"}
+        exec(compile(components.BOOTSTRAP, "<bootstrap>", "exec"), scope)
+        loaded = []
+
+        def call(argv):
+            loaded.append(scope["load"](argv[5:], {"PKEXEC_UID": str(os.getuid())},
+                                        geteuid=lambda: 0))
+            return 0
+        self.call = call
+        self.assertEqual(self.run_action(), 0)
+        self.assertEqual(loaded[0][1], (ROOT/"scripts/install_system.py").read_bytes())
+
+    def test_unsafe_repository_is_refused_before_anything_runs(self):
+        cases = (
+            {str(CHECKOUT): entry(mode=0o775, gid=4242)},
+            {str(CHECKOUT): entry(mode=0o757)},
+            {str(CHECKOUT): entry(uid=os.getuid() + 1)},
+            {"/opt": entry(uid=0, mode=0o777)},
+            {GIT_DIR: entry(mode=0o777)},
+            {GIT_DIR: entry(uid=os.getuid() + 1)},
+        )
+        for change in cases:
+            with self.subTest(change=sorted(change)):
+                tree = FakeTree()
+                tree.entries.update(change)
+                self.assertEqual(self.run_action(tree=tree, private_gid=1234), 1)
+                self.assertIn("原始碼資料夾", self.messages[-1])
+        self.assertEqual(self.seen, [])
+
+    def test_user_private_group_may_write_the_checkout(self):
+        tree = FakeTree()
+        tree.entries[str(CHECKOUT)] = entry(mode=0o775, gid=4242)
+        tree.entries[GIT_DIR] = entry(mode=0o775, gid=4242)
+        self.assertEqual(self.run_action(tree=tree, private_gid=4242), 0)
+
+    def test_worktree_git_file_and_common_directory_are_checked(self):
+        tree = FakeTree()
+        tree.entries[GIT_DIR] = entry("file", mode=0o644)
+        common, worktree = "/srv/main/.git", "/srv/main/.git/worktrees/x"
+        tree.entries.update({"/srv": entry(uid=0), "/srv/main": entry(), common: entry(),
+                             common + "/worktrees": entry(), worktree: entry()})
+        git = FakeGit(common=common.encode(), git_dir=worktree)
+        self.assertEqual(self.run_action(git=git, tree=tree), 0)
+        tree.entries["/srv/main"] = entry(mode=0o777)
+        git = FakeGit(common=common.encode(), git_dir=worktree)
+        self.assertEqual(self.run_action(git=git, tree=tree), 1)
 
     def test_remove_uses_the_same_staging(self):
         self.assertEqual(self.run_action("remove"), 0)
@@ -160,7 +258,7 @@ class Run(unittest.TestCase):
             raise OSError("missing pkexec")
         result = components.run("install", CHECKOUT, git=FakeGit(), call=broken,
                                 make_stage=self.make_stage, deb_installed=lambda: False,
-                                say=self.messages.append)
+                                say=self.messages.append, lstat=FakeTree(), private_gid=None)
         self.assertEqual(result, 1)
         self.assertFalse(self.stages[0].exists())
 
@@ -173,9 +271,66 @@ class Run(unittest.TestCase):
             return 0
 
         components.run("install", CHECKOUT, git=FakeGit(), call=call, make_stage=self.make_stage,
-                       deb_installed=lambda: False, say=self.messages.append)
+                       deb_installed=lambda: False, say=self.messages.append, lstat=FakeTree(),
+                       private_gid=None)
         self.assertTrue(observed)
         self.assertTrue(all(mode & 0o077 == 0 for mode in observed))
+
+
+class StageLocation(unittest.TestCase):
+    """暫存目錄放在 XDG_RUNTIME_DIR（屬於使用者、0700），否則只接受 root 擁有且有黏著位元的 /tmp。"""
+
+    def lstat(self, entries):
+        def fake(path):
+            try:
+                return entries[str(path)]
+            except KeyError:
+                raise FileNotFoundError(path) from None
+        return fake
+
+    def tree(self, runtime=None, tmp=None):
+        entries = {"/": entry(uid=0), "/run": entry(uid=0), "/run/user": entry(uid=0),
+                   "/run/user/1000": runtime or entry(uid=1000, mode=0o700),
+                   "/tmp": tmp or entry(uid=0, mode=0o1777)}
+        return self.lstat(entries)
+
+    def test_runtime_directory_is_preferred(self):
+        self.assertEqual(components.stage_parent({"XDG_RUNTIME_DIR": "/run/user/1000"}, 1000,
+                                                 self.tree()), "/run/user/1000")
+
+    def test_unsafe_runtime_directories_fall_back_to_tmp(self):
+        for env, runtime in (({}, None), ({"XDG_RUNTIME_DIR": "relative"}, None),
+                             ({"XDG_RUNTIME_DIR": "/run/user/1000/"}, None),
+                             ({"XDG_RUNTIME_DIR": "/run/user/1000"}, entry(uid=1000, mode=0o750)),
+                             ({"XDG_RUNTIME_DIR": "/run/user/1000"}, entry(uid=1001, mode=0o700))):
+            with self.subTest(env=env, runtime=runtime):
+                self.assertEqual(components.stage_parent(env, 1000, self.tree(runtime)), "/tmp")
+
+    def test_tmp_must_be_root_owned_and_sticky(self):
+        for tmp in (entry(uid=0, mode=0o777), entry(uid=1000, mode=0o1777)):
+            with self.subTest(tmp=tmp):
+                with self.assertRaises(components.ComponentError):
+                    components.stage_parent({}, 1000, self.tree(tmp=tmp))
+
+    def test_stage_and_parents_are_checked_before_pkexec(self):
+        with tempfile.TemporaryDirectory() as temp:
+            stage = Path(temp)/"sdm-system-x"
+            stage.mkdir(mode=0o700)
+            components.check_stage(str(stage), os.getuid(), os.lstat)
+            stage.chmod(0o750)
+            with self.assertRaises(components.ComponentError):
+                components.check_stage(str(stage), os.getuid(), os.lstat)
+            stage.chmod(0o700)
+            real = os.lstat
+
+            def unsafe(path):
+                info = real(path)
+                if str(path) == temp:
+                    return SimpleNamespace(st_mode=info.st_mode | 0o002, st_uid=info.st_uid,
+                                           st_gid=info.st_gid)
+                return info
+            with self.assertRaises(components.ComponentError):
+                components.check_stage(str(stage), os.getuid(), unsafe)
 
 
 class Commands(unittest.TestCase):

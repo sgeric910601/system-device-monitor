@@ -153,7 +153,8 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 
       /usr/bin/python3 -B install.py --system-components install
 
-  只安裝已提交（git HEAD）的版本；相關檔案有未提交的修改時會拒絕。已安裝 .deb 時不需要也不能安裝。
+  只安裝已提交（git HEAD）的版本；相關檔案有未提交的修改時會拒絕，授權前會先顯示要安裝的提交。
+  原始碼資料夾、.git 與上層目錄必須只有你（或 root）能寫入。已安裝 .deb 時不需要也不能安裝。
   檔案安裝到 /usr/local/libexec/system-device-monitor、/usr/local/share/polkit-1/actions
   與 /etc/systemd/system（名稱含 -local-）。
 

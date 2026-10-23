@@ -1,13 +1,16 @@
 """原始碼資料夾的管理員元件：install.py --system-components install｜remove 的使用者端。
 
 以一般使用者執行（不需要、也不接受 sudo）：
-1. 要安裝的檔案必須已提交到 git 且沒有修改，否則拒絕；安裝的一定是 HEAD 的內容。
-2. 以 git archive HEAD 取出這些檔案；tar 成員只能是預期的一般檔案與它們的上層目錄，
-   內容讀進記憶體後自己寫到新的私人暫存目錄（目錄 0700、檔案 0600、O_EXCL、O_NOFOLLOW），
-   從不使用 tarfile 的解壓縮功能。
-3. 每個檔案的 SHA-256 寫成 manifest.json，再把 manifest 本身的 SHA-256 當參數執行
-   pkexec /usr/bin/python3 -I -B <暫存>/scripts/install_system.py；root 端重新驗證所有雜湊。
-4. 結束後刪除暫存目錄。已安裝 .deb 套件時不安裝（兩者擇一），但可以移除。
+1. 原始碼資料夾與 git 目錄（含上層）只能由使用者或 root 寫入（見 install_guard）。
+2. 要安裝的檔案必須已提交到 git 且沒有修改，否則拒絕；安裝的一定是 HEAD 的內容。
+3. 以 git archive HEAD 取出這些檔案；tar 成員只能是預期的一般檔案與它們的上層目錄，
+   內容讀進記憶體後自己寫到新的私人暫存目錄（XDG_RUNTIME_DIR 底下，目錄 0700、檔案 0600、
+   O_EXCL、O_NOFOLLOW），從不使用 tarfile 的解壓縮功能。
+4. 每個檔案的 SHA-256 寫成 manifest.json；確認暫存目錄與上層都安全、顯示 HEAD 的提交後，執行
+   pkexec /usr/bin/python3 -I -B -c BOOTSTRAP <暫存>/scripts/install_system.py <它的 SHA-256>
+   install｜remove --stage <暫存> --manifest-sha256 <manifest 的 SHA-256>。
+   啟動碼只執行雜湊相符的那份位元組；root 端再驗證 manifest 與每個檔案的雜湊。
+5. 結束後刪除暫存目錄。已安裝 .deb 套件時不安裝（兩者擇一），但可以移除。
 """
 import hashlib
 import io
@@ -19,6 +22,9 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+
+from sdm.services.install_guard import (BOOTSTRAP, ComponentError, check_repository,  # noqa: F401
+                                        check_stage, head_text, stage_parent, user_private_gid)
 
 SOURCES = (
     "helper/sdm-cpu-power",
@@ -58,10 +64,6 @@ BAD_ARCHIVE = "git archive 的內容不符合預期，已停止。"
 DEB_INSTALLED = "已安裝 .deb 套件：管理員元件已包含在套件中，不需要再從原始碼安裝。"
 NO_PKEXEC = "無法執行 pkexec（需要 policykit-1／polkitd）。"
 STAGE_FAILED = "無法建立暫存目錄，沒有做任何變更。"
-
-
-class ComponentError(Exception):
-    """無法安全地準備安裝；訊息是給使用者看的說明。"""
 
 
 def command_for(root, action):
@@ -139,10 +141,11 @@ def manifest_bytes(contents):
                       sort_keys=True).encode("utf-8") + b"\n"
 
 
-def pkexec_argv(stage, action, digest):
+def pkexec_argv(stage, action, digest, script_digest):
+    """root 以啟動碼驗證並執行暫存的 install_system.py；參數清單，從不經過 shell。"""
     stage = str(stage)
-    return [PKEXEC, PYTHON, "-I", "-B", str(Path(stage)/INSTALLER), action, "--stage", stage,
-            "--manifest-sha256", digest]
+    return [PKEXEC, PYTHON, "-I", "-B", "-c", BOOTSTRAP, str(Path(stage)/INSTALLER), script_digest,
+            action, "--stage", stage, "--manifest-sha256", digest]
 
 
 def prepare(stage, contents):
@@ -163,22 +166,38 @@ def result_text(action, status):
     return FAILURES.get(status, f"管理員元件安裝程式失敗（結束碼 {status}）。")
 
 
-def run(action, root, say, git=git_output, call=subprocess.call,
-        make_stage=lambda: tempfile.mkdtemp(prefix=STAGE_PREFIX),
-        deb_installed=package_installed):
+PRIVATE_GROUP = object()        # run() 的預設：查詢使用者私人群組
+
+
+def gather(action, root, git, uid, lstat, private_gid):
+    """檢查原始碼資料夾、取出 HEAD 的檔案與要顯示的提交；不安全時拋出 ComponentError。"""
+    base = [GIT, "-C", str(root)]
+    check_repository(root, base, git, uid, lstat, private_gid)
+    check_clean(root, git)
+    contents = export(root, git)
+    return contents, head_text(action, git(base + ["log", "-1", "--format=%h %s", "HEAD"]))
+
+
+def run(action, root, say, git=git_output, call=subprocess.call, make_stage=None,
+        deb_installed=package_installed, lstat=os.lstat, uid=None, private_gid=PRIVATE_GROUP):
     """安裝或移除；回傳結束碼（pkexec 的結束碼，或使用者端拒絕時的 1）。"""
+    uid = os.getuid() if uid is None else uid
+    if private_gid is PRIVATE_GROUP:
+        private_gid = user_private_gid(uid)
+    if make_stage is None:
+        make_stage = lambda: tempfile.mkdtemp(prefix=STAGE_PREFIX,  # noqa: E731
+                                              dir=stage_parent(os.environ, uid, lstat))
     if action == "install" and deb_installed():
         say(DEB_INSTALLED)
         return REFUSED
     try:
-        check_clean(root, git)
-        contents = export(root, git)
+        contents, head = gather(action, root, git, uid, lstat, private_gid)
+        stage = make_stage()
     except ComponentError as error:
         say(str(error))
         return REFUSED
-    stage = make_stage()
     try:
-        status = stage_and_call(stage, contents, action, call, say)
+        status = stage_and_call(stage, contents, action, call, say, head, uid, lstat)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     if status is None:
@@ -187,15 +206,22 @@ def run(action, root, say, git=git_output, call=subprocess.call,
     return status
 
 
-def stage_and_call(stage, contents, action, call, say):
-    """寫出暫存檔並執行 pkexec；回傳它的結束碼，在本機就失敗時說明原因並回傳 None。"""
+def stage_and_call(stage, contents, action, call, say, head, uid, lstat):
+    """寫出暫存檔、確認暫存目錄安全並顯示提交，再執行 pkexec；回傳它的結束碼，
+    在本機就失敗時說明原因並回傳 None。"""
     try:
         digest = prepare(stage, contents)
+        check_stage(stage, uid, lstat)
     except OSError:
         say(STAGE_FAILED)
         return None
+    except ComponentError as error:
+        say(str(error))
+        return None
+    say(head)
+    script_digest = hashlib.sha256(contents[INSTALLER]).hexdigest()
     try:
-        return call(pkexec_argv(stage, action, digest))
+        return call(pkexec_argv(stage, action, digest, script_digest))
     except OSError:
         say(NO_PKEXEC)
         return None

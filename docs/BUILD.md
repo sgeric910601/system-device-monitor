@@ -145,7 +145,7 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
 - 管理員元件：helper/sdm-cpu-power（pkexec 執行的開關小程式）、helper/sdm-cpu-power-service
   （socket 啟動的 RAPL 取樣服務）、helper/policy（polkit 動作）、helper/systemd（單元檔，
   .deb 與原始碼安裝各一組）、packaging/debian（安裝前後腳本）、scripts/install_system.py
-  （原始碼安裝的 root 端）。它們只用標準函式庫、不載入 sdm；常數與 sdm/constants.py 的
+  （原始碼安裝的 root 端，由 sdm/services/install_guard.py 的固定啟動碼驗證雜湊後才執行）。它們只用標準函式庫、不載入 sdm；常數與 sdm/constants.py 的
   CpuPower 相同（測試確認）。sdm/services/privileged.py 尋找元件並以 pkexec 開關，
   sdm/services/system_components.py 為 install.py --system-components 的使用者端，
   sdm/data/cpu_power_client.py 為 socket 客戶端，sdm/core/cpu_power.py 與 ppt_calibration.py

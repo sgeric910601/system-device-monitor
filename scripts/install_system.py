@@ -1,9 +1,13 @@
 #!/usr/bin/python3
 """安裝或移除原始碼資料夾的 CPU 功耗取樣元件（由 install.py 經 pkexec 以 root 執行）。
 
-用法：pkexec /usr/bin/python3 -I -B <暫存>/scripts/install_system.py install｜remove
-      --stage <暫存> --manifest-sha256 <64 位小寫十六進位>
-- 必須以 root 執行且由 pkexec 設定 PKEXEC_UID；暫存目錄必須屬於該使用者且只有他能存取。
+用法：pkexec /usr/bin/python3 -I -B -c <啟動碼> <暫存>/scripts/install_system.py <本檔的 SHA-256>
+      install｜remove --stage <暫存> --manifest-sha256 <64 位小寫十六進位>
+  啟動碼（sdm/services/install_guard.py 的 BOOTSTRAP）先確認本檔的擁有者、所在目錄與雜湊，
+  再執行剛才比對過的同一份位元組；這裡收到的參數從 install｜remove 開始。
+- 必須以 root 執行且由 pkexec 設定 PKEXEC_UID；暫存目錄必須屬於該使用者且只有他能存取，
+  它的每一層上層目錄都必須屬於 root 或該使用者、群組與其他人不可寫（root 擁有且有黏著位元的
+  /tmp 除外）。暫存檔一律以 O_NOFOLLOW｜O_NONBLOCK 開啟（FIFO 等特殊檔案不會卡住）。
 - install：manifest.json 的 SHA-256 必須等於參數；manifest 必須剛好列出下方 FILES 的來源；
   每個檔案以 O_NOFOLLOW 逐層開啟、讀進記憶體並比對雜湊，全部通過後才開始寫入。
   寫入位置與權限固定寫在這裡（/usr/local/libexec、/usr/local/share/polkit-1/actions、
@@ -59,8 +63,8 @@ COMMAND_TIMEOUT_S = 60
 DIRECTORY_MODE = 0o755
 UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
 PRIVATE_BITS = 0o077
-DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 class Usage(Exception):
@@ -82,6 +86,7 @@ class Context(NamedTuple):
     run: Callable           # argv →（結束碼、標準輸出）
     euid: int
     user_exists: Callable
+    lstat: Callable = os.lstat
 
 
 def run_command(argv):
@@ -152,7 +157,7 @@ def read_at(dir_fd, relative):
 def parse_manifest(data):
     try:
         manifest = json.loads(data.decode("utf-8"))
-    except ValueError:
+    except (ValueError, RecursionError):
         raise Failed("invalid-manifest") from None
     if not isinstance(manifest, dict):
         raise Failed("invalid-manifest")
@@ -165,8 +170,27 @@ def parse_manifest(data):
     return files
 
 
-def read_stage(stage, digest, uid):
-    """暫存目錄必須屬於呼叫者、只有他能存取；回傳 來源 → 已驗證雜湊的內容。"""
+def safe_parent(info, uid):
+    """上層目錄：屬於 root 或呼叫者、群組與其他人不可寫；root 擁有且有黏著位元時例外。"""
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
+        return False
+    return not info.st_mode & UNSAFE_BITS or (info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX))
+
+
+def check_stage_parents(stage, uid, lstat):
+    parts = stage.split("/")[1:-1]
+    for end in range(len(parts) + 1):
+        try:
+            info = lstat("/" + "/".join(parts[:end]))
+        except OSError:
+            raise Failed("invalid-stage") from None
+        if not safe_parent(info, uid):
+            raise Failed("invalid-stage")
+
+
+def read_stage(stage, digest, uid, lstat=os.lstat):
+    """暫存目錄必須屬於呼叫者、只有他能存取、上層都安全；回傳 來源 → 已驗證雜湊的內容。"""
+    check_stage_parents(stage, uid, lstat)
     try:
         stage_fd = os.open(stage, DIRECTORY_FLAGS)
     except OSError:
@@ -302,7 +326,7 @@ def systemctl(context, *args):
 def install(context, stage, digest, uid):
     if deb_installed(context):
         raise Failed("deb-installed")
-    contents = read_stage(stage, digest, uid)
+    contents = read_stage(stage, digest, uid, context.lstat)
     for source, target, mode in FILES:
         parent, name = target.rsplit("/", 1)
         fd = open_directory(context, parent, create=True)
@@ -318,7 +342,7 @@ def install(context, stage, digest, uid):
 
 
 def remove(context, stage, digest, uid):
-    read_stage(stage, digest, uid)
+    read_stage(stage, digest, uid, context.lstat)
     systemctl(context, "disable", "--now", SOCKET)      # 尚未安裝或已移除時失敗也沒關係
     systemctl(context, "stop", SERVICE)
     for _, target, _ in FILES:
@@ -357,7 +381,7 @@ def main(argv, env, context=None, emit=emit_json):
     except Failed as error:
         emit({"ok": False, "error": str(error)})
         return EXIT_FAILED
-    except OSError:
+    except (OSError, ValueError, RecursionError):
         emit({"ok": False, "error": "failed"})
         return EXIT_FAILED
     emit(result)

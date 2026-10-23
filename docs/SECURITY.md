@@ -85,15 +85,26 @@
 
 ## 原始碼安裝（install.py --system-components）
 
-- 以一般使用者執行。要安裝的檔案必須已提交且沒有修改；以 git archive HEAD 取出，
-  tar 裡只接受預期的一般檔案，內容由程式自己寫到新的私人暫存目錄（0700），從不使用 tar 的解壓縮。
-- 每個檔案的 SHA-256 寫進 manifest.json，manifest 本身的 SHA-256 當參數交給
-  pkexec /usr/bin/python3 -I -B scripts/install_system.py（隔離模式，暫存目錄不在匯入路徑上）。
-- root 端：暫存目錄必須屬於呼叫者且只有他能存取；manifest 雜湊、內容與每個檔案的雜湊全部通過後
-  才開始寫入；目的地與權限寫死在程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。
+- 以一般使用者執行。原始碼資料夾、.git、實際的 git 目錄與共用 git 目錄，以及它們的每一層
+  上層目錄，都必須屬於你或 root、其他人不可寫；群組可寫只接受 root 擁有且有黏著位元的目錄
+  （/tmp），或你的使用者私人群組（與帳號同名、沒有其他成員的主要群組，Ubuntu 預設 umask 002
+  建立的資料夾就是這樣）。否則別的帳號可能改掉 git 取出的內容。
+- 要安裝的檔案必須已提交且沒有修改；以 git archive HEAD 取出，tar 裡只接受預期的一般檔案，
+  內容由程式自己寫到新的私人暫存目錄，從不使用 tar 的解壓縮。暫存目錄放在 XDG_RUNTIME_DIR
+  （屬於你、0700、上層安全），沒有時才用 root 擁有且有黏著位元的 /tmp；執行 pkexec 前
+  再確認暫存目錄是你的 0700 目錄、每一層上層都安全。
+- 執行 pkexec 前在終端機顯示要安裝的提交（短雜湊與標題）。
+- root 從不以路徑讓 Python 執行使用者可寫的腳本：pkexec 執行的是
+  /usr/bin/python3 -I -B -c <固定的短啟動碼> <暫存的 install_system.py> <它的 SHA-256> …。
+  啟動碼確認 PKEXEC_UID、腳本路徑已正規化、每一層上層目錄都安全、腳本所在目錄屬於你且只有你
+  能存取，以 O_NOFOLLOW｜O_NONBLOCK 開啟腳本、確認它是你擁有的一般檔案，讀一次、比對 SHA-256，
+  再執行剛才比對過的同一份位元組。也就是說，root 只會執行雜湊相符的那份使用者暫存的程式碼。
+- install_system.py（root 端）再確認暫存目錄與每一層上層、manifest 的雜湊、內容與每個檔案的
+  雜湊（暫存檔一律 O_NOFOLLOW｜O_NONBLOCK 開啟），全部通過後才開始寫入；目的地與權限寫死在
+  程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
   remove 只刪除它安裝的檔案、drop-in 與 sockets.target.wants 的符號連結。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
-  Python；只在你自己執行這個指令時出現。
+  Python 與它的參數；只在你自己執行這個指令時出現。
 
 ## 套件的安裝前後腳本
 
@@ -141,5 +152,6 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - 授權或小程式超過 2 分鐘沒有完成時，看板不再等待並嘗試結束 pkexec；已經以 root 執行的小程式
   一般使用者無法結束，會在 systemctl 的逾時內自行結束。
 - 只讀第一個處理器插槽（intel-rapl:0）；多插槽伺服器的其他插槽不列入。
-- 已經取得你帳號權限的攻擊者，可以在你輸入密碼前替換原始碼安裝要執行的檔案；
-  只在你信任的原始碼資料夾執行 install.py --system-components。
+- 原始碼安裝時，已經取得你帳號權限的攻擊者本來就能改你的原始碼資料夾或 install.py 本身
+  （與 sudo make install 相同）；暫存後才被替換的檔案會因雜湊不符而被拒絕。只在你信任的原始碼
+  資料夾、以沒有被入侵的帳號執行 install.py --system-components。

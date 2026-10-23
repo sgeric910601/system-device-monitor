@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 
 from sdm.constants import CpuPower
@@ -74,15 +76,15 @@ class Base(unittest.TestCase):
         (self.stage/"manifest.json").write_bytes(data)
         return sha256(data)
 
-    def context(self, euid=0):
+    def context(self, euid=0, lstat=os.lstat):
         return installer.Context(root=str(self.root.path), owner=os.getuid(), run=self.runner,
-                                 euid=euid, user_exists=lambda uid: True)
+                                 euid=euid, user_exists=lambda uid: True, lstat=lstat)
 
-    def main(self, action="install", digest=None, env=None, euid=0, argv=None):
+    def main(self, action="install", digest=None, env=None, euid=0, argv=None, lstat=os.lstat):
         argv = argv if argv is not None else [action, "--stage", str(self.stage),
                                               "--manifest-sha256", digest or self.digest]
         env = {"PKEXEC_UID": str(self.uid)} if env is None else env
-        return installer.main(argv, env, self.context(euid), emit=self.output.append)
+        return installer.main(argv, env, self.context(euid, lstat), emit=self.output.append)
 
     def installed(self):
         return sorted(str(path.relative_to(self.root.path)) for path in self.root.path.rglob("*")
@@ -156,6 +158,7 @@ class Install(Base):
 
 class Verification(Base):
     def assert_refused(self, **options):
+        self.output.clear()
         self.assertEqual(self.main(**options), installer.EXIT_FAILED)
         self.assertEqual(self.installed(), [])
         self.assertEqual(self.systemctl_calls(), [])
@@ -213,6 +216,46 @@ class Verification(Base):
                                         self.context(), emit=self.output.append),
                          installer.EXIT_FAILED)
         self.assertEqual(self.installed(), [])
+
+    def test_unsafe_stage_parent_is_refused(self):
+        parent = str(self.stage.parent)
+        for change in ({"st_mode": 0o40775, "st_uid": os.getuid()},
+                       {"st_mode": 0o40755, "st_uid": os.getuid() + 3},
+                       {"st_mode": 0o40777, "st_uid": 0}):
+            def lstat(path, change=change):
+                info = os.lstat(path)
+                if str(path) == parent:
+                    return SimpleNamespace(st_mode=change["st_mode"], st_uid=change["st_uid"])
+                return info
+            with self.subTest(change=change):
+                self.assert_refused(lstat=lstat)
+
+    def test_sticky_root_parent_is_accepted(self):
+        parent = str(self.stage.parent)
+
+        def lstat(path):
+            if str(path) == parent:
+                return SimpleNamespace(st_mode=0o41777, st_uid=0)
+            return os.lstat(path)
+        self.assertEqual(self.main(lstat=lstat), installer.EXIT_OK)
+
+    def test_fifo_in_the_stage_does_not_block(self):
+        path = self.stage/"helper/sdm-cpu-power"
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        results = []
+        thread = threading.Thread(target=lambda: results.append(self.main()), daemon=True)
+        thread.start()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(results, [installer.EXIT_FAILED])
+        self.assertEqual(self.installed(), [])
+
+    def test_deeply_nested_manifest_is_one_json_error(self):
+        data = b"[" * 200000 + b"]" * 200000
+        (self.stage/"manifest.json").write_bytes(data)
+        self.assertEqual(self.main(digest=sha256(data)), installer.EXIT_FAILED)
+        self.assertEqual(self.output, [{"ok": False, "error": "invalid-manifest"}])
 
     def test_oversized_file(self):
         big = b"x" * (installer.MAX_FILE_BYTES + 1)
