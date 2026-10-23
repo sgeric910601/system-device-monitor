@@ -7,6 +7,7 @@ SettingsStore 通知改變的鍵後（不需要重新啟動）：
 - 隱藏的電力流向細項或詳細欄位 → 電源頁重畫。
 - 周邊設備的通知門檻（或設定檔變成唯讀）→ 連線設備頁的鈴鐺更新；寫入被拒絕時鈴鐺的提示
   與設定 → 周邊設備寫出原因。
+- 管理員 CPU 功耗取樣 → 以 pkexec 開關服務（cpu_power_wiring）。
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
 from sdm import paths
@@ -25,6 +26,7 @@ TRAY_KEYS = frozenset(LEGACY_KEYS) | {"tray_mode", "tray_display", "tray_power",
                                       "low_threshold"}
 HIDDEN_KEYS = frozenset({"hidden_flow_items", "hidden_detail_fields"})
 BELL_KEYS = frozenset({PREFERENCE_KEY, SALT_KEY, STATUS})
+ADMIN_KEY = "admin_cpu_sampling"
 
 
 class SettingsMixin:
@@ -46,6 +48,8 @@ class SettingsMixin:
             self.power_page.settings_changed()
         if changed & BELL_KEYS and self.devices_page is not None:
             self.devices_page.thresholds_changed()
+        if ADMIN_KEY in changed:
+            self.cpu_power_preference_changed()
 
     def set_peripheral_threshold(self, device_id, value):
         """連線設備頁的鈴鐺：寫入門檻；被拒絕時由 peripheral_problem_changed() 恢復鈴鐺並說明原因。"""
@@ -90,6 +94,9 @@ class SettingsMixin:
                 peripherals=lambda: peripheral_readings(self.data["devices"]),
                 peripheral_settings=self.peripheral_settings,
                 notice=self.notice_text, send_test=self.send_test_notification,
-                probe=self.probe_notifications, notifications_enabled=self.notifier is not None)
+                probe=self.probe_notifications, notifications_enabled=self.notifier is not None,
+                admin=self.admin)
             self.settings_window = SettingsWindow(self, self.store, context)
+        if self.admin is not None:
+            self.admin.update_socket()
         self.settings_window.present(section)

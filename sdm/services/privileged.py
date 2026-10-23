@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 import json
 import logging
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import stat
 from typing import Optional
 
@@ -45,6 +45,7 @@ class Layout:
 
 LAYOUTS = (Layout(KIND_DEB, CpuPower.DEB_HELPER, CpuPower.DEB_SOCKET),
            Layout(KIND_LOCAL, CpuPower.LOCAL_HELPER, CpuPower.LOCAL_SOCKET))
+DEMO_ROOT = Path("/opt/system-device-monitor")     # 示範模式顯示的原始碼位置（不是這台電腦的）
 
 
 def root_owned(info):
@@ -186,8 +187,10 @@ class AdminState:
 class AdminComponents:
     """管理員元件的狀態與開關；on_change() 在狀態改變後呼叫（都在主執行緒）。"""
 
-    def __init__(self, runner, on_change, lstat=os.lstat, uid=os.getuid):
+    def __init__(self, runner, on_change, lstat=os.lstat, uid=os.getuid, root=None):
+        """root 為程式所在位置（設定視窗顯示原始碼資料夾的安裝指令用）。"""
         self.runner, self.on_change, self.lstat, self.uid = runner, on_change, lstat, uid
+        self.root = root
         self.state, self.generation, self.stopped = AdminState(), 0, False
 
     def update(self, **changes):
@@ -244,5 +247,44 @@ class AdminComponents:
         self.update(busy=False, socket=socket, error=error)
         done(ok)
 
+    def report(self, text):
+        """由看板補充的說明（例如開啟程式時關閉了選項），顯示在「上次的錯誤」。"""
+        self.update(error=text)
+
     def stop(self):
         self.stopped = True
+
+
+class DemoAdmin:
+    """示範模式：不尋找元件、不執行任何程式，只在記憶體中切換。"""
+
+    def __init__(self, on_change, state):
+        self.on_change, self.state, self.root = on_change, state, DEMO_ROOT
+
+    def update(self, **changes):
+        self.state = replace(self.state, **changes)
+        self.on_change()
+
+    def refresh(self):
+        self.on_change()
+
+    def update_socket(self):
+        return None
+
+    def set_enabled(self, wanted, done):
+        self.update(socket=SOCKET_MINE if wanted else SOCKET_ABSENT, error="")
+        done(True)
+
+    def report(self, text):
+        self.update(error=text)
+
+    def stop(self):
+        return None
+
+
+def demo_admin(scenario, on_change):
+    """桌機示範：原始碼安裝且已開啟（與示範的 CPU 項目一致）；筆電示範：尚未安裝。"""
+    if scenario == "desktop":
+        layout = Layout(KIND_LOCAL, CpuPower.LOCAL_HELPER, CpuPower.LOCAL_SOCKET)
+        return DemoAdmin(on_change, AdminState(layout, True, SOCKET_MINE))
+    return DemoAdmin(on_change, AdminState())

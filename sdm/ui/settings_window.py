@@ -1,4 +1,5 @@
-"""設定視窗：左側分類（一般、頂端列、監控模組、顯示項目、通知、周邊設備、關於），右側該分類的卡片。
+"""設定視窗：左側分類（一般、頂端列、監控模組、顯示項目、通知、周邊設備、管理員功能、關於），
+右側該分類的卡片。
 
 視窗寬度小於 640 px 時分類側欄收起，改用標題列的選單按鈕（與主視窗相同）。
 所有控制項都經由 SettingsStore 寫入並即時套用；關閉視窗只是隱藏，下次開啟維持原本的分類。
@@ -17,14 +18,15 @@ from sdm.constants import Ui
 from sdm.services.settings_store import STATUS
 from sdm.ui.main_window import install_css
 from sdm.ui.navigation import NavigationShell
-from sdm.ui.settings import about, display, general, monitors, notifications, peripherals, topbar
+from sdm.ui.settings import (about, admin, display, general, monitors, notifications,
+                             peripherals, topbar)
 from sdm.ui.settings.controls import Controls, wrapped
 from sdm.ui.widgets import box
 
 SECTIONS = (("general", "一般", general), ("tray", "頂端列", topbar),
             ("monitors", "監控模組", monitors), ("display", "顯示項目", display),
             ("notifications", "通知", notifications), ("peripherals", "周邊設備", peripherals),
-            ("about", "關於", about))
+            ("admin", "管理員功能", admin), ("about", "關於", about))
 
 
 def nothing():
@@ -44,6 +46,7 @@ class SettingsContext:
     send_test: Callable[[], Optional[bool]] = nothing
     probe: Callable[[], None] = nothing             # 重新確認通知服務（非同步）
     notifications_enabled: bool = False             # 模擬測試與示範模式為 False
+    admin: object = None                # 管理員元件（sdm.services.privileged.AdminComponents）
 
 
 def section_page(content):
@@ -114,6 +117,8 @@ class SettingsWindow:
         if shown != self.devices_shown:
             self.devices_shown = shown
             self.controls.changed(frozenset({peripherals.DEVICES}))
+    def admin_changed(self):
+        self.controls.changed(frozenset({admin.ADMIN}))
 
     def present(self, section=None):
         self.context.probe()

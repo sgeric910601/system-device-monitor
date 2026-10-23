@@ -47,6 +47,7 @@ class ScheduleMixin:
         if detail_changed and self.detail_timer:
             self.restart_detail_timer(self.detail_gate.request)
         self.update_motion()
+        self.update_cpu_power()             # CPU 功耗請求跟著更新頻率
         if getattr(self, "settings_window", None) is not None:
             self.settings_window.external_power_changed()
 

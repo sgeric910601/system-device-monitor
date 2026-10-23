@@ -44,7 +44,8 @@ class PreviewRun(unittest.TestCase):
                                                "settings:tray", "settings:monitors",
                                                "settings:display",
                                                "settings:notifications",
-                                               "settings:peripherals", "settings:about"])
+                                               "settings:peripherals", "settings:admin",
+                                               "settings:about"])
             written = sorted(str(path.relative_to(base)) for directory in directories.values()
                              for path in directory.rglob("*"))
             self.assertEqual(written, [])

@@ -105,6 +105,7 @@ class MonitorMixin:
             self.errors.pop(DETAIL, None)    # 沒有頁面需要詳細資料：頁尾不再顯示它的錯誤
         if self.detail_gate.update(request):
             self.restart_detail_timer(request)
+        self.update_cpu_power()             # CPU 功耗只在電源頁顯示時取樣
 
     def overview_shown(self, shown):
         """只有總覽用到的資料（磁碟讀寫、風扇等）只在總覽顯示時取；剛顯示時立即補一次。"""

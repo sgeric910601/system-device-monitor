@@ -97,6 +97,10 @@ class CpuPowerClient:
     def latest(self):
         return self.reading
 
+    @property
+    def connected(self):
+        return self.socket is not None
+
     def request(self):
         with self.lock:
             if self.reset or not self.active or self.path is None:

@@ -264,6 +264,31 @@ class Components(unittest.TestCase):
         self.assertEqual(self.results, [])
 
 
+class Demo(unittest.TestCase):
+    """示範模式：不尋找元件、不執行任何程式。"""
+
+    def test_desktop_demo_is_enabled_and_switches_in_memory(self):
+        changes, results = [], []
+        admin = privileged.demo_admin("desktop", lambda: changes.append(True))
+        self.assertTrue(admin.state.ready and admin.state.enabled)
+        self.assertEqual(admin.root, privileged.DEMO_ROOT)
+        admin.set_enabled(False, results.append)
+        self.assertEqual((results, admin.state.enabled), ([True], False))
+        admin.report("說明")
+        self.assertEqual(admin.state.error, "說明")
+        self.assertEqual(len(changes), 2)
+
+    def test_laptop_demo_is_not_installed(self):
+        admin = privileged.demo_admin("laptop-battery", lambda: None)
+        self.assertIsNone(admin.state.kind)
+        self.assertFalse(admin.state.ready)
+
+    def test_report_on_real_components(self):
+        admin = AdminComponents(FakeRunner(), lambda: None, lstat=fake_tree(), uid=lambda: ME)
+        admin.report("說明")
+        self.assertEqual(admin.state.error, "說明")
+
+
 class Runner(unittest.TestCase):
     """真正的 Gio 子程序：暫存目錄裡的假程式，測試成功、結束碼與逾時。"""
 
