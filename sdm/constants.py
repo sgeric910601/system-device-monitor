@@ -253,6 +253,8 @@ class Alerts:
     LEVEL_ONLY_MIN_THRESHOLD = 10   # 只回報電量等級的設備：門檻至少 10% 才依「低電量」等級通知
     NAME_MAX_CHARS = 64         # 通知中的設備名稱長度上限
     MAX_LIVE = 32               # 最多同時保留幾則通知（點通知時才找得到要開的頁面）
+    SLOW_SHOW_SECONDS = 2       # 送出一則通知超過這麼久，視為通知服務太慢
+    SLOW_PAUSE_SECONDS = 60     # 通知服務太慢時暫停送出的時間
     APP_NAME = "系統與裝置監看"
     DESKTOP_ENTRY = "system-device-monitor"
     TEST_ACTION = "test-notification"   # 正在執行的看板提供的動作（--test-notification 使用）

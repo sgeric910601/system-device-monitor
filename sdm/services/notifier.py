@@ -8,11 +8,15 @@
   更新原本那則，不會越疊越多，最多保留 32 則。
 - 任何失敗（沒有通知服務、init 失敗、GLib.Error、函式庫載入失敗）只記錄：第一次 WARNING、
   之後 DEBUG，絕不拋出。日誌只寫錯誤類型，不寫通知內容。
+- libnotify 沒有非同步的送出：show() 會等通知服務回應（D-Bus 預設最多 25 秒），介面這段時間不會動。
+  一次超過 2 秒就視為通知服務太慢，60 秒內不再送出（回傳 False，由協調層稍後重試）。
+  協調層每次主迴圈最多送一則。
 - probe() 以非同步 D-Bus 呼叫確認是否有通知服務（目前有人提供或可自動啟動），
   結果交給 subscribe() 的監聽者（設定視窗的狀態說明）。
 模擬測試與示範模式完全不建立這個物件。
 """
 import logging
+import time
 
 from gi.repository import Gio, GLib
 
@@ -41,9 +45,11 @@ def error_name(error):
 
 
 class Notifier:
-    def __init__(self, open_page, load=load_notify, connection=lambda: None):
+    def __init__(self, open_page, load=load_notify, connection=lambda: None,
+                 clock=time.monotonic):
         self.open_page = open_page      # open_page(頁面代號)：點通知時呼叫
-        self.load, self.connection = load, connection
+        self.load, self.connection, self.clock = load, connection, clock
+        self.paused_until = None        # 通知服務太慢：這個時間之前不送出
         self.module = None
         self.status = UNKNOWN
         self.warned = False
@@ -58,15 +64,30 @@ class Notifier:
         return UNAVAILABLE_TEXT if self.status == UNAVAILABLE else ""
 
     def send(self, alert):
-        """送出一則通知；成功回傳 True，任何失敗都只記錄並回傳 False。"""
+        """送出一則通知；成功回傳 True，任何失敗（含暫停中）都只記錄並回傳 False。"""
+        if self.paused():
+            LOG.debug("Notification service is slow; not sending for now")
+            return False
+        started = self.clock()
         try:
             self.prepare(alert).show()
         except Exception as error:      # 最後一道防線：通知失敗不能影響看板
             self.live.pop(alert.key, None)
             self.failed(error)
             return False
+        self.check_speed(started)
         self.set_status(AVAILABLE)
         return True
+
+    def paused(self):
+        return self.paused_until is not None and self.clock() < self.paused_until
+
+    def check_speed(self, started):
+        now = self.clock()
+        if now - started > Alerts.SLOW_SHOW_SECONDS:
+            self.paused_until = now + Alerts.SLOW_PAUSE_SECONDS
+            LOG.warning("Notification service took %.1f s; pausing notifications for %d s",
+                        now - started, Alerts.SLOW_PAUSE_SECONDS)
 
     def notify_module(self):
         if self.module is None:

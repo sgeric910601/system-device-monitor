@@ -45,6 +45,7 @@ class FakeNotification:
         if self.module.show_error is not None:
             raise self.module.show_error
         self.shown += 1
+        self.module.clock.now += self.module.show_seconds    # 通知服務回應所花的時間
         return True
 
     def click(self):
@@ -65,6 +66,7 @@ class FakeNotify:
     def __init__(self, init_result=True, show_error=None):
         self.inits, self.created = [], []
         self.init_result, self.show_error = init_result, show_error
+        self.clock, self.show_seconds = Clock(), 0.0
         module = self
 
         class Notification:
@@ -81,6 +83,11 @@ class FakeNotify:
     def init(self, name):
         self.inits.append(name)
         return self.init_result
+
+
+class Clock:
+    def __init__(self): self.now = 100.0
+    def __call__(self): return self.now
 
 
 def ups_alert():
@@ -195,6 +202,33 @@ class Failures(unittest.TestCase):
         module.show_error = None
         self.assertTrue(notifier.send(ups_alert()))
         self.assertEqual(notifier.status, AVAILABLE)
+
+
+class SlowService(unittest.TestCase):
+    """libnotify 0.7／0.8 沒有非同步的 show()：一次超過 2 秒就暫停 60 秒，介面不會一直卡住。"""
+
+    def setUp(self):
+        self.module = FakeNotify()
+        self.notifier = Notifier(lambda page: None, load=lambda: self.module,
+                                 clock=self.module.clock)
+
+    def test_a_slow_show_pauses_sending(self):
+        self.module.show_seconds = Alerts.SLOW_SHOW_SECONDS + 1
+        with self.assertLogs(LOGGER, level="WARNING") as logs:
+            self.assertTrue(self.notifier.send(ups_alert()))
+            self.assertFalse(self.notifier.send(messages.test_alert()))
+        self.assertEqual(len(logs.records), 1)
+        self.assertEqual(len(self.module.created), 1)
+        self.module.clock.now += Alerts.SLOW_PAUSE_SECONDS
+        self.module.show_seconds = 0.0
+        self.assertTrue(self.notifier.send(messages.test_alert()))
+        self.assertEqual(len(self.module.created), 2)
+
+    def test_a_quick_show_does_not_pause(self):
+        self.module.show_seconds = Alerts.SLOW_SHOW_SECONDS - 0.5
+        self.assertTrue(self.notifier.send(ups_alert()))
+        self.assertTrue(self.notifier.send(messages.test_alert()))
+        self.assertEqual((Alerts.SLOW_SHOW_SECONDS, Alerts.SLOW_PAUSE_SECONDS), (2, 60))
 
 
 class FakeResult:
