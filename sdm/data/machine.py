@@ -2,8 +2,8 @@
 from pathlib import Path
 import re
 
-from sdm.core.fmt import number
-from sdm.data.sources import clean_text, read
+from sdm.core.fmt import clean_text, number
+from sdm.data.sources import read
 
 MODEL_MAX_CHARS = 64
 # 主機板廠商未填寫時常見的預設字串，不顯示

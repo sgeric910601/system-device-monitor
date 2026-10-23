@@ -10,8 +10,8 @@ from typing import Optional
 
 from sdm.constants import Collect, Ups
 from sdm.core.devices import parse_apc
-from sdm.core.fmt import number
-from sdm.data.sources import clean_text, command
+from sdm.core.fmt import clean_text, number
+from sdm.data.sources import command
 
 LOG = logging.getLogger(__name__)
 

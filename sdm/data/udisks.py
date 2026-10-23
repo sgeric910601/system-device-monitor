@@ -17,7 +17,7 @@ from gi.repository import Gio, GLib
 from sdm.constants import Collect, Disk
 from sdm.core.disk_health import ATA, NONE, NVME, DiskSmart, kelvin_to_celsius, \
     valid_block_name
-from sdm.data.sources import clean_text
+from sdm.core.fmt import clean_text
 from sdm.data.upower import bus_getter, is_timeout
 
 LOG = logging.getLogger(__name__)

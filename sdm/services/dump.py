@@ -13,11 +13,11 @@ import subprocess
 from gi.repository import Gio, GLib
 
 from sdm.constants import Battery, Collect
-from sdm.core.fmt import MAC_ADDRESS as MAC, MAC_MASK
+from sdm.core.fmt import MAC_ADDRESS as MAC, MAC_MASK, clean_text
 from sdm.data.gpu import read_amd_gpus
 from sdm.data.power_supply import (is_adapter, is_system_battery, read_adapters, read_batteries,
                                    supply_directories)
-from sdm.data.sources import clean_text, command, read
+from sdm.data.sources import command, read
 from sdm.data.ups import read_ups
 from sdm.data.upower import bus_getter, read_power_profile, read_upower
 from sdm.paths import VERSION

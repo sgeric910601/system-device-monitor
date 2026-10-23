@@ -15,8 +15,8 @@ import time
 from typing import Optional
 
 from sdm.constants import Collect, Gpu, Power
-from sdm.core.fmt import number
-from sdm.data.sources import clean_text, read
+from sdm.core.fmt import clean_text, number
+from sdm.data.sources import read
 
 LOG = logging.getLogger(__name__)
 MIB = 1024 * 1024

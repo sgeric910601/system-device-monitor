@@ -17,7 +17,7 @@ from gi.repository import Gio, GLib
 from sdm.constants import Battery, Collect
 from sdm.core.battery import round_half_up
 from sdm.core.estimates import SystemTimes
-from sdm.data.sources import clean_text
+from sdm.core.fmt import clean_text
 
 DESTINATION = "org.freedesktop.UPower"
 MANAGER_PATH = "/org/freedesktop/UPower"

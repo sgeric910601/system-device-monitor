@@ -42,8 +42,9 @@ class Privacy(unittest.TestCase):
         self.assertEqual(len(messages.safe_name("長" * 200)), messages.NAME_MAX_CHARS)
         self.assertEqual(messages.safe_name("  "), "周邊設備")
 
-    def test_clean_text_is_shared_with_the_data_sources(self):
-        self.assertIs(sources.clean_text, clean_text)
+    def test_clean_text_lives_only_in_the_core(self):
+        self.assertFalse(hasattr(sources, "clean_text"))
+        self.assertEqual(clean_text("a\x00b", 10), "a b")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from typing import NamedTuple, Optional
 from gi.repository import Gio
 
 from sdm.core.apps import SESSION_ID, SYSTEM_ID, rank
-from sdm.data.sources import clean_text
+from sdm.core.fmt import clean_text
 from sdm.ui.monitor_text import CALCULATING, cpu_app_rows, memory_app_rows
 
 DEFAULT_ICON = "application-x-executable"

@@ -15,8 +15,7 @@ from typing import Optional
 from gi.repository import Gio, GLib
 
 from sdm.constants import Battery, Collect
-from sdm.core.fmt import PLACEHOLDER
-from sdm.data.sources import clean_text
+from sdm.core.fmt import PLACEHOLDER, clean_text
 from sdm.data.upower import PROFILES, PROPERTIES_INTERFACE
 
 LOG = logging.getLogger(__name__)

@@ -13,8 +13,8 @@ import re
 from typing import Optional
 
 from sdm.constants import Battery, Supply
-from sdm.core.fmt import number
-from sdm.data.sources import clean_text, read
+from sdm.core.fmt import clean_text, number
+from sdm.data.sources import read
 
 MICRO = 1_000_000           # µWh、µAh、µV、µA、µW → Wh、Ah、V、A、W
 TENTHS = 10                 # temp 以 0.1 °C 為單位

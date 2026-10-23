@@ -4,7 +4,6 @@ from pathlib import Path
 import subprocess
 
 from sdm.constants import Collect
-from sdm.core.fmt import clean_text  # noqa: F401（沿用的匯入位置）
 
 
 def read(path, default=""):
