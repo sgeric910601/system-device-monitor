@@ -357,6 +357,7 @@
     "tests/test_byte_format.py",
     "tests/test_cgroups.py",
     "tests/test_chart_layout.py",
+    "tests/test_ci_workflow.py",
     "tests/test_collectors.py",
     "tests/test_cpu.py",
     "tests/test_cpu_power.py",

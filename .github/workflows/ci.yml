@@ -12,7 +12,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-gudev-1.0 gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7 librsvg2-common desktop-file-utils xvfb dbus-x11 gitleaks
+          sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-gudev-1.0 gir1.2-ayatanaappindicator3-0.1 gir1.2-notify-0.7 librsvg2-common desktop-file-utils xvfb dbus-x11 gitleaks polkitd pkexec
       - name: Unit tests and publication checks
         run: |
           make test privacy
@@ -25,11 +25,95 @@ jobs:
           /usr/bin/python3 scripts/privacy_check.py --tree /tmp/package-check
           /usr/bin/python3 scripts/scan_secrets.py --tree /tmp/package-check
           desktop-file-validate /tmp/package-check/usr/share/applications/system-device-monitor.desktop
-      - name: Install, run, upgrade, remove
+      - name: Install, run, upgrade
         run: |
           sudo apt-get install -y ./dist/*.deb
           /usr/bin/system-device-monitor --version
           xvfb-run -a dbus-run-session -- /usr/bin/system-device-monitor --smoke-test --output-dir /tmp/monitor-smoke
           sudo apt-get install -y --reinstall ./dist/*.deb
+      - name: Admin components
+        run: |
+          set -eu
+          helper=/usr/libexec/system-device-monitor/sdm-cpu-power
+          service=/usr/libexec/system-device-monitor/sdm-cpu-power-service
+          units=/usr/lib/systemd/system/system-device-monitor-cpu-power
+          expect() {
+            want=$1; shift
+            set +e; "$@"; got=$?; set -e
+            if [ "$got" != "$want" ]; then echo "expected exit $want, got $got: $*"; exit 1; fi
+          }
+          for path in "$helper" "$service"; do
+            test "$(stat -c '%U %a' "$path")" = "root 755"
+          done
+          for path in /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy "$units.socket" "$units.service"; do
+            test "$(stat -c '%U %a' "$path")" = "root 644"
+          done
+          pkaction --verbose --action-id tw.local.system-device-monitor.cpu-power | tee /tmp/pkaction.txt
+          grep -Eq 'implicit any: *no$' /tmp/pkaction.txt
+          grep -Eq 'implicit inactive: *no$' /tmp/pkaction.txt
+          grep -Eq 'implicit active: *auth_admin$' /tmp/pkaction.txt
+          systemd-analyze verify "$units.socket" "$units.service"
+          systemd-analyze security --offline=true --threshold=25 "$units.service"
+          test "$(systemctl is-enabled system-device-monitor-cpu-power.socket || true)" = "disabled"
+          expect 0 "$helper" --protocol
+          expect 2 sudo "$helper"
+          expect 2 sudo "$helper" bogus
+          expect 2 sudo "$helper" enable extra
+          expect 2 sudo "$helper" --protocol extra
+          expect 4 sudo "$helper" status
+          expect 4 "$helper" enable
+          expect 2 sudo "$service" --protocol
+          expect 3 sudo "$service"
+          # 以 sudo 模擬 pkexec：開啟、連線確認服務已放棄權限，再關閉
+          sudo env PKEXEC_UID="$(id -u)" "$helper" enable
+          test "$(stat -c '%U %a' /run/system-device-monitor/cpu-power.sock)" = "$(id -un) 600"
+          /usr/bin/python3 - <<'EOF'
+          import json, socket, subprocess
+          sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          sock.settimeout(20)
+          sock.connect("/run/system-device-monitor/cpu-power.sock")
+          sock.sendall(b"r\n")
+          data = b""
+          while not data.endswith(b"\n"):
+              chunk = sock.recv(256)
+              assert chunk, "service closed the connection"
+              data += chunk
+          reply = json.loads(data)
+          print(reply)
+          assert reply["v"] == 1 and reply["status"] in ("sampling", "error"), reply
+          pid = subprocess.check_output(["systemctl", "show", "-p", "MainPID", "--value",
+                                         "system-device-monitor-cpu-power.service"], text=True).strip()
+          assert pid != "0", "service is not running"
+          status = open(f"/proc/{pid}/status").read()
+          fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+          print({key: fields[key].strip() for key in ("Uid", "Gid", "Groups", "CapEff", "CapPrm", "NoNewPrivs")})
+          assert fields["Uid"].split() == ["65534"] * 4, fields["Uid"]
+          assert fields["Gid"].split() == ["65534"] * 4, fields["Gid"]
+          assert fields["Groups"].strip() == "", fields["Groups"]
+          assert int(fields["CapEff"], 16) == 0 and int(fields["CapPrm"], 16) == 0
+          user = subprocess.check_output(["ps", "-o", "user=", "-p", pid], text=True).strip()
+          assert user == "nobody", user
+          EOF
+          sudo env PKEXEC_UID="$(id -u)" "$helper" status | grep -q '"enabled":true'
+          sudo env PKEXEC_UID="$(id -u)" "$helper" disable
+          test ! -e /run/system-device-monitor/cpu-power.sock
+          test ! -e /etc/systemd/system/system-device-monitor-cpu-power.socket.d
+          # 開著移除套件：prerm 必須停用並清除
+          sudo env PKEXEC_UID="$(id -u)" "$helper" enable
+      - name: Remove and purge
+        run: |
+          set -eu
           sudo apt-get remove -y system-device-monitor
           test ! -e /usr/bin/system-device-monitor
+          test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.socket
+          test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.service
+          test ! -e /etc/systemd/system/system-device-monitor-cpu-power.socket.d
+          test ! -e /etc/systemd/system/sockets.target.wants/system-device-monitor-cpu-power.socket
+          test ! -e /run/system-device-monitor/cpu-power.sock
+          test "$(systemctl is-active system-device-monitor-cpu-power.socket || true)" != "active"
+          sudo apt-get purge -y system-device-monitor
+          test ! -e /var/lib/system-device-monitor
+          test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy
+          test ! -e /usr/libexec/system-device-monitor
+          if ls /etc/polkit-1/rules.d 2>/dev/null | grep -q system-device-monitor; then exit 1; fi
+          if dpkg-query -W system-device-monitor 2>/dev/null; then exit 1; fi
