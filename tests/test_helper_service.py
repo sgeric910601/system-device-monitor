@@ -184,6 +184,8 @@ class Zones(unittest.TestCase):
 
 
 class FakeSampler:
+    """依序回傳樣本；記錄被讀了幾次（客戶端的請求不應該觸發讀取）。"""
+
     def __init__(self, *samples):
         self.samples, self.calls = list(samples), 0
 
@@ -192,77 +194,128 @@ class FakeSampler:
         return self.samples.pop(0)
 
 
-class Respond(unittest.TestCase):
-    """每個連線自己的基準；距離上次計算不到 1 秒時回傳快取。"""
+class Windows(unittest.TestCase):
+    """全部連線共用的固定 1 秒刻度（start + k 秒）；回覆一律是最近一個完成的視窗。"""
 
-    def client(self):
-        return service.Client(None, 0.0)
+    def sampler(self, *samples, start=100.0):
+        self.take = FakeSampler(*samples)
+        return service.WindowSampler(self.take, RANGES, start, period=1.0)
 
-    def test_first_request_only_sets_the_baseline(self):
-        client, sampler = self.client(), FakeSampler(sample(1, 10 * J, 4 * J))
-        reply = decode(service.respond(client, 1.0, sampler, RANGES))
-        self.assertEqual(reply, {"v": 1, "status": "sampling", "package_w": None,
-                                 "core_w": None, "interval_s": None})
-        self.assertEqual(client.baseline, sample(1, 10 * J, 4 * J))
+    def test_first_tick_only_sets_the_baseline(self):
+        windows = self.sampler(sample(100, 10 * J, 4 * J))
+        windows.advance(100.0)
+        self.assertEqual(decode(windows.reply), {"v": 1, "status": "sampling", "package_w": None,
+                                                 "core_w": None, "interval_s": None})
+        self.assertEqual(windows.next_tick, 101.0)
 
-    def test_second_request_reports_watts(self):
-        client = self.client()
-        sampler = FakeSampler(sample(1, 10 * J, 4 * J), sample(3, 14 * J, 5 * J))
-        service.respond(client, 1.0, sampler, RANGES)
-        reply = decode(service.respond(client, 3.0, sampler, RANGES))
-        self.assertEqual(reply, {"v": 1, "status": "ok", "package_w": 2.0, "core_w": 0.5,
-                                 "interval_s": 2.0})
+    def test_completed_window_is_reported(self):
+        windows = self.sampler(sample(100, 10 * J, 4 * J), sample(101, 12 * J, 5 * J))
+        windows.advance(100.0)
+        windows.advance(101.0)
+        self.assertEqual(decode(windows.reply), {"v": 1, "status": "ok", "package_w": 2.0,
+                                                 "core_w": 1.0, "interval_s": 1.0})
 
-    def test_requests_within_a_second_get_the_cached_reply(self):
-        client = self.client()
-        sampler = FakeSampler(sample(1, 10 * J), sample(2, 12 * J))
-        first = service.respond(client, 1.0, sampler, RANGES)
-        self.assertEqual(service.respond(client, 1.9, sampler, RANGES), first)
-        self.assertEqual(sampler.calls, 1)
-        second = service.respond(client, 2.0, sampler, RANGES)
-        self.assertEqual(decode(second)["package_w"], 2.0)
-        self.assertEqual(service.respond(client, 2.5, sampler, RANGES), second)
-        self.assertEqual(sampler.calls, 2)
+    def test_nothing_is_read_between_ticks(self):
+        windows = self.sampler(sample(100, 10 * J), sample(101, 12 * J))
+        for now in (100.0, 100.2, 100.5, 100.999):
+            windows.advance(now)
+        self.assertEqual(self.take.calls, 1)
+        first = windows.reply
+        windows.advance(101.0)
+        self.assertNotEqual(windows.reply, first)
+        for now in (101.1, 101.6):
+            windows.advance(now)
+            self.assertEqual(decode(windows.reply)["package_w"], 2.0)
+        self.assertEqual(self.take.calls, 2)
 
-    def test_unreadable_package_is_an_error_and_resets_the_baseline(self):
-        client = self.client()
-        sampler = FakeSampler(sample(1, 10 * J), sample(2, None), sample(3, 12 * J))
-        service.respond(client, 1.0, sampler, RANGES)
-        self.assertEqual(decode(service.respond(client, 2.0, sampler, RANGES))["status"], "error")
-        self.assertIsNone(client.baseline)
-        self.assertEqual(decode(service.respond(client, 3.0, sampler, RANGES))["status"],
-                         "sampling")
+    def test_ticks_stay_on_the_grid(self):
+        windows = self.sampler(sample(100, 0), sample(103.7, 27 * J), sample(104.0, 30 * J))
+        windows.advance(100.0)
+        windows.advance(103.7)
+        self.assertEqual(windows.next_tick, 104.0)
+        self.assertEqual(decode(windows.reply)["interval_s"], 3.7)
+        windows.advance(104.0)
+        self.assertEqual(decode(windows.reply)["package_w"], 10.0)
 
-    def test_long_gap_starts_a_new_baseline(self):
-        client = self.client()
-        later = 1 + service.MAX_WINDOW_S + 1
-        sampler = FakeSampler(sample(1, 10 * J), sample(later, 12 * J), sample(later + 1, 13 * J))
-        service.respond(client, 1.0, sampler, RANGES)
-        self.assertEqual(decode(service.respond(client, later, sampler, RANGES))["status"],
-                         "sampling")
-        reply = decode(service.respond(client, later + 1, sampler, RANGES))
-        self.assertEqual((reply["status"], reply["package_w"]), ("ok", 1.0))
+    def test_timeout_until_the_next_tick(self):
+        windows = self.sampler(sample(100, 0))
+        windows.advance(100.0)
+        self.assertAlmostEqual(windows.timeout(100.25), 0.75)
+        self.assertEqual(windows.timeout(101.5), 0.0)
 
-    def test_rollback_reports_sampling_and_starts_over(self):
-        client = self.client()
-        sampler = FakeSampler(sample(1, 10 * J), sample(2, 2 * J), sample(3, 4 * J))
-        service.respond(client, 1.0, sampler, RANGES)
-        self.assertEqual(decode(service.respond(client, 2.0, sampler, RANGES))["status"],
-                         "sampling")
-        self.assertEqual(decode(service.respond(client, 3.0, sampler, RANGES))["package_w"], 2.0)
+    def test_unreadable_package_is_an_error_until_two_good_ticks(self):
+        windows = self.sampler(sample(100, 10 * J), sample(101, None), sample(102, 12 * J),
+                               sample(103, 13 * J))
+        windows.advance(100.0)
+        windows.advance(101.0)
+        self.assertEqual(decode(windows.reply)["status"], "error")
+        windows.advance(102.0)
+        self.assertEqual(decode(windows.reply)["status"], "sampling")
+        windows.advance(103.0)
+        self.assertEqual(decode(windows.reply)["package_w"], 1.0)
 
-    def test_each_connection_has_its_own_baseline(self):
-        first, second = self.client(), self.client()
-        sampler = FakeSampler(sample(1, 10 * J), sample(2, 11 * J), sample(3, 14 * J))
-        service.respond(first, 1.0, sampler, RANGES)
-        service.respond(second, 2.0, sampler, RANGES)
-        self.assertEqual(decode(service.respond(first, 3.0, sampler, RANGES))["package_w"], 2.0)
-        self.assertEqual(second.baseline, sample(2, 11 * J))
+    def test_rollback_reports_sampling(self):
+        windows = self.sampler(sample(100, 10 * J), sample(101, 2 * J), sample(102, 4 * J))
+        windows.advance(100.0)
+        windows.advance(101.0)
+        self.assertEqual(decode(windows.reply)["status"], "sampling")
+        windows.advance(102.0)
+        self.assertEqual(decode(windows.reply)["package_w"], 2.0)
 
     def test_reply_is_one_compact_json_line(self):
         payload = service.reply("ok", 12.3, 4.5, 2.0)
         self.assertEqual(payload, b'{"v":1,"status":"ok","package_w":12.3,"core_w":4.5,'
                                   b'"interval_s":2.0}\n')
+
+
+class Accepts(unittest.TestCase):
+    def test_at_most_four_accepts_per_second(self):
+        limiter = service.AcceptLimiter(4, 1.0)
+        for now in (10.0, 10.1, 10.2, 10.3):
+            self.assertTrue(limiter.allowed(now))
+            limiter.record(now)
+        self.assertFalse(limiter.allowed(10.5))
+        self.assertAlmostEqual(limiter.wait(10.5), 0.5)
+        self.assertTrue(limiter.allowed(11.0))
+        self.assertEqual(limiter.wait(11.0), 0.0)
+
+
+class Shared(unittest.TestCase):
+    """假時鐘驅動伺服器：兩個連線在同一個視窗內拿到相同的回覆，請求不會多讀計數器。"""
+
+    def setUp(self):
+        self.now = [100.0]
+        self.take = FakeSampler(sample(100, 10 * J), sample(101, 12 * J), sample(102, 15 * J))
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        self.server = service.Server(listener, self.take, RANGES, os.getuid(),
+                                     clock=lambda: self.now[0])
+        self.ends = []
+        for _ in range(2):
+            ours, theirs = socket.socketpair()
+            self.addCleanup(ours.close)
+            self.addCleanup(theirs.close)
+            theirs.setblocking(False)
+            self.server.clients.append(service.Client(theirs, self.now[0]))
+            self.ends.append(ours)
+
+    def ask(self, index):
+        self.ends[index].sendall(b"r\n")
+        self.server.handle(self.server.clients[index])
+        return self.ends[index].recv(256)
+
+    def test_clients_share_the_last_completed_window(self):
+        self.server.sampler.advance(100.0)
+        self.now[0] = 101.2
+        first, second = self.ask(0), self.ask(1)
+        self.assertEqual(first, second)
+        self.assertEqual(decode(first)["package_w"], 2.0)
+        self.now[0] = 101.9
+        self.assertEqual(self.ask(0), first)
+        self.assertEqual(self.take.calls, 2)
+        self.now[0] = 102.0
+        self.assertEqual(decode(self.ask(1))["package_w"], 3.0)
+        self.assertEqual(self.take.calls, 3)
 
 
 class Sampler(unittest.TestCase):

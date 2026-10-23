@@ -1,6 +1,6 @@
 """CPU 功耗取樣服務的通訊協定：以暫存目錄裡真正的 Unix socket 執行服務迴圈。
 
-時間限制縮短（閒置、連線上限、最短間隔），讓測試在一秒內完成；
+時間限制縮短（閒置、取樣刻度、連線速率），讓測試在一秒內完成；
 能量計數器以每次加 1 焦耳的假讀值代替，精確的瓦數計算在 test_helper_service。
 """
 import itertools
@@ -17,7 +17,8 @@ from tests.fixtures.helpers import load_helper
 service = load_helper("sdm-cpu-power-service")
 J = 1_000_000
 WAIT = 3.0                  # 測試等待回應或斷線的上限（秒）
-LIMITS = service.Limits(clients=3, idle_exit=0.6, client_idle=0.4, min_spacing=0.05)
+LIMITS = service.Limits(clients=2, idle_exit=0.6, client_idle=0.4, period=0.05, accepts=100,
+                        accept_window=1.0)
 
 
 class Protocol(unittest.TestCase):
@@ -73,15 +74,20 @@ class Protocol(unittest.TestCase):
         except ConnectionResetError:
             pass
 
-    def test_first_request_samples_then_reports_watts(self):
+    def test_reports_the_shared_window_once_it_completes(self):
         self.start()
         client = self.connect()
-        self.assertEqual(self.request(client)["status"], "sampling")
-        time.sleep(0.1)
-        reply = self.request(client)
+        statuses = [self.request(client)["status"]]
+        self.assertIn(statuses[0], ("sampling", "ok"))
+        reply = None
+        for _ in range(40):
+            reply = self.request(client)
+            if reply["status"] == "ok":
+                break
+            time.sleep(0.02)
         self.assertEqual(reply["status"], "ok")
         self.assertGreater(reply["package_w"], 0)
-        self.assertGreater(reply["interval_s"], 0)
+        self.assertLess(reply["interval_s"], 0.5)
         self.assertIsNone(reply["core_w"])
 
     def test_partial_request_is_completed_later(self):
@@ -110,6 +116,19 @@ class Protocol(unittest.TestCase):
         clients[0].close()
         time.sleep(0.1)
         self.assertIsNotNone(self.request(self.connect()))
+
+    def test_accepts_are_rate_limited(self):
+        limits = service.Limits(clients=4, idle_exit=1.5, client_idle=1.5, period=0.05, accepts=2,
+                                accept_window=0.5)
+        self.start(limits=limits)
+        started = time.monotonic()
+        clients = [self.connect() for _ in range(3)]
+        arrived = []
+        for client in clients:
+            self.assertIsNotNone(self.request(client))
+            arrived.append(time.monotonic() - started)
+        self.assertLess(arrived[1], 0.3)
+        self.assertGreaterEqual(arrived[2], 0.4)
 
     def test_other_users_are_refused(self):
         self.start(peer=lambda sock: self.peer_uid + 1)

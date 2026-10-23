@@ -250,7 +250,7 @@ class RealService(unittest.TestCase):
             energy = iter(range(1, 1000))
             take = lambda: service.Sample(time.monotonic(), next(energy) * 1_000_000,  # noqa
                                           None)
-            limits = service.Limits(clients=2, idle_exit=0.5, client_idle=2.0, min_spacing=0.05)
+            limits = service.Limits(clients=2, idle_exit=0.5, client_idle=2.0, period=0.05)
             server = service.Server(listener, take, service.Ranges(None, None), os.getuid(),
                                     limits=limits)
             thread = threading.Thread(target=server.run, daemon=True)
@@ -258,9 +258,11 @@ class RealService(unittest.TestCase):
             client = CpuPowerClient()
             client.configure(path)
             client.set_active(True)
-            client.request()
-            time.sleep(0.1)
-            client.request()
+            for _ in range(20):
+                client.request()
+                if client.latest() is not None:
+                    break
+                time.sleep(0.03)
             reading = client.latest()
             self.assertIsNotNone(reading)
             self.assertGreater(reading.package_w, 0)

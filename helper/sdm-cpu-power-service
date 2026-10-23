@@ -8,13 +8,16 @@
    （max_energy_range_uj）。
 3. 立即放棄權限：setgroups([])、setresgid／setresuid 到 nobody（65534），所有能力隨之消失；
    確認無法再切回 root、有效能力為 0，否則結束。之後只對已開啟的描述子做 pread()。
-4. 服務客戶端：只接受 socket 擁有者（或 root）；每個請求是一行「r」，回一行 JSON
+4. 取樣與連線無關：服務執行期間在固定的單調時鐘刻度（啟動時間＋k 秒）讀計數器，
+   每個連線拿到的都是最近一個「已完成」的 1 秒視窗，請求本身從不觸發讀取，連線也無法
+   決定視窗的起點；數值四捨五入到 0.1 W。
+5. 服務客戶端：只接受 socket 擁有者（或 root）；每個請求是一行「r」，回一行 JSON
    {"v":1,"status":"ok|sampling|error","package_w":x,"core_w":y,"interval_s":s}。
-   每個連線有自己的基準；距離上次計算不到 1 秒時回傳上次的結果；數值四捨五入到 0.1 W。
-   其他任何輸入立即斷線；最多 8 個連線；30 秒沒有請求的連線會被關閉；
-   沒有任何連線 30 秒後結束（下次連線時 systemd 再啟動）。
+   其他任何輸入立即斷線；最多 2 個連線；每秒最多接受 4 個連線（超過時暫停接受）；
+   30 秒沒有請求的連線會被關閉；沒有任何連線 30 秒後結束（下次連線時 systemd 再啟動）。
 只使用標準函式庫；不執行外部程式，不寫入任何檔案。
 """
+from collections import deque
 import json
 import math
 import os
@@ -39,9 +42,11 @@ NOBODY = 65534                          # nobody／nogroup
 PROC_STATUS = "/proc/self/status"
 MICROJOULES = 1_000_000
 MAX_WATTS = 1000                        # 與 sdm.constants.Power.COMPONENT_MAX_W 相同（不含）
-MAX_WINDOW_S = 30.0                     # 兩次計算最多相隔 30 秒（計數器最多只可能繞回一次）
-MIN_SPACING_S = 1.0                     # 兩次計算至少相隔 1 秒，期間回傳上次的結果
-MAX_CLIENTS = 8
+MAX_WINDOW_S = 30.0                     # 兩次讀取最多相隔 30 秒（計數器最多只可能繞回一次）
+PERIOD_S = 1.0                          # 全部連線共用的取樣刻度（秒）
+MAX_CLIENTS = 2
+ACCEPTS_PER_WINDOW = 4                  # 每個接受視窗最多接受幾個連線
+ACCEPT_WINDOW_S = 1.0
 IDLE_EXIT_S = 30.0                      # 沒有任何連線多久後結束
 CLIENT_IDLE_S = 30.0                    # 連線多久沒有請求就關閉
 WATTS_DIGITS = 1
@@ -80,7 +85,9 @@ class Limits(NamedTuple):
     clients: int = MAX_CLIENTS
     idle_exit: float = IDLE_EXIT_S
     client_idle: float = CLIENT_IDLE_S
-    min_spacing: float = MIN_SPACING_S
+    period: float = PERIOD_S
+    accepts: int = ACCEPTS_PER_WINDOW
+    accept_window: float = ACCEPT_WINDOW_S
 
 
 def log(message):
@@ -207,27 +214,57 @@ def reply(status, package_w=None, core_w=None, interval_s=None):
     return (json.dumps(body, separators=(",", ":")) + "\n").encode("ascii")
 
 
+class WindowSampler:
+    """在固定刻度（start＋k × period）讀計數器；reply 永遠是最近一個完成的視窗。
+
+    落後超過一個刻度時（例如暫停過）只讀一次並回到原本的刻度上，間隔照實回報。
+    """
+
+    def __init__(self, take, ranges, start, period=PERIOD_S):
+        self.take, self.ranges, self.period = take, ranges, period
+        self.next_tick, self.previous = start, None
+        self.reply = reply(STATUS_SAMPLING)
+
+    def advance(self, now):
+        if now < self.next_tick:
+            return
+        behind = int((now - self.next_tick) // self.period)
+        self.next_tick += (behind + 1) * self.period
+        current = self.take()
+        if current.package is None:
+            self.previous, self.reply = None, reply(STATUS_ERROR)
+            return
+        previous, self.previous = self.previous, current
+        result = None if previous is None else measure(previous, current, self.ranges)
+        self.reply = reply(STATUS_SAMPLING) if result is None else reply(STATUS_OK, *result)
+
+    def timeout(self, now):
+        return max(0.0, self.next_tick - now)
+
+
+class AcceptLimiter:
+    """滑動視窗：window 秒內最多接受 limit 個連線。"""
+
+    def __init__(self, limit=ACCEPTS_PER_WINDOW, window=ACCEPT_WINDOW_S):
+        self.limit, self.window, self.times = limit, window, deque()
+
+    def allowed(self, now):
+        while self.times and now - self.times[0] >= self.window:
+            self.times.popleft()
+        return len(self.times) < self.limit
+
+    def record(self, now):
+        self.times.append(now)
+
+    def wait(self, now):
+        return 0.0 if self.allowed(now) else self.times[0] + self.window - now
+
+
 class Client:
-    """一個連線：自己的基準、上次的回應與最後一次請求的時間。"""
+    """一個連線：尚未完成的請求與最後一次請求的時間。"""
 
     def __init__(self, sock, now):
         self.sock, self.buffer, self.last_seen = sock, b"", now
-        self.baseline, self.cached = None, None
-
-
-def respond(client, now, take, ranges, min_spacing=MIN_SPACING_S):
-    """回應一個請求；距離上次計算不到 min_spacing 秒時回傳上次的結果。"""
-    baseline = client.baseline
-    if baseline is not None and client.cached is not None and now - baseline.stamp < min_spacing:
-        return client.cached
-    current = take()
-    if current.package is None:
-        client.baseline, client.cached = None, reply(STATUS_ERROR)
-        return client.cached
-    client.baseline = current
-    result = None if baseline is None else measure(baseline, current, ranges)
-    client.cached = reply(STATUS_SAMPLING) if result is None else reply(STATUS_OK, *result)
-    return client.cached
 
 
 def parse_request(buffer):
@@ -251,18 +288,21 @@ class Server:
                  peer=peer_uid):
         self.listener, self.take, self.ranges, self.owner = listener, take, ranges, owner
         self.limits, self.clock, self.peer = limits, clock, peer
+        now = clock()
+        self.sampler = WindowSampler(take, ranges, now, limits.period)
+        self.accepts = AcceptLimiter(limits.accepts, limits.accept_window)
         self.selector = selectors.DefaultSelector()
-        self.clients = []
-        self.idle_since = clock()
+        self.clients, self.idle_since, self.listening = [], now, False
 
     def run(self):
         """服務到沒有任何連線超過 idle_exit 秒為止；回傳結束碼。"""
         self.listener.setblocking(False)
-        self.selector.register(self.listener, selectors.EVENT_READ, None)
         while True:
             now = self.clock()
+            self.sampler.advance(now)
             if not self.clients and now - self.idle_since >= self.limits.idle_exit:
                 return EXIT_OK
+            self.listen(self.accepts.allowed(now))
             for key, _ in self.selector.select(self.timeout(now)):
                 if key.data is None:
                     self.accept()
@@ -270,11 +310,24 @@ class Server:
                     self.handle(key.data)
             self.expire(self.clock())
 
+    def listen(self, allowed):
+        """超過接受速率時暫停監聽（連線留在核心的佇列裡），恢復時再監聽。"""
+        if allowed and not self.listening:
+            self.selector.register(self.listener, selectors.EVENT_READ, None)
+        elif not allowed and self.listening:
+            self.selector.unregister(self.listener)
+        self.listening = allowed
+
     def timeout(self, now):
-        if not self.clients:
-            return max(0.0, self.idle_since + self.limits.idle_exit - now)
-        oldest = min(client.last_seen for client in self.clients)
-        return max(0.0, oldest + self.limits.client_idle - now)
+        deadlines = [self.sampler.timeout(now)]
+        if not self.listening:
+            deadlines.append(self.accepts.wait(now))
+        if self.clients:
+            oldest = min(client.last_seen for client in self.clients)
+            deadlines.append(oldest + self.limits.client_idle - now)
+        else:
+            deadlines.append(self.idle_since + self.limits.idle_exit - now)
+        return max(0.0, min(deadlines))
 
     def allowed(self, sock):
         try:
@@ -288,11 +341,13 @@ class Server:
             sock, _ = self.listener.accept()
         except OSError:
             return
+        now = self.clock()
+        self.accepts.record(now)
         if len(self.clients) >= self.limits.clients or not self.allowed(sock):
             sock.close()
             return
         sock.setblocking(False)
-        client = Client(sock, self.clock())
+        client = Client(sock, now)
         self.clients.append(client)
         self.selector.register(sock, selectors.EVENT_READ, client)
 
@@ -311,8 +366,8 @@ class Server:
         if state == INCOMPLETE:
             return
         client.buffer, client.last_seen = b"", self.clock()
-        payload = respond(client, client.last_seen, self.take, self.ranges,
-                          self.limits.min_spacing)
+        self.sampler.advance(client.last_seen)
+        payload = self.sampler.reply
         try:
             sent = client.sock.send(payload)
         except OSError:
@@ -325,9 +380,14 @@ class Server:
             self.drop(client)
 
     def drop(self, client):
-        self.selector.unregister(client.sock)
+        if client.sock.fileno() >= 0 and client in self.clients:
+            try:
+                self.selector.unregister(client.sock)
+            except (KeyError, ValueError):
+                pass
         client.sock.close()
-        self.clients.remove(client)
+        if client in self.clients:
+            self.clients.remove(client)
         if not self.clients:
             self.idle_since = self.clock()
 

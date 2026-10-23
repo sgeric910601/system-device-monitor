@@ -67,7 +67,7 @@ class Sampling(unittest.TestCase):
     def test_explanations(self):
         self.assertIn("RAPL", text.EXPLANATION)
         self.assertIn("管理員授權", text.EXPLANATION)
-        for words in ("旁路", "只有你", "0.1 W", "每秒最多"):
+        for words in ("旁路", "只有你的帳號", "任何程式", "0.1 W", "固定 1 秒"):
             self.assertIn(words, text.SIDE_CHANNEL)
 
     def test_full_width_punctuation(self):

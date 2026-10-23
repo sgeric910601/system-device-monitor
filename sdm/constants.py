@@ -91,9 +91,10 @@ class CpuPower:
     DEB_SOCKET = "/run/system-device-monitor/cpu-power.sock"
     LOCAL_SOCKET = "/run/system-device-monitor/cpu-power-local.sock"
     REQUEST = b"r\n"
-    MIN_SPACING = 1.0           # 服務端兩次計算至少相隔 1 秒（秒）
-    MAX_WINDOW = 30.0           # 兩次計算最多相隔 30 秒，超過就重新建立基準
-    MAX_CLIENTS = 8
+    PERIOD = 1.0                # 服務端全部連線共用的取樣刻度（秒）
+    MAX_WINDOW = 30.0           # 兩次讀取最多相隔 30 秒，超過就重新建立基準
+    MAX_CLIENTS = 2
+    ACCEPTS_PER_SECOND = 4      # 服務每秒最多接受的連線數
     IDLE_EXIT = 30.0            # 服務沒有連線多久後結束（秒）
     CLIENT_IDLE = 30.0          # 連線多久沒有請求就被關閉（秒）
     WATTS_DIGITS = 1            # 回傳的瓦數四捨五入到 0.1 W
