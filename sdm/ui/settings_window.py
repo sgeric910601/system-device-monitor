@@ -1,11 +1,13 @@
-"""設定視窗：左側分類（一般、頂端列、監控模組、顯示項目、關於），右側該分類的卡片。
+"""設定視窗：左側分類（一般、頂端列、監控模組、顯示項目、通知、周邊設備、關於），右側該分類的卡片。
 
 視窗寬度小於 640 px 時分類側欄收起，改用標題列的選單按鈕（與主視窗相同）。
 所有控制項都經由 SettingsStore 寫入並即時套用；關閉視窗只是隱藏，下次開啟維持原本的分類。
+看板在不斷電系統出現或消失、設備組成改變與通知服務狀態改變時通知視窗更新；
+每次開啟時重新確認一次通知服務。
 """
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -15,13 +17,18 @@ from sdm.constants import Ui
 from sdm.services.settings_store import STATUS
 from sdm.ui.main_window import install_css
 from sdm.ui.navigation import NavigationShell
-from sdm.ui.settings import about, display, general, monitors, topbar
+from sdm.ui.settings import about, display, general, monitors, notifications, peripherals, topbar
 from sdm.ui.settings.controls import Controls, wrapped
 from sdm.ui.widgets import box
 
 SECTIONS = (("general", "一般", general), ("tray", "頂端列", topbar),
             ("monitors", "監控模組", monitors), ("display", "顯示項目", display),
+            ("notifications", "通知", notifications), ("peripherals", "周邊設備", peripherals),
             ("about", "關於", about))
+
+
+def nothing():
+    return None
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,12 @@ class SettingsContext:
     root: Path                          # 程式所在位置（找說明文件）
     version: str
     external_power: Callable[[], bool]  # 目前是否接著外部電源（省電說明）
+    ups_present: Callable[[], bool] = bool          # 目前有不斷電系統（顯示不斷電系統提醒）
+    peripherals: Callable[[], tuple] = tuple        # 回報電量的周邊（PeripheralReading）
+    notice: Callable[[], str] = str                 # 通知服務的狀態說明；沒有問題時為空字串
+    send_test: Callable[[], Optional[bool]] = nothing
+    probe: Callable[[], None] = nothing             # 重新確認通知服務（非同步）
+    notifications_enabled: bool = False             # 模擬測試與示範模式為 False
 
 
 def section_page(content):
@@ -70,6 +83,7 @@ class SettingsWindow:
             self.shell.add(key, title, scroll)
             self.scrolls[key] = scroll
         self.controls.bind({STATUS}, self.show_problem)
+        self.devices_shown = peripherals.composition(context.peripherals())
 
     @property
     def stack(self):
@@ -83,7 +97,22 @@ class SettingsWindow:
     def external_power_changed(self):
         self.controls.changed(frozenset({general.EXTERNAL}))
 
+    def power_changed(self):
+        """不斷電系統出現或消失。"""
+        self.controls.changed(frozenset({notifications.POWER}))
+
+    def notice_changed(self):
+        self.controls.changed(frozenset({notifications.NOTICE}))
+
+    def devices_changed(self):
+        """新的設備清單：組成（設備、名稱、圖示）改變時才更新周邊設備列表。"""
+        shown = peripherals.composition(self.context.peripherals())
+        if shown != self.devices_shown:
+            self.devices_shown = shown
+            self.controls.changed(frozenset({peripherals.DEVICES}))
+
     def present(self, section=None):
+        self.context.probe()
         self.window.show_all()
         if section is not None:
             self.stack.set_visible_child_name(section)

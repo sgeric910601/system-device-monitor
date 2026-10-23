@@ -5,6 +5,7 @@
 from pathlib import Path
 
 from sdm.constants import History, Schedule
+from sdm.core.preference_specs import PREFERENCE_SPECS
 from sdm.core.schedule import saving_active
 
 INTERVALS = tuple((seconds, "每秒更新" if seconds == 1 else f"每 {seconds} 秒更新")
@@ -17,6 +18,28 @@ SAVING_BASE = "省電模式：電力流向改用靜態圖、不播放動畫，�
 PACKAGE_DOCS = Path("/usr/share/doc/system-device-monitor")
 DOCS = (("專案說明", "README.md"), ("使用說明", "docs/USAGE.md"), ("隱私說明", "docs/PRIVACY.md"))
 SECONDS_PER_MINUTE = 60
+UPS_OPTION_STEP = 5         # 不斷電系統低電量門檻的下拉選單每 5% 一格（設定檔可存任何整數）
+
+
+def percent_options(low, high, step, extra=()):
+    """（值、「20%」）：low–high 每 step 一格，另外加上 extra（例如設定檔中的自訂值）。"""
+    values = sorted(set(range(low, high + 1, step)) | set(extra))
+    return tuple((value, f"{value}%") for value in values)
+
+
+def spec_options(key):
+    spec = PREFERENCE_SPECS[key]
+    return percent_options(spec.low, spec.high, spec.step)
+
+
+LOW_THRESHOLDS = spec_options("low_threshold")
+FULL_THRESHOLDS = spec_options("full_threshold")
+
+
+def ups_thresholds(current):
+    """不斷電系統低電量門檻：每 5% 一格，並保留目前的值（可能是設定檔中的其他整數）。"""
+    spec = PREFERENCE_SPECS["ups_low_threshold"]
+    return percent_options(spec.low, spec.high, UPS_OPTION_STEP, (current,))
 
 
 def power_word(laptop):

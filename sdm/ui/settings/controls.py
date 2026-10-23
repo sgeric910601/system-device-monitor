@@ -96,8 +96,8 @@ class Controls:
         self.enable_when(check, key, when)
         return check
 
-    def choice(self, key, title, options):
-        """下拉選單；options 為（值、名稱）。"""
+    def choice(self, key, title, options, when=None):
+        """下拉選單；options 為（值、名稱）；when 為額外的啟用條件。"""
         row = box(False, ROW_SPACING)
         row.pack_start(wrapped(title), True, True, 0)
         combo = Gtk.ComboBoxText(valign=Gtk.Align.CENTER)
@@ -112,7 +112,7 @@ class Controls:
             combo.set_active_id(str(self.store.value(key)))
             combo.handler_unblock(handler)
         self.bind({key}, sync)
-        self.enable_when(row, key)
+        self.enable_when(row, key, when)
         return row
 
     def radios(self, key, options):

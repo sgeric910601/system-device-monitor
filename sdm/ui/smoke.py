@@ -12,13 +12,15 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from sdm.constants import Smoke
+from sdm.ui.settings_window import SECTIONS
 
 # 模擬測試依序顯示的頁面，再依序打開設定視窗的各分類；LOWER_CAPTURES 另外截一張捲到底部的畫面
 SMOKE_PAGES = ("power", "overview", "cpu", "memory", "disk", "network", "devices")
-SETTINGS_SECTIONS = ("general", "tray", "monitors", "display", "about")
+SETTINGS_SECTIONS = tuple(key for key, _, _ in SECTIONS)
 STEPS = tuple(("page", name) for name in SMOKE_PAGES) + tuple(
     ("settings", name) for name in SETTINGS_SECTIONS)
-LOWER_CAPTURES = ("power", "cpu", "memory", "disk", "general", "tray", "display")
+LOWER_CAPTURES = ("power", "cpu", "memory", "disk", "general", "tray", "display",
+                  "notifications")
 
 
 def settle():

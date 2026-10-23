@@ -15,6 +15,7 @@ from gi.repository import Gtk, Gio, GLib, GUdev
 
 from sdm import paths
 from sdm.constants import Collect, History, Preview, Smoke, Ui
+from sdm.core.peripheral_alerts import threshold_for
 from sdm.core.schedule import cadence_for
 from sdm.core.settings import load_settings
 from sdm.data.collectors import Collectors
@@ -235,7 +236,10 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.graphs = overview.graphs
         self.page("overview", PAGE_TITLES["overview"]).pack_start(overview, False, False, 0)
         self.build_monitor_pages()
-        self.devices_page = DevicesPage()
+        self.devices_page = DevicesPage(
+            threshold_for=lambda device_id: threshold_for(self.preferences.peripheral_thresholds,
+                                                          device_id),
+            choose=self.set_peripheral_threshold, writable=lambda: not self.store.read_only)
         self.page("devices", PAGE_TITLES["devices"]).pack_start(self.devices_page, False, False, 0)
         self.watch_visibility()
         self.window.connect("map", lambda *_: self.refresh_stale_pages())
