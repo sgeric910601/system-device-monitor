@@ -374,3 +374,68 @@ class Storage:
     SAVE_DELAY_MS = 500             # 設定變更後延遲寫檔（連續調整只寫一次）
     SAVE_RETRY_SECONDS = (15, 60)   # 設定寫檔失敗後的重試間隔；再失敗就在這次執行放棄
     MILLISECONDS = 1000
+
+
+class Companion:
+    """充電夥伴（電源頁）與桌面寵物共用的外觀、動畫與照片。"""
+    ANIMATION = "procedural"        # procedural：靜態圖加上程式畫的呼吸與粒子；frames：預先算好的畫格
+    FRAMES_COLUMNS = 10             # frames 做法的畫格圖每列幾格（scripts/make_assets.py --frames）
+    FRAMES_SOURCE_FPS = 15          # 原始影片每秒 15 格
+    MAX_FPS = 12                    # 動畫最多每秒 12 格
+    FPS = 8                         # 實際使用的格數：呼吸很慢，8 格已經夠順
+    BREATH_HZ = 0.25                # 每 4 秒呼吸一次
+    BREATH_SCALE = 0.02             # 以腳底為基準放大 1.00–1.02 倍
+    BOB_RATIO = 0.008               # 上下起伏：高度的 0.8%
+    ZZZ_PERIOD = 3.0                # 每個 Z 從頭上飄起到消失的秒數
+    ZZZ_COUNT = 3
+    SPARK_PERIOD = 1.4              # 充電火花一閃的週期（秒）
+    SPARK_COUNT = 4
+    PAGE_WIDTH = 72                 # 電源頁的夥伴寬度（px），高度為寬度的 50/48
+    BUSY_LOAD_PCT = 70              # 桌機：不斷電系統負載達 70% 視為忙碌
+    BUSY_WATTS = 400                # 沒有不斷電系統負載時，整機（或已知元件合計）達 400 W 視為忙碌
+    CRITICAL_PERCENT = 10           # 電量低於等於 10% 是紅色
+    EYES = ((0.184, 0.479, 0.061), (0.572, 0.465, 0.074))   # 大頭照的兩隻眼睛：中心與半徑（照片邊長的比例）
+    GAZE_X = 0.3                    # 眼珠最多往左右移動半徑的 0.3、上下 0.16
+    GAZE_Y = 0.16
+    GAZE_MIN_RANGE = 60             # 游標離眼睛這麼遠（或寬度的 1.5 倍）時眼珠轉到最旁邊
+    GAZE_RANGE_RATIO = 1.5
+    BLINK_MIN_SECONDS = 2.5         # 每 2.5–6 秒眨一次眼，五次中有一次眨兩下
+    BLINK_MAX_SECONDS = 6.0
+    DOUBLE_BLINK_ONE_IN = 5
+    BLINK_HALF_SECONDS = 0.09       # 閉眼 0.09 秒、張眼 0.09 秒
+    POINTER_HZ = 15                 # 眼睛跟著游標時，看得到才讀游標位置，每秒最多 15 次
+    PHOTO_FILE = "companion-photo.png"
+    PHOTO_PIXELS = 512              # 我的照片裁成正方形、存成 512 × 512
+    PHOTO_DECODE_PIXELS = 2048      # 解碼時先縮到不超過 2048 px，大照片也不佔太多記憶體
+    PHOTO_MAX_BYTES = 50 * 1024 * 1024
+
+
+class Pet:
+    """桌面寵物視窗（X11）：大小、位置、互動與對話框。"""
+    BASE_SIZE = 176                 # 大小 100% 時的邊長（px）
+    SCALE_MIN = 0.5
+    SCALE_MAX = 2.0
+    SCALE_PRESETS = (0.75, 1.0, 1.5, 2.0)
+    KEEP_VISIBLE = 48               # 至少留 48 px（或寬度的一半，取較小者）在螢幕上
+    EDGE_MARGIN = 24                # 預設位置：主螢幕工作區右下角往內 24 px
+    DRAG_THRESHOLD = 3              # 按住移動超過 3 px 才算拖曳
+    SPEECH_SECONDS = 4              # 點一下說的話顯示 4 秒
+    STROKE_MIN_PX = 2               # 摸牠：滑鼠左右換方向，1.5 秒內 3 次算摸一下，之後 1.2 秒內不再算
+    STROKE_TURNS = 3
+    STROKE_WINDOW_SECONDS = 1.5
+    STROKE_COOLDOWN_SECONDS = 1.2
+    HEART_SECONDS = 1.3
+    HEART_COUNT = 3
+    BUBBLE_WIDTH = 290              # 對話框視窗的固定大小（px）
+    BUBBLE_HEIGHT = 150
+    STATE_FILE = "pet.json"         # XDG 狀態目錄中記住位置的檔案
+    SAVE_DELAY_MS = 500
+
+
+class AppIcon:
+    """程式圖示的顏色：薄荷綠隨套件安裝在 hicolor，其他顏色寫進使用者的圖示主題。"""
+    COLORS = ("mint", "peach", "night", "sky")
+    DEFAULT = "mint"
+    SIZES = (128, 512)
+    NAME = "system-device-monitor"
+    MARKER = "app-icon.json"        # XDG 資料目錄中記下本程式寫入的圖示檔
