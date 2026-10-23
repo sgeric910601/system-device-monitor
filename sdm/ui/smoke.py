@@ -20,7 +20,7 @@ SETTINGS_SECTIONS = tuple(key for key, _, _ in SECTIONS)
 STEPS = tuple(("page", name) for name in SMOKE_PAGES) + tuple(
     ("settings", name) for name in SETTINGS_SECTIONS)
 LOWER_CAPTURES = ("power", "cpu", "memory", "disk", "general", "tray", "display",
-                  "notifications", "admin")
+                  "notifications", "companion", "admin")
 
 
 def settle():

@@ -19,7 +19,8 @@ from sdm.services.battery_service import LaptopPower
 from sdm.services.companion_photo import PhotoStore
 from sdm.services.pet_state import PetPosition
 from sdm.ui.companion import CompanionView
-from sdm.ui.pet import DesktopPet, PetHost
+from sdm.ui.pet import DesktopPet, PetHost, is_x11
+from sdm.ui.settings.companion import CompanionContext
 from sdm.ui.pet_text import companion_state, sayings_for, thought_for
 from sdm.ui.sprite import Images
 
@@ -96,6 +97,19 @@ class CompanionMixin:
             self.pet.show()
             self.update_companion_motion()
         self.pet.apply(prefs.desktop_pet_on_wallpaper, prefs.desktop_pet_scale)
+
+    def photo_changed(self):
+        """換了或刪除我的照片：重畫夥伴與桌面寵物（寵物的輸入範圍也跟著圖案）。"""
+        for view in self.companion_views():
+            view.queue_draw()
+        if self.pet is not None:
+            self.pet.update_shape()
+
+    def companion_context(self):
+        return CompanionContext(
+            photos=self.photos, images=self.companion_images, photo_changed=self.photo_changed,
+            icon_problem=lambda: self.icon_problem, saving=lambda: self.cadence.saving,
+            x11=is_x11(self.window.get_display()))
 
     def close_pet(self):
         if self.pet is not None:

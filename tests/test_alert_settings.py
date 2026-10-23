@@ -149,8 +149,8 @@ class Sections(unittest.TestCase):
     def test_smoke_test_opens_every_section_in_order(self):
         self.assertEqual(smoke.SETTINGS_SECTIONS, tuple(key for key, _, _ in SECTIONS))
         self.assertEqual([title for _, title, _ in SECTIONS],
-                         ["一般", "頂端列", "監控模組", "顯示項目", "通知", "周邊設備", "管理員功能",
-                          "關於"])
+                         ["一般", "頂端列", "監控模組", "顯示項目", "通知", "周邊設備", "夥伴",
+                          "桌面寵物", "外觀", "管理員功能", "關於"])
 
     def test_context_defaults(self):
         context = SettingsContext(laptop=False, root=None, version="0", external_power=bool)
