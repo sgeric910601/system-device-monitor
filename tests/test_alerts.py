@@ -9,8 +9,8 @@ import unittest
 from sdm.constants import Alerts
 from sdm.core import alert_messages as messages
 from sdm.core.alerts import (BatteryInput, Gate, LaptopAlertState, RateLimit, UpsAlertState,
-                             delivered, evaluate_laptop, evaluate_ups, failed, next_release,
-                             offer, pass_gate, release)
+                             clear_pending, delivered, drop, evaluate_laptop, evaluate_ups,
+                             failed, next_release, offer, pass_gate, release)
 from sdm.core.settings import Preferences
 from sdm.data.ups import UpsReading
 
@@ -353,6 +353,35 @@ class RateLimiting(unittest.TestCase):
         limit, ready = offer(limit, alert(title="later"), Alerts.RATE_LIMIT_SECONDS)
         self.assertEqual([a.title for a in ready], ["later"])
         self.assertEqual(Alerts.RATE_LIMIT_SECONDS, 60)
+
+    def waiting(self, kind, now=10.0):
+        """kind 的上一則剛送出，這一則只能等待。"""
+        limit, ready = offer(RateLimit(), alert(kind, title="first"), 0.0)
+        limit = delivered(limit, ready[0], 0.0)
+        return offer(limit, alert(kind, title="second"), now)[0]
+
+    def test_back_on_mains_cancels_an_outage_that_was_never_shown(self):
+        limit = self.waiting(messages.UPS_ON_BATTERY)
+        limit, ready = offer(limit, alert(messages.UPS_ON_MAINS), 20.0)
+        self.assertEqual((ready, dict(limit.pending)), ((), {}))
+        self.assertIsNone(next_release(limit))
+
+    def test_back_on_mains_drops_a_waiting_low_charge_alert(self):
+        limit = self.waiting(messages.UPS_LOW)
+        limit, ready = offer(limit, alert(messages.UPS_ON_MAINS), 20.0)
+        self.assertEqual([a.kind for a in ready], [messages.UPS_ON_MAINS])
+        self.assertEqual(dict(limit.pending), {})
+
+    def test_drop_and_clear_waiting_alerts(self):
+        limit = self.waiting(messages.LOW_BATTERY)
+        self.assertEqual(dict(drop(limit, {messages.BATTERY_FULL}).pending).keys(),
+                         {(messages.LOW_BATTERY, "")})
+        self.assertEqual(dict(drop(limit, {messages.LOW_BATTERY}).pending), {})
+        failing, ready = offer(RateLimit(), alert("x"), 0.0)
+        failing = failed(failing, ready[0], 0.0)
+        cleared = clear_pending(failing)
+        self.assertEqual((dict(cleared.pending), dict(cleared.retry)), ({}, {}))
+        self.assertIsNone(next_release(clear_pending(limit)))
 
     def test_old_entries_are_forgotten(self):
         limit, ready = offer(RateLimit(), alert("a"), 0.0)

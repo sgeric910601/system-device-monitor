@@ -16,6 +16,9 @@
 - 頻率限制：同一種通知（周邊為同一台設備）每 60 秒最多一則；期間內再來的只保留最新的一則，
   時間到才送出。只有送出成功（delivered）才算送過；失敗（failed，例如沒有通知服務）
   30 秒後再試，同一則最多試 5 次。
+- 等待中的通知過時就丟掉：恢復市電時丟掉等待中的「電量偏低」，等待中的「改用電池」還沒顯示過時
+  連同「已恢復市電」一起丟掉（停電與恢復都不顯示）；看板偵測到喚醒時丟掉全部等待中的通知；
+  筆電不再放電、拔掉電源時由協調層丟掉等待中的低電量、充飽通知（drop()）。
 """
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -25,6 +28,10 @@ from sdm.constants import Alerts
 from sdm.core import alert_messages as messages
 
 EMPTY = MappingProxyType({})
+# 送出這種通知時，等待中的這些通知已經過時
+SUPERSEDES = {messages.UPS_ON_MAINS: (messages.UPS_ON_BATTERY, messages.UPS_LOW)}
+# 這一對中的前者還沒顯示過（仍在等待）就被取代時，後者也不顯示
+PAIRS = {messages.UPS_ON_MAINS: messages.UPS_ON_BATTERY}
 
 
 @dataclass(frozen=True)
@@ -209,10 +216,27 @@ def pruned(limit, now):
     return replace(limit, sent=frozen(sent), retry=frozen(retry))
 
 
+def drop(limit, kinds):
+    """丟掉這些種類的等待中通知（含失敗後等待重試的）；正在送出的不受影響。"""
+    pending = {key: item for key, item in limit.pending.items() if key[0] not in kinds}
+    retry = {key: value for key, value in limit.retry.items() if key[0] not in kinds}
+    return replace(limit, pending=frozen(pending), retry=frozen(retry))
+
+
+def clear_pending(limit):
+    """偵測到喚醒：等待中的通知都已過時。"""
+    return replace(limit, pending=EMPTY, retry=EMPTY)
+
+
 def offer(limit, alert, now):
     """回傳（新狀態, 現在就可以送出的通知）；送出結果要再交給 delivered() 或 failed()。
 
     限制期間內、上一則還在送出或等待重試時，改為等待（只保留最新的一則）。"""
+    stale = SUPERSEDES.get(alert.kind, ())
+    unshown = any(key[0] == PAIRS.get(alert.kind) for key in limit.pending)
+    limit = drop(limit, stale) if stale else limit
+    if unshown:
+        return pruned(limit, now), ()
     if allowed(limit, alert.key, now):
         pending = {key: item for key, item in limit.pending.items() if key != alert.key}
         state = replace(limit, pending=frozen(pending), inflight=limit.inflight | {alert.key})

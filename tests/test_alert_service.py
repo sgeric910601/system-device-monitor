@@ -11,7 +11,7 @@ from sdm.core.battery import CHARGING, DISCHARGING, PLUGGED_IDLE
 from sdm.core.settings import Preferences
 from sdm.data.power_supply import BatteryReading
 from sdm.data.ups import UpsReading
-from sdm.services.alert_service import AlertService, battery_input
+from sdm.services.alert_service import AlertService, battery_input, boot_clock
 from sdm.services.power_service import PowerService
 from sdm.ui import alert_wiring
 from sdm.ui import app as ui_app
@@ -88,9 +88,9 @@ class ServiceTest(unittest.TestCase):
     def setUp(self):
         self.notifications, self.timers, self.idle = Notifications(), Timers(), Idle()
         self.sent = self.notifications.sent
-        self.clock, self.boot = Clock(), Clock(5000.0)
+        self.clock = Clock(5000.0)
         self.service = AlertService(self.notifications, self.timers.schedule, self.cancel,
-                                    defer=self.idle.defer, clock=self.clock, boot=self.boot)
+                                    defer=self.idle.defer, clock=self.clock)
         self.addCleanup(self.service.stop)
 
     def cancel(self, source):
@@ -114,7 +114,6 @@ class ServiceTest(unittest.TestCase):
 class Service(ServiceTest):
     def step(self, seconds=5):
         self.clock.now += seconds
-        self.boot.now += seconds
 
     def titles(self):
         return [alert.title for alert in self.sent]
@@ -145,7 +144,7 @@ class Service(ServiceTest):
         self.power(laptop(1, 40))
         self.step()
         self.power(laptop(2, 30))
-        self.boot.now += Alerts.RESUME_GAP_SECONDS + 1        # 睡眠：單調時鐘不動
+        self.step(Alerts.RESUME_GAP_SECONDS + 1)              # 睡眠（含睡眠時間的時鐘）
         self.power(laptop(3, 12))
         self.step()
         self.power(laptop(4, 11))
@@ -238,6 +237,51 @@ class Service(ServiceTest):
             self.fire()
         self.assertEqual(len(self.notifications.attempts), Alerts.SEND_MAX_ATTEMPTS)
         self.assertEqual(self.timers.live, {})
+
+    def test_resume_drops_waiting_alerts(self):
+        self.devices(devices(50))
+        self.step()
+        self.devices(devices(5))
+        self.step()
+        self.devices(devices())
+        self.step()
+        self.devices(devices(4))                              # 等待中（60 秒內）
+        self.step(Alerts.RESUME_GAP_SECONDS + 1)
+        self.devices(devices(4))
+        self.assertEqual(self.timers.live, {})
+        self.assertEqual(len(self.sent), 1)
+
+    def test_charging_drops_a_waiting_low_battery_alert(self):
+        self.power(laptop(1, 40))
+        self.step()
+        self.power(laptop(2, 20))
+        self.step()
+        self.power(laptop(3, 25, state=CHARGING, online=True))
+        self.step()
+        self.power(laptop(4, 20))                             # 等待中（60 秒內）
+        self.assertEqual(len(self.timers.live), 1)
+        self.step()
+        self.power(laptop(5, 21, state=CHARGING, online=True))
+        self.assertEqual(self.timers.live, {})
+        self.assertEqual(self.titles(), ["電量偏低：20%"])
+
+    def test_unplugging_drops_a_waiting_full_alert(self):
+        self.power(laptop(1, 95, state=CHARGING, online=True))
+        self.step()
+        self.power(laptop(2, 100, state=PLUGGED_IDLE, online=True))
+        self.step()
+        self.power(laptop(3, 99))
+        self.step()
+        self.power(laptop(4, 99, state=CHARGING, online=True))
+        self.step()
+        self.power(laptop(5, 100, state=PLUGGED_IDLE, online=True))   # 等待中
+        self.step()
+        self.power(laptop(6, 99))
+        self.assertEqual(self.timers.live, {})
+        self.assertEqual(self.titles(), ["充電完成：100%"])
+
+    def test_rate_limit_counts_time_spent_asleep(self):
+        self.assertIs(AlertService(print, None, None).clock, boot_clock)
 
     def test_stop_cancels_queued_notifications(self):
         self.low_mice(5, 6)
