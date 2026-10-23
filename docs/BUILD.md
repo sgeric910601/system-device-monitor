@@ -73,7 +73,8 @@ CI 也對解包後的 .deb 執行同一檢查，確認套件內容完整：
 管理員元件（helper/）以 root 執行，測試一律不需要 root：開關小程式與原始碼安裝腳本以
 假根目錄（擁有者＝執行測試的使用者）、假的 systemctl 與 dpkg-query 測試參數表、權限、
 O_NOFOLLOW 與信任檢查；取樣服務以暫存檔代替 energy_uj、暫存目錄的 Unix socket 代替
-systemd 交來的 socket，並以假的系統呼叫測試放棄權限的順序與檢查。單元檔測試確認每個強化設定、
+systemd 交來的 socket 與 OpenFile= 描述子，以文字代替 /proc/self/status 測試權限斷言，
+並以假時鐘測試全部連線共用的 1 秒視窗與連線速率限制。單元檔測試確認每個強化設定、
 .deb 與原始碼安裝版只差名稱與路徑；polkit 測試確認 exec.path 與預設授權；
 安裝前後腳本以 DPKG_ROOT 指向暫存目錄實際執行。
 
@@ -84,7 +85,8 @@ usr/lib/systemd/system 後執行
     systemd-analyze security --offline=true --root=解包目錄 解包目錄/usr/lib/systemd/system/system-device-monitor-cpu-power.service
 
 CI 安裝 .deb 後另外檢查權限、pkaction 的預設授權、以 sudo 執行小程式的錯誤參數、
-開啟後服務確實以 nobody 執行且沒有能力，以及移除與清除後沒有留下任何單元或 drop-in。
+開啟後服務確實以臨時帳號 sdm-cpu-power 執行、所有能力欄位都是 0，以及移除與清除後
+沒有留下任何單元或 drop-in。
 
 GUI smoke test 需要桌面或 Xvfb、system bus 與 session bus。
 CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。

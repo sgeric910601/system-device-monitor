@@ -10,6 +10,7 @@ SocketMode=0600
 DirectoryMode=0755
 RemoveOnStop=yes
 Accept=no
+FileDescriptorName=listen
 Service=system-device-monitor-cpu-power.service
 
 [Install]

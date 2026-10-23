@@ -1,7 +1,9 @@
-"""CPU 功耗取樣服務（helper/sdm-cpu-power-service）：能量差、每個連線的回應與啟動檢查。
+"""CPU 功耗取樣服務（helper/sdm-cpu-power-service）：能量差、共用視窗、systemd 交來的描述子
+與權限斷言。
 
 不需要 root：能量計數器用暫存檔（pread 一樣可用），監聽 socket 用暫存目錄裡的 Unix socket，
-放棄權限的系統呼叫以假的物件記錄。通訊協定的整合測試見 test_helper_protocol。
+systemd 以 OpenFile= 交來的描述子由測試自己開啟；/proc/self/status 以文字代替。
+通訊協定的整合測試見 test_helper_protocol。
 """
 import json
 import os
@@ -109,8 +111,24 @@ class Counters(unittest.TestCase):
         self.assertIsNone(service.read_counter(fd))
 
 
+def close_quietly(fd):
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def is_open(fd):
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
 class Zones(unittest.TestCase):
-    """假的 /sys/class/powercap：package 用固定的 intel-rapl:0，core 必須是唯一的子區域。"""
+    """假的 /sys/class/powercap：systemd 交來的描述子必須正是該區域的 energy_uj，
+    package 區域名稱為 package-0，core 必須是 intel-rapl:0:0 而且是唯一名為 core 的子區域。"""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -127,60 +145,72 @@ class Zones(unittest.TestCase):
             (directory/"max_energy_range_uj").write_text(max_range)
         return directory
 
-    def opened(self):
-        channels = service.open_channels(str(self.base))
-        for channel in channels:
-            if channel is not None:
-                self.addCleanup(os.close, channel.fd)
-        return channels
+    def fd(self, path):
+        fd = os.open(path, os.O_RDONLY)
+        self.addCleanup(close_quietly, fd)
+        return fd
+
+    def channels(self, package=True, core=True):
+        named = {}
+        if package:
+            named["package"] = self.fd(self.base/"intel-rapl:0/energy_uj")
+        if core:
+            named["core"] = self.fd(self.base/"intel-rapl:0:0/energy_uj")
+        return named, service.channels_from(named, str(self.base))
 
     def test_package_and_core(self):
         self.zone("intel-rapl:0", "package-0")
         self.zone("intel-rapl:0:0", "core", energy="40\n", max_range="900\n")
         self.zone("intel-rapl:0:1", "uncore")
-        package, core = self.opened()
+        _, (package, core) = self.channels()
         self.assertEqual((service.read_counter(package.fd), package.max_range), (1000, 5000))
         self.assertEqual((service.read_counter(core.fd), core.max_range), (40, 900))
 
-    def test_wrong_package_name_gives_no_channels(self):
+    def test_wrong_package_name_is_rejected_and_closed(self):
         self.zone("intel-rapl:0", "psys")
         self.zone("intel-rapl:0:0", "core")
-        self.assertEqual(self.opened(), (None, None))
+        named, (package, core) = self.channels()
+        self.assertIsNone(package)
+        self.assertFalse(is_open(named["package"]))
+        self.assertIsNotNone(core)
+
+    def test_descriptor_of_another_file_is_rejected(self):
+        self.zone("intel-rapl:0", "package-0")
+        (self.base/"elsewhere").write_text("7\n")
+        named = {"package": self.fd(self.base/"elsewhere")}
+        self.assertEqual(service.channels_from(named, str(self.base)), (None, None))
+        self.assertFalse(is_open(named["package"]))
 
     def test_duplicate_core_is_rejected(self):
         self.zone("intel-rapl:0", "package-0")
         self.zone("intel-rapl:0:0", "core")
         self.zone("intel-rapl:0:1", "core")
-        package, core = self.opened()
+        _, (package, core) = self.channels()
         self.assertIsNotNone(package)
         self.assertIsNone(core)
 
-    def test_other_packages_and_unrelated_entries_are_ignored(self):
+    def test_core_must_be_the_first_subzone(self):
         self.zone("intel-rapl:0", "package-0")
-        self.zone("intel-rapl:1:0", "core")
-        self.zone("intel-rapl-mmio:0", "package-0")
-        (self.base/"intel-rapl:0:x").mkdir()
-        package, core = self.opened()
-        self.assertIsNotNone(package)
+        self.zone("intel-rapl:0:0", "uncore")
+        self.zone("intel-rapl:0:1", "core")
+        _, (_, core) = self.channels()
         self.assertIsNone(core)
 
     def test_unreadable_range_keeps_the_channel_without_wrap(self):
         self.zone("intel-rapl:0", "package-0", max_range="bogus\n")
-        package, _ = self.opened()
+        _, (package, _) = self.channels(core=False)
         self.assertEqual((service.read_counter(package.fd), package.max_range), (1000, None))
 
-    def test_missing_energy_file_gives_no_channel(self):
-        self.zone("intel-rapl:0", "package-0", energy=None)
-        self.assertEqual(self.opened(), (None, None))
+    def test_missing_descriptors_mean_no_channels(self):
+        self.zone("intel-rapl:0", "package-0")
+        self.assertEqual(service.channels_from({}, str(self.base)), (None, None))
 
-    def test_energy_symlink_is_not_followed(self):
-        directory = self.zone("intel-rapl:0", "package-0", energy=None)
-        (self.base/"elsewhere").write_text("7\n")
-        (directory/"energy_uj").symlink_to(self.base/"elsewhere")
-        self.assertEqual(self.opened(), (None, None))
-
-    def test_missing_powercap_gives_no_channels(self):
-        self.assertEqual(service.open_channels(str(self.base/"absent")), (None, None))
+    def test_non_regular_descriptor_is_rejected(self):
+        self.zone("intel-rapl:0", "package-0")
+        reader, writer = os.pipe()
+        self.addCleanup(close_quietly, writer)
+        self.assertEqual(service.channels_from({"package": reader}, str(self.base)), (None, None))
+        self.assertFalse(is_open(reader))
 
 
 class FakeSampler:
@@ -345,9 +375,69 @@ class Requests(unittest.TestCase):
                 self.assertEqual(service.parse_request(buffer), expected)
 
 
-class Listener(unittest.TestCase):
-    """systemd 交來的監聽 socket：LISTEN_PID、LISTEN_FDS 與 fd 本身都要符合。"""
+SAFE = ("Name:\tpython3\nUid:\t61234\t61234\t61234\t61234\nGid:\t61234\t61234\t61234\t61234\n"
+        "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n"
+        "CapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\n")
 
+
+class Privileges(unittest.TestCase):
+    """執行時的防禦性斷言：不是 root、沒有任何能力（含繼承、邊界與環境能力）、禁止取得新權限。"""
+
+    def test_dynamic_user_without_capabilities_is_accepted(self):
+        self.assertIsNone(service.privilege_problem(SAFE))
+
+    def test_root_is_refused(self):
+        for uids in ("0\t0\t0\t0", "61234\t0\t61234\t61234", "61234\t61234\t61234\t0",
+                     "61234\t61234\t61234"):
+            with self.subTest(uids=uids):
+                status = SAFE.replace("Uid:\t61234\t61234\t61234\t61234", "Uid:\t" + uids)
+                self.assertIsNotNone(service.privilege_problem(status))
+
+    def test_any_capability_is_refused(self):
+        for field in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+            with self.subTest(field=field):
+                status = SAFE.replace(f"{field}:\t0000000000000000", f"{field}:\t0000000000000004")
+                self.assertIsNotNone(service.privilege_problem(status))
+                missing = SAFE.replace(f"{field}:\t0000000000000000\n", "")
+                self.assertIsNotNone(service.privilege_problem(missing))
+
+    def test_malformed_or_privileged_status(self):
+        for status in ("", SAFE.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+                       SAFE.replace("CapEff:\t0000000000000000", "CapEff:\tzz"),
+                       SAFE.replace("Uid:\t61234", "Uid:\tabc")):
+            with self.subTest(status=status[:40]):
+                self.assertIsNotNone(service.privilege_problem(status))
+
+
+class Descriptors(unittest.TestCase):
+    """systemd 交來的描述子：LISTEN_PID、LISTEN_FDS 與 LISTEN_FDNAMES 必須一致。"""
+
+    def env(self, names, pid="4321", count=None):
+        return {"LISTEN_PID": pid, "LISTEN_FDS": str(len(names) if count is None else count),
+                "LISTEN_FDNAMES": ":".join(names)}
+
+    def test_names_map_to_descriptors_in_order(self):
+        env = self.env(["package", "listen", "core"])
+        named = service.inherited_fds(env, 4321, fds=[10, 11, 12], inherit=lambda fd: None)
+        self.assertEqual(named, {"package": 10, "listen": 11, "core": 12})
+        self.assertEqual(env, {})
+
+    def test_default_descriptors_start_at_three(self):
+        names = service.inherited_fds(self.env(["listen"]), 4321, fds=None, inherit=lambda fd: None)
+        self.assertEqual(names, {"listen": 3})
+
+    def test_inconsistent_environments_are_refused(self):
+        cases = (self.env(["listen"], pid="1"), self.env(["listen", "package"], count=1),
+                 self.env(["package"]), self.env(["listen", "listen"]),
+                 self.env(["listen", "extra"]), self.env(["listen"], count="x"), {},
+                 self.env(["listen", "package", "core", "core2"]))
+        for env in cases:
+            with self.subTest(env=env):
+                with self.assertRaises(service.Failure):
+                    service.inherited_fds(env, 4321, fds=range(100, 100 + 4))
+
+
+class Listener(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -359,48 +449,33 @@ class Listener(unittest.TestCase):
         sock.listen()
         return sock
 
-    def env(self, **extra):
-        return {"LISTEN_PID": "4321", "LISTEN_FDS": "1", **extra}
-
-    def check(self, sock, env, pid=4321):
+    def check(self, sock):
         fd = os.dup(sock.fileno())
         sock.close()
         try:
-            return service.inherited_listener(env, pid, fd)
+            return service.listening_socket(fd)
         except service.Failure:
             os.close(fd)
             raise
 
-    def test_valid_listener_is_accepted_and_the_environment_cleared(self):
-        env = self.env(LISTEN_FDNAMES="cpu")
-        listener = self.check(self.listening(), env)
+    def test_valid_listener_is_accepted(self):
+        listener = self.check(self.listening())
         self.addCleanup(listener.close)
         self.assertEqual((listener.family, listener.type), (socket.AF_UNIX, socket.SOCK_STREAM))
-        self.assertEqual(env, {})
-        self.assertFalse(os.get_inheritable(listener.fileno()))
-
-    def test_wrong_pid_or_count_is_refused(self):
-        for env, pid in ((self.env(), 1), (self.env(LISTEN_FDS="2"), 4321),
-                         ({"LISTEN_FDS": "1"}, 4321), ({}, 4321)):
-            with self.subTest(env=env, pid=pid):
-                with self.assertRaises(service.Failure):
-                    self.check(self.listening(), env, pid)
-                os.unlink(self.path)
 
     def test_non_listening_or_datagram_sockets_are_refused(self):
-        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         with self.assertRaises(service.Failure):
-            self.check(stream, self.env())
+            self.check(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
         datagram = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         datagram.bind(self.path)
         with self.assertRaises(service.Failure):
-            self.check(datagram, self.env())
+            self.check(datagram)
 
     def test_regular_file_descriptor_is_refused(self):
         fd = os.open(os.devnull, os.O_RDONLY)
         self.addCleanup(os.close, fd)
         with self.assertRaises(service.Failure):
-            service.inherited_listener(self.env(), 4321, fd)
+            service.listening_socket(fd)
 
     def test_socket_owner_comes_from_the_socket_file(self):
         listener = self.listening()
@@ -408,91 +483,32 @@ class Listener(unittest.TestCase):
         self.assertEqual(service.socket_owner(listener), os.getuid())
 
 
-class FakeSystem:
-    """記錄放棄權限時的系統呼叫；setuid(0) 預設會失敗（代表能力已經消失）。"""
-
-    def __init__(self, regain=False, groups_after=(), resuid=None):
-        self.calls, self.regain = [], regain
-        self.groups, self.groups_after, self.resuid = [27], list(groups_after), resuid
-
-    def setgroups(self, groups):
-        self.calls.append(("setgroups", tuple(groups)))
-        self.groups = list(self.groups_after)
-
-    def setresgid(self, *ids):
-        self.calls.append(("setresgid", ids))
-
-    def setresuid(self, *ids):
-        self.calls.append(("setresuid", ids))
-        self.resuid = self.resuid or ids
-
-    def getresuid(self):
-        return self.resuid
-
-    def getresgid(self):
-        return (65534,) * 3
-
-    def getgroups(self):
-        return self.groups
-
-    def setuid(self, uid):
-        self.calls.append(("setuid", uid))
-        if not self.regain:
-            raise PermissionError("not permitted")
-
-
-STATUS = "Name:\tpython3\nCapInh:\t0000000000000000\nCapPrm:\t{0}\nCapEff:\t{0}\n"
-
-
-class Privileges(unittest.TestCase):
-    def test_capabilities_are_parsed_from_proc_status(self):
-        self.assertEqual(service.capabilities(STATUS.format("0000000000000000")), 0)
-        self.assertEqual(service.capabilities(STATUS.format("00000000000000c4")), 0xc4)
-        self.assertIsNone(service.capabilities("Name:\tx\n"))
-        self.assertIsNone(service.capabilities("CapPrm:\t0\nCapEff:\tzz\n"))
-
-    def test_drop_order_and_checks(self):
-        system = FakeSystem()
-        service.drop_privileges(system, lambda: STATUS.format("0" * 16))
-        self.assertEqual(system.calls, [("setgroups", ()), ("setresgid", (65534,) * 3),
-                                        ("setresuid", (65534,) * 3), ("setuid", 0)])
-
-    def test_failed_drops_are_fatal(self):
-        cases = (
-            (FakeSystem(regain=True), STATUS.format("0" * 16)),
-            (FakeSystem(), STATUS.format("0000000000000004")),
-            (FakeSystem(), "Name:\tx\n"),
-            (FakeSystem(resuid=(65534, 0, 65534)), STATUS.format("0" * 16)),
-            (FakeSystem(groups_after=(4,)), STATUS.format("0" * 16)),
-        )
-        for system, status in cases:
-            with self.subTest(status=status, calls=system.calls):
-                with self.assertRaises(service.Failure):
-                    service.drop_privileges(system, lambda status=status: status)
-
-    def test_unreadable_status_is_fatal(self):
-        def unreadable():
-            raise OSError("no proc")
-        with self.assertRaises(service.Failure):
-            service.drop_privileges(FakeSystem(), unreadable)
-
-
 class Main(unittest.TestCase):
-    def run_main(self, argv, euid=0, env=None, start=None):
+    def run_main(self, argv, status=SAFE, env=None, start=None):
         output = []
-        code = service.main(argv, env or {}, geteuid=lambda: euid, start=start or (lambda env: 0),
-                            emit=output.append, report=lambda message: None)
+
+        def read_status():
+            if isinstance(status, BaseException):
+                raise status
+            return status
+        code = service.main(argv, env or {}, read_status=read_status,
+                            start=start or (lambda env: 0), emit=output.append,
+                            report=lambda message: None)
         return code, output
 
     def test_arguments_are_refused(self):
         for argv in (["--protocol"], ["start"], [""], ["--help"], ["-h"]):
             with self.subTest(argv=argv):
-                code, output = self.run_main(argv)
-                self.assertEqual((code, output), (2, [{"ok": False, "error": "usage"}]))
+                self.assertEqual(self.run_main(argv, status="Uid:\t0\t0\t0\t0\n"),
+                                 (2, [{"ok": False, "error": "usage"}]))
 
-    def test_needs_root(self):
-        self.assertEqual(self.run_main([], euid=1000), (4, [{"ok": False,
-                                                             "error": "not-permitted"}]))
+    def test_privileged_or_unknown_context_is_refused(self):
+        refused = (4, [{"ok": False, "error": "not-permitted"}])
+        for status in (SAFE.replace("61234", "0"), SAFE.replace("CapBnd:\t0000000000000000",
+                                                                "CapBnd:\t000001ffffffffff"),
+                       OSError("no proc")):
+            with self.subTest(status=str(status)[:30]):
+                self.assertEqual(self.run_main([], status=status), refused)
 
     def test_missing_socket_fails(self):
         code, output = self.run_main([], start=lambda env: service.start(env, pid=1))
@@ -503,45 +519,51 @@ class Main(unittest.TestCase):
 
 
 class Prepare(unittest.TestCase):
-    """啟動順序：先確認 socket、開好計數器，再放棄權限；放棄失敗就不服務。"""
+    """啟動：依名稱找出監聽 socket 與兩個計數器；任何不符就關閉全部描述子。"""
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name)/"powercap"
-        zone = self.base/"intel-rapl:0"
-        zone.mkdir(parents=True)
-        (zone/"name").write_text("package-0\n")
-        (zone/"energy_uj").write_text("10\n")
-        (zone/"max_energy_range_uj").write_text("100\n")
+        for name, label, value in (("intel-rapl:0", "package-0", "10\n"),
+                                   ("intel-rapl:0:0", "core", "4\n")):
+            zone = self.base/name
+            zone.mkdir(parents=True)
+            (zone/"name").write_text(label + "\n")
+            (zone/"energy_uj").write_text(value)
+            (zone/"max_energy_range_uj").write_text("100\n")
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(os.path.join(temp.name, "s.sock"))
         listener.listen()
-        self.fd = os.dup(listener.fileno())
+        self.listen = os.dup(listener.fileno())
         listener.close()
-        self.env = {"LISTEN_PID": "77", "LISTEN_FDS": "1"}
+        self.package = os.open(self.base/"intel-rapl:0/energy_uj", os.O_RDONLY)
+        self.core = os.open(self.base/"intel-rapl:0:0/energy_uj", os.O_RDONLY)
+        for fd in (self.listen, self.package, self.core):
+            self.addCleanup(close_quietly, fd)
 
-    def test_channels_are_open_before_the_drop(self):
-        seen = []
+    def prepare(self, names, fds):
+        env = {"LISTEN_PID": "77", "LISTEN_FDS": str(len(names)), "LISTEN_FDNAMES": ":".join(names)}
+        return service.prepare(env, 77, str(self.base), fds=fds)
 
-        def drop():
-            seen.append("drop")
-
-        server = service.prepare(self.env, 77, str(self.base), drop, fd=self.fd)
+    def test_all_descriptors(self):
+        server = self.prepare(["core", "listen", "package"], [self.core, self.listen, self.package])
         self.addCleanup(server.close)
-        self.assertEqual(seen, ["drop"])
-        self.assertEqual(server.take().package, 10)
-        self.assertEqual(server.ranges, service.Ranges(100, None))
+        self.assertEqual((server.take().package, server.take().core), (10, 4))
+        self.assertEqual(server.ranges, service.Ranges(100, 100))
         self.assertEqual(server.owner, os.getuid())
 
-    def test_failed_drop_closes_everything(self):
-        def drop():
-            raise service.Failure("drop")
+    def test_missing_counters_still_serve_errors(self):
+        server = self.prepare(["listen"], [self.listen])
+        self.addCleanup(server.close)
+        server.sampler.advance(server.clock())
+        self.assertEqual(decode(server.sampler.reply)["status"], "error")
 
+    def test_bad_listener_closes_everything(self):
         with self.assertRaises(service.Failure):
-            service.prepare(self.env, 77, str(self.base), drop, fd=self.fd)
-        with self.assertRaises(OSError):
-            os.fstat(self.fd)
+            self.prepare(["listen", "package"], [self.package, self.listen])
+        self.assertFalse(is_open(self.package))
+        self.assertFalse(is_open(self.listen))
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ jobs:
           grep -Eq 'implicit inactive: *no$' /tmp/pkaction.txt
           grep -Eq 'implicit active: *auth_admin$' /tmp/pkaction.txt
           systemd-analyze verify "$units.socket" "$units.service"
-          systemd-analyze security --offline=true --threshold=25 "$units.service"
+          systemd-analyze security --offline=true --threshold=10 "$units.service"
           test "$(systemctl is-enabled system-device-monitor-cpu-power.socket || true)" = "disabled"
           expect 0 "$helper" --protocol
           expect 2 sudo "$helper"
@@ -63,8 +63,9 @@ jobs:
           expect 4 sudo "$helper" status
           expect 4 "$helper" enable
           expect 2 sudo "$service" --protocol
-          expect 3 sudo "$service"
-          # 以 sudo 模擬 pkexec：開啟、連線確認服務已放棄權限，再關閉
+          expect 4 sudo "$service"
+          expect 4 "$service"
+          # 以 sudo 模擬 pkexec：開啟、連線確認服務以動態帳號執行且沒有任何能力，再關閉
           sudo env PKEXEC_UID="$(id -u)" "$helper" enable
           test "$(stat -c '%U %a' /run/system-device-monitor/cpu-power.sock)" = "$(id -un) 600"
           /usr/bin/python3 - <<'EOF'
@@ -86,13 +87,17 @@ jobs:
           assert pid != "0", "service is not running"
           status = open(f"/proc/{pid}/status").read()
           fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
-          print({key: fields[key].strip() for key in ("Uid", "Gid", "Groups", "CapEff", "CapPrm", "NoNewPrivs")})
-          assert fields["Uid"].split() == ["65534"] * 4, fields["Uid"]
-          assert fields["Gid"].split() == ["65534"] * 4, fields["Gid"]
-          assert fields["Groups"].strip() == "", fields["Groups"]
-          assert int(fields["CapEff"], 16) == 0 and int(fields["CapPrm"], 16) == 0
+          caps = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
+          print({key: fields[key].strip() for key in ("Uid", "Gid", "Groups", "NoNewPrivs") + caps})
+          uids = {int(value) for value in fields["Uid"].split()}
+          gids = {int(value) for value in fields["Gid"].split()}
+          assert len(uids) == 1 and len(gids) == 1, (uids, gids)
+          uid = uids.pop()
+          assert 61184 <= uid <= 65519, uid
+          assert all(int(fields[key], 16) == 0 for key in caps), fields
+          assert fields["NoNewPrivs"].strip() == "1"
           user = subprocess.check_output(["ps", "-o", "user=", "-p", pid], text=True).strip()
-          assert user == "nobody", user
+          assert user == "sdm-cpu-power", user
           EOF
           sudo env PKEXEC_UID="$(id -u)" "$helper" status | grep -q '"enabled":true'
           sudo env PKEXEC_UID="$(id -u)" "$helper" disable

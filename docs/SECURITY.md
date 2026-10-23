@@ -16,7 +16,7 @@
 | 檔案 | .deb 位置 | 原始碼安裝位置 | 擁有者與權限 |
 |------|-----------|----------------|--------------|
 | 開關小程式 sdm-cpu-power | /usr/libexec/system-device-monitor/ | /usr/local/libexec/system-device-monitor/ | root 0755 |
-| 取樣服務 sdm-cpu-power-service | 同上 | 同上 | root 0755 |
+| 取樣服務 sdm-cpu-power-service（以臨時帳號執行） | 同上 | 同上 | root 0755 |
 | polkit 動作 | /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.local.policy | root 0644 |
 | socket 與服務單元 | /usr/lib/systemd/system/system-device-monitor-cpu-power.{socket,service} | /etc/systemd/system/system-device-monitor-local-cpu-power.{socket,service} | root 0644 |
 | drop-in（開啟時才建立） | /etc/systemd/system/system-device-monitor-cpu-power.socket.d/owner.conf | /etc/systemd/system/system-device-monitor-local-cpu-power.socket.d/owner.conf | root 0644 |
@@ -56,16 +56,23 @@
 ## 取樣服務（sdm-cpu-power-service）
 
 - 只由 socket 啟動（Accept=no），沒有 [Install]，不會開機自動執行。
-- systemd 以 root 啟動它，但能力只剩 CAP_DAC_READ_SEARCH、CAP_SETUID、CAP_SETGID；服務先確認
-  交來的是正在監聽的 AF_UNIX 串流 socket（LISTEN_PID、LISTEN_FDS=1），以唯讀開啟 package 與 core
-  的 energy_uj，接著立即 setgroups([])、切換到 nobody（65534），確認無法再切回 root、
-  有效與允許的能力都是 0，否則結束。之後只對已開啟的描述子做 pread()。
-- 單元的強化設定：NoNewPrivileges、PrivateNetwork、PrivateDevices、PrivateTmp、ProtectSystem=strict、
-  ProtectHome、ProtectKernelTunables／Modules／Logs、ProtectControlGroups、ProtectClock、
-  ProtectHostname、ProtectProc=invisible、RestrictAddressFamilies=AF_UNIX、RestrictNamespaces、
-  SystemCallFilter=@system-service、SystemCallArchitectures=native、MemoryMax=64M、TasksMax=4、
-  LockPersonality、RestrictRealtime、RestrictSUIDSGID、UMask=0077。
-  systemd-analyze security 的曝險分數為 1.6（CI 要求不超過 2.5）。
+- 從不以 root 執行：DynamicUser=yes（帳號 sdm-cpu-power，uid 由 systemd 臨時配發），
+  CapabilityBoundingSet= 與 AmbientCapabilities= 都是空的，所以沒有任何能力，也無法再取得。
+- 只有 root 能讀的 energy_uj 由 systemd（PID 1）依 OpenFile= 以唯讀開好交給服務：
+  intel-rapl:0（名稱 package）與 intel-rapl:0:0（名稱 core），加上 graceful，沒有 RAPL 的電腦
+  直接略過。服務依 LISTEN_FDNAMES 找出 listen、package、core 三個描述子（名稱或數量不符就結束），
+  確認計數器描述子正是 /sys/class/powercap 中對應區域的 energy_uj（比對裝置與 inode）而且
+  區域名稱相符，計數上限 max_energy_range_uj（所有人可讀）直接讀取；之後只做 pread()。
+- 啟動時的防禦性斷言：/proc/self/status 必須顯示不是 root、CapInh／CapPrm／CapEff／CapBnd／CapAmb
+  全部為 0、NoNewPrivs 為 1，否則以結束碼 4 結束；所以在 systemd 之外（root 或一般使用者）
+  直接執行一律拒絕。
+- 單元的強化設定：NoNewPrivileges、PrivateNetwork、PrivateDevices、PrivateTmp、PrivateIPC、
+  ProtectSystem=strict、ProtectHome、ProtectKernelTunables／Modules／Logs、ProtectControlGroups、
+  ProtectClock、ProtectHostname、ProtectProc=invisible、ProcSubset=pid、RestrictAddressFamilies=AF_UNIX、
+  RestrictNamespaces、SystemCallFilter=@system-service 減去 @resources、SystemCallArchitectures=native、
+  MemoryDenyWriteExecute（CPython 不需要同時可寫可執行的記憶體，已用 strace 確認）、
+  MemoryMax=64M、TasksMax=4、LockPersonality、RestrictRealtime、RestrictSUIDSGID、UMask=0077。
+  systemd-analyze security 的曝險分數為 0.6（CI 要求不超過 1.0）。
 - socket 檔權限 0600，擁有者由 drop-in 設為開啟這個功能的使用者；服務另外以 SO_PEERCRED 確認
   連線者是 socket 擁有者（或 root），其他連線立即關閉。
 - 通訊協定只有一種請求：一行「r」；回一行 JSON（版本、狀態、package 與 core 瓦數、間隔）。

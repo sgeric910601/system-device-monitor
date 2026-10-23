@@ -22,17 +22,20 @@ class Workflow(unittest.TestCase):
 
     def test_units_are_verified_and_hardened(self):
         self.assertIn("systemd-analyze verify", WORKFLOW)
-        self.assertIn("systemd-analyze security --offline=true --threshold=", WORKFLOW)
+        self.assertIn("systemd-analyze security --offline=true --threshold=10", WORKFLOW)
 
     def test_helpers_reject_bad_arguments_as_root(self):
         for command in (f'expect 2 sudo "$helper" bogus', 'expect 2 sudo "$service" --protocol',
-                        'expect 4 sudo "$helper" status'):
+                        'expect 4 sudo "$helper" status', 'expect 4 sudo "$service"',
+                        'expect 4 "$service"'):
             self.assertIn(command, WORKFLOW)
         self.assertIn(f"helper={HELPER}", WORKFLOW)
 
-    def test_enable_round_trip_drops_privileges(self):
-        for words in ("PKEXEC_UID", "enable", "disable", "CapEff", "nobody"):
+    def test_service_runs_as_a_dynamic_user_without_capabilities(self):
+        for words in ("PKEXEC_UID", "enable", "disable", "CapInh", "CapPrm", "CapEff", "CapBnd",
+                      "CapAmb", "NoNewPrivs", "61184 <= uid <= 65519", '"sdm-cpu-power"'):
             self.assertIn(words, WORKFLOW)
+        self.assertNotIn('"nobody"', WORKFLOW)
 
     def test_remove_and_purge_leave_nothing_behind(self):
         self.assertIn("sudo apt-get remove -y system-device-monitor", WORKFLOW)

@@ -1,13 +1,16 @@
 #!/usr/bin/python3 -IB
 """系統與裝置監看：CPU 功耗取樣服務（由 systemd socket 啟動，Accept=no）。
 
-以 root 啟動，systemd 只留下 CAP_DAC_READ_SEARCH、CAP_SETUID、CAP_SETGID 三種能力：
-1. 確認 systemd 交來的監聽 socket（LISTEN_FDS=1、LISTEN_PID＝自己、fd 3 是正在監聽的
-   AF_UNIX 串流 socket），並記下 socket 檔的擁有者（drop-in 的 SocketUser）。
-2. 以唯讀開啟 RAPL 的 package 與 core 能量計數器（energy_uj），並讀一次計數上限
-   （max_energy_range_uj）。
-3. 立即放棄權限：setgroups([])、setresgid／setresuid 到 nobody（65534），所有能力隨之消失；
-   確認無法再切回 root、有效能力為 0，否則結束。之後只對已開啟的描述子做 pread()。
+從不以 root 執行：單元以 DynamicUser=yes 取得臨時帳號，沒有任何能力（CapabilityBoundingSet=
+與 AmbientCapabilities= 都是空的）。只有 root 能讀的 RAPL 計數器由 systemd 以 OpenFile=
+唯讀開好，連同監聽 socket 一起交給服務：
+1. 防禦性斷言：/proc/self/status 必須顯示不是 root、CapInh／CapPrm／CapEff／CapBnd／CapAmb
+   全部為 0、NoNewPrivs 為 1，否則結束。
+2. 依 LISTEN_FDNAMES 找出描述子：listen（正在監聽的 AF_UNIX 串流 socket，必須有）、
+   package 與 core（energy_uj，可以沒有）；名稱或數量不符就結束。計數器描述子必須正是
+   /sys/class/powercap 中對應區域的 energy_uj（比對 st_dev、st_ino），區域名稱也要相符；
+   計數上限（max_energy_range_uj，所有人可讀）直接讀取。之後只對這些描述子做 pread()。
+3. 記下 socket 檔的擁有者（drop-in 的 SocketUser）。
 4. 取樣與連線無關：服務執行期間在固定的單調時鐘刻度（啟動時間＋k 秒）讀計數器，
    每個連線拿到的都是最近一個「已完成」的 1 秒視窗，請求本身從不觸發讀取，連線也無法
    決定視窗的起點；數值四捨五入到 0.1 W。
@@ -34,12 +37,15 @@ PROTOCOL = 1
 EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
 POWERCAP = "/sys/class/powercap"
 PACKAGE_ZONE = "intel-rapl:0"           # 第一個處理器插槽
+CORE_ZONE = "intel-rapl:0:0"            # 單元的 OpenFile= 固定開這兩個區域
 PACKAGE_NAME = "package-0"
 CORE_NAME = "core"
 LISTEN_FD = 3                           # sd_listen_fds 的第一個描述子
 LISTEN_VARIABLES = ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES")
-NOBODY = 65534                          # nobody／nogroup
+FD_LISTEN, FD_PACKAGE, FD_CORE = "listen", "package", "core"   # 單元設定的描述子名稱
+FD_NAMES = (FD_LISTEN, FD_PACKAGE, FD_CORE)
 PROC_STATUS = "/proc/self/status"
+CAPABILITY_FIELDS = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
 MICROJOULES = 1_000_000
 MAX_WATTS = 1000                        # 與 sdm.constants.Power.COMPONENT_MAX_W 相同（不含）
 MAX_WINDOW_S = 30.0                     # 兩次讀取最多相隔 30 秒（計數器最多只可能繞回一次）
@@ -137,30 +143,40 @@ def core_zone(base):
     return matches[0] if len(matches) == 1 else None
 
 
-def open_channel(zone):
-    if zone is None:
-        return None
+def same_file(fd, path):
+    """描述子是不是 path 這個一般檔案（比對裝置與 inode）。"""
     try:
-        fd = os.open(os.path.join(zone, "energy_uj"),
-                     os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        opened, expected = os.fstat(fd), os.stat(path)
     except OSError:
+        return False
+    return stat.S_ISREG(opened.st_mode) and \
+        (opened.st_dev, opened.st_ino) == (expected.st_dev, expected.st_ino)
+
+
+def accept_channel(fd, base, zone, label):
+    """systemd 交來的 energy_uj 描述子通過檢查時回傳 Channel，否則關閉它並回傳 None。"""
+    if fd is None:
         return None
-    return Channel(fd, parse_counter(read_small(os.path.join(zone, "max_energy_range_uj"))))
+    directory = os.path.join(base, zone)
+    if zone_name(directory) == label and same_file(fd, os.path.join(directory, "energy_uj")):
+        max_range = parse_counter(read_small(os.path.join(directory, "max_energy_range_uj")))
+        return Channel(fd, max_range)
+    os.close(fd)
+    return None
 
 
-def open_channels(base=POWERCAP):
-    """（package、core）；package 不存在或名稱不符時兩者都不開。"""
-    package_zone = os.path.join(base, PACKAGE_ZONE)
-    if zone_name(package_zone) != PACKAGE_NAME:
-        return None, None
-    package = open_channel(package_zone)
-    if package is None:
-        return None, None
-    return package, open_channel(core_zone(base))
+def channels_from(named, base=POWERCAP):
+    """（package、core）；core 必須是唯一名為 core 的子區域，而且就是 intel-rapl:0:0。"""
+    package = accept_channel(named.get(FD_PACKAGE), base, PACKAGE_ZONE, PACKAGE_NAME)
+    core_fd = named.get(FD_CORE)
+    if core_fd is not None and core_zone(base) != os.path.join(base, CORE_ZONE):
+        os.close(core_fd)
+        core_fd = None
+    return package, accept_channel(core_fd, base, CORE_ZONE, CORE_NAME)
 
 
 class Sampler:
-    """讀取已開啟的計數器（放棄權限之後仍可 pread）。"""
+    """讀取 systemd 交來的計數器描述子（服務本身沒有權限開啟它們，只能 pread）。"""
 
     def __init__(self, channels, clock=time.monotonic):
         self.package, self.core = channels
@@ -398,12 +414,53 @@ class Server:
         self.listener.close()
 
 
-# ── 啟動：socket、計數器與放棄權限 ─────────────────────────────
+# ── 啟動：權限斷言、systemd 交來的描述子 ─────────────────────────
 
-def inherited_listener(env, pid, fd=LISTEN_FD):
-    """systemd 交來的監聽 socket；成功時清除 LISTEN_* 環境變數。"""
-    if env.get("LISTEN_PID") != str(pid) or env.get("LISTEN_FDS") != "1":
-        raise Failure("no-socket")
+def privilege_problem(status_text):
+    """不是 root、沒有任何能力、禁止取得新權限時回傳 None；否則回傳問題代號。"""
+    fields = {}
+    for line in status_text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            fields[key] = value.split()
+    uids = fields.get("Uid", [])
+    if len(uids) != 4 or not all(uid.isdigit() and int(uid) != 0 for uid in uids):
+        return "root"
+    for name in CAPABILITY_FIELDS:
+        value = fields.get(name, [])
+        try:
+            if len(value) != 1 or int(value[0], 16) != 0:
+                return "capabilities"
+        except ValueError:
+            return "capabilities"
+    if fields.get("NoNewPrivs") != ["1"]:
+        return "no-new-privileges"
+    return None
+
+
+def read_proc_status():
+    with open(PROC_STATUS, encoding="ascii", errors="replace") as handle:
+        return handle.read()
+
+
+def inherited_fds(env, pid, fds=None, inherit=lambda fd: os.set_inheritable(fd, False)):
+    """名稱 → 描述子；LISTEN_PID、LISTEN_FDS 與 LISTEN_FDNAMES 必須一致，成功時清除它們。"""
+    count = env.get("LISTEN_FDS", "")
+    names = env.get("LISTEN_FDNAMES", "").split(":")
+    if env.get("LISTEN_PID") != str(pid) or not count.isdigit() or int(count) != len(names) \
+            or len(set(names)) != len(names) or not set(names) <= set(FD_NAMES) \
+            or FD_LISTEN not in names:
+        raise Failure("descriptors")
+    fds = list(range(LISTEN_FD, LISTEN_FD + len(names)) if fds is None else fds)[:len(names)]
+    for name in LISTEN_VARIABLES:
+        env.pop(name, None)
+    for fd in fds:
+        inherit(fd)
+    return dict(zip(names, fds))
+
+
+def listening_socket(fd):
+    """正在監聽的 AF_UNIX 串流 socket；不是就拋出 Failure（描述子留給呼叫端關閉）。"""
     try:
         if not stat.S_ISSOCK(os.fstat(fd).st_mode):
             raise Failure("not-a-socket")
@@ -417,9 +474,6 @@ def inherited_listener(env, pid, fd=LISTEN_FD):
     if sock.family != socket.AF_UNIX or sock.type != socket.SOCK_STREAM or not listening:
         sock.detach()
         raise Failure("wrong-socket")
-    os.set_inheritable(sock.fileno(), False)
-    for name in LISTEN_VARIABLES:
-        env.pop(name, None)
     return sock
 
 
@@ -434,69 +488,36 @@ def socket_owner(listener):
         return None
 
 
-def capabilities(status_text):
-    """/proc/self/status 的 CapPrm 與 CapEff 合併；格式不符時為 None。"""
-    values = {}
-    for line in status_text.splitlines():
-        key, _, value = line.partition(":")
-        if key in ("CapPrm", "CapEff"):
-            try:
-                values[key] = int(value.strip(), 16)
-            except ValueError:
-                return None
-    if set(values) != {"CapPrm", "CapEff"}:
-        return None
-    return values["CapPrm"] | values["CapEff"]
+def close_all(fds):
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
-def read_proc_status():
-    with open(PROC_STATUS, encoding="ascii", errors="replace") as handle:
-        return handle.read()
-
-
-def drop_privileges(system=os, read_status=read_proc_status, uid=NOBODY, gid=NOBODY):
-    """切換到 nobody 並確認所有能力都已消失；任何一項不符都拋出 Failure。"""
-    system.setgroups([])
-    system.setresgid(gid, gid, gid)
-    system.setresuid(uid, uid, uid)
-    if tuple(system.getresuid()) != (uid,) * 3 or tuple(system.getresgid()) != (gid,) * 3 \
-            or list(system.getgroups()):
-        raise Failure("drop")
+def prepare(env, pid, base, fds=None):
+    """依名稱取得監聽 socket 與計數器；失敗時關閉所有交來的描述子。"""
+    named = inherited_fds(env, pid, fds)
     try:
-        system.setuid(0)
-    except PermissionError:
-        pass
-    else:
-        raise Failure("regained")
-    try:
-        remaining = capabilities(read_status())
-    except OSError:
-        remaining = None
-    if remaining != 0:
-        raise Failure("capabilities")
-
-
-def prepare(env, pid, base, drop, fd=LISTEN_FD):
-    """確認 socket、開好計數器，再放棄權限；失敗時關閉所有已開啟的描述子。"""
-    listener = inherited_listener(env, pid, fd)
-    channels = (None, None)
+        listener = listening_socket(named[FD_LISTEN])
+    except Failure:
+        close_all(named.values())
+        raise
     try:
         owner = socket_owner(listener)
-        channels = open_channels(base)
-        drop()
+        channels = channels_from(named, base)
     except BaseException:
         listener.close()
-        for channel in channels:
-            if channel is not None:
-                os.close(channel.fd)
+        close_all(fd for name, fd in named.items() if name != FD_LISTEN)
         raise
     ranges = Ranges(*(channel.max_range if channel else None for channel in channels))
     return Server(listener, Sampler(channels), ranges, owner)
 
 
 def start(env, pid=None):
-    """實際啟動：systemd 的環境、/sys/class/powercap 與真正的放棄權限。"""
-    server = prepare(env, os.getpid() if pid is None else pid, POWERCAP, drop_privileges)
+    """實際啟動：systemd 交來的描述子與 /sys/class/powercap。"""
+    server = prepare(env, os.getpid() if pid is None else pid, POWERCAP)
     log("started" if server.take().package is not None else "started without rapl")
     code = server.run()
     log("idle exit")
@@ -508,11 +529,16 @@ def emit_json(value):
     sys.stdout.flush()
 
 
-def main(argv, env, geteuid=os.geteuid, start=start, emit=emit_json, report=log):
+def main(argv, env, read_status=read_proc_status, start=start, emit=emit_json, report=log):
     if argv:
         emit({"ok": False, "error": "usage"})
         return EXIT_USAGE
-    if geteuid() != 0:
+    try:
+        problem = privilege_problem(read_status())
+    except OSError:
+        problem = "status"
+    if problem is not None:
+        report("refused: " + problem)
         emit({"ok": False, "error": "not-permitted"})
         return EXIT_NOT_PERMITTED
     try:

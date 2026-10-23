@@ -13,19 +13,24 @@ UNITS = HELPERS/"systemd"
 DEB = "system-device-monitor-cpu-power"
 LOCAL = "system-device-monitor-local-cpu-power"
 HARDENING = {
-    "CapabilityBoundingSet": "CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID",
+    "DynamicUser": "yes", "User": "sdm-cpu-power",
+    "CapabilityBoundingSet": "", "AmbientCapabilities": "",
     "NoNewPrivileges": "yes", "PrivateNetwork": "yes", "PrivateDevices": "yes",
-    "PrivateTmp": "yes", "ProtectSystem": "strict", "ProtectHome": "yes",
+    "PrivateTmp": "yes", "PrivateIPC": "yes", "ProtectSystem": "strict", "ProtectHome": "yes",
     "ProtectKernelTunables": "yes", "ProtectKernelModules": "yes", "ProtectKernelLogs": "yes",
     "ProtectControlGroups": "yes", "ProtectClock": "yes", "ProtectHostname": "yes",
-    "ProtectProc": "invisible", "RestrictAddressFamilies": "AF_UNIX",
-    "RestrictNamespaces": "yes", "SystemCallFilter": "@system-service",
-    "SystemCallArchitectures": "native", "MemoryMax": "64M", "TasksMax": "4",
+    "ProtectProc": "invisible", "ProcSubset": "pid", "RestrictAddressFamilies": "AF_UNIX",
+    "RestrictNamespaces": "yes", "SystemCallArchitectures": "native",
+    "MemoryDenyWriteExecute": "yes", "MemoryMax": "64M", "TasksMax": "4",
     "LockPersonality": "yes", "RestrictRealtime": "yes", "RestrictSUIDSGID": "yes",
     "UMask": "0077",
 }
-SERVICE_KEYS = set(HARDENING) | {"Type", "ExecStart"}
-SOCKET = {"SocketMode": "0600", "DirectoryMode": "0755", "RemoveOnStop": "yes", "Accept": "no"}
+OPEN_FILES = [r"/sys/class/powercap/intel-rapl\x3a0/energy_uj:package:read-only,graceful",
+              r"/sys/class/powercap/intel-rapl\x3a0\x3a0/energy_uj:core:read-only,graceful"]
+REPEATED = {"SystemCallFilter": ["@system-service", "~@resources"], "OpenFile": OPEN_FILES}
+SERVICE_KEYS = set(HARDENING) | set(REPEATED) | {"Type", "ExecStart"}
+SOCKET = {"SocketMode": "0600", "DirectoryMode": "0755", "RemoveOnStop": "yes", "Accept": "no",
+          "FileDescriptorName": "listen"}
 
 
 def parse_unit(path):
@@ -58,6 +63,12 @@ def imported_modules(path):
     return names
 
 
+def decode_open_file(value):
+    """OpenFile= 的值：以「:」分隔，欄位內的 \\x3a 是路徑中的冒號。"""
+    path, name, options = value.split(":")
+    return path.replace("\\x3a", ":"), name, options
+
+
 def single(entries, section, key):
     values = entries.get((section, key), [])
     if len(values) != 1:
@@ -71,6 +82,9 @@ class ServiceUnits(unittest.TestCase):
         for key, value in HARDENING.items():
             with self.subTest(unit=name, key=key):
                 self.assertEqual(single(entries, "Service", key), value)
+        for key, values in REPEATED.items():
+            with self.subTest(unit=name, key=key):
+                self.assertEqual(entries[("Service", key)], values)
         keys = {key for section, key in entries if section == "Service"}
         self.assertEqual(sorted(keys - SERVICE_KEYS), [])
         self.assertEqual(single(entries, "Service", "ExecStart"), helper)
@@ -112,6 +126,17 @@ class ServiceUnits(unittest.TestCase):
                 for old, new in replacements:
                     text = text.replace(old, new)
                 self.assertEqual(text, (UNITS/(LOCAL + suffix)).read_text(encoding="utf-8"))
+
+    def test_open_files_match_what_the_service_expects(self):
+        expected = {service.FD_PACKAGE: service.PACKAGE_ZONE, service.FD_CORE: service.CORE_ZONE}
+        for value in OPEN_FILES:
+            path, name, options = decode_open_file(value)
+            self.assertEqual(path, f"{service.POWERCAP}/{expected[name]}/energy_uj")
+            self.assertEqual(options, "read-only,graceful")
+        self.assertEqual(SOCKET["FileDescriptorName"], service.FD_LISTEN)
+
+    def test_dynamic_user_name_is_short_enough(self):
+        self.assertLessEqual(len(HARDENING["User"]), 31)
 
     def test_unit_directory_has_only_these_units(self):
         self.assertEqual(sorted(path.name for path in UNITS.iterdir()),

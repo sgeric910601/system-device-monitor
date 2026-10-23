@@ -1,5 +1,6 @@
 # 系統與裝置監看：CPU 功耗取樣服務，只由同名的 socket 啟動（沒有 [Install]）。
-# 以 root 啟動但只保留三種能力：開好 RAPL 計數器後立即切換到 nobody，所有能力隨之消失。
+# 從不以 root 執行：DynamicUser 的臨時帳號，沒有任何能力。只有 root 能讀的 RAPL 計數器
+# 由 systemd 以 OpenFile= 唯讀開好交給服務（路徑中的冒號寫成 \x3a）；讀不到時略過。
 # 沒有網路、看不到其他程序與家目錄，整個檔案系統唯讀。
 [Unit]
 Description=System Device Monitor CPU power sampler
@@ -9,11 +10,17 @@ After=system-device-monitor-local-cpu-power.socket
 [Service]
 Type=simple
 ExecStart=/usr/local/libexec/system-device-monitor/sdm-cpu-power-service
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+DynamicUser=yes
+User=sdm-cpu-power
+OpenFile=/sys/class/powercap/intel-rapl\x3a0/energy_uj:package:read-only,graceful
+OpenFile=/sys/class/powercap/intel-rapl\x3a0\x3a0/energy_uj:core:read-only,graceful
+CapabilityBoundingSet=
+AmbientCapabilities=
 NoNewPrivileges=yes
 PrivateNetwork=yes
 PrivateDevices=yes
 PrivateTmp=yes
+PrivateIPC=yes
 ProtectSystem=strict
 ProtectHome=yes
 ProtectKernelTunables=yes
@@ -23,10 +30,13 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
+ProcSubset=pid
 RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=yes
 SystemCallFilter=@system-service
+SystemCallFilter=~@resources
 SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
 MemoryMax=64M
 TasksMax=4
 LockPersonality=yes
