@@ -22,12 +22,12 @@ from sdm.core.pet_geometry import Rect
 from sdm.core.pet_motion import BlinkTimer, eye_circles, gaze, gaze_moved
 from sdm.core.sprite_motion import MotionPlan, Ticker, motion_plan
 from sdm.ui.companion_draw import EyeScene, Scene, draw_figure, photo_rect
+from sdm.ui.pet_menu import NO_PHOTO, action, radio_items
 from sdm.ui.sprite import Images, surface_from_pixbuf
 
 MILLISECONDS = 1000
 PAGE_HEIGHT_RATIO = 50 / 48
 TIP = "點一下換外觀，按右鍵選擇外觀"
-NO_PHOTO = "我的照片（先在設定選一張）"
 SETTINGS = "夥伴設定…"
 LEFT_BUTTON, RIGHT_BUTTON = 1, 3
 STOPPED = MotionPlan(False, False, False)
@@ -171,20 +171,13 @@ class CompanionView(Gtk.DrawingArea):
 
 
 def appearance_menu(current, has_photo, select, open_settings):
-    """右鍵選單：所有外觀（目前的打勾）、夥伴設定。select(None) 代表換下一個。"""
-    menu, group = Gtk.Menu(), None
-    for name in APPEARANCES:
-        title = TITLES[name] if has_photo or name != PHOTO else NO_PHOTO
-        item = Gtk.RadioMenuItem.new_with_label_from_widget(group, title)
-        group = group or item
-        item.set_active(name == current)
-        item.set_sensitive(has_photo or name != PHOTO)
-        item.connect("activate", lambda widget, chosen=name: select(chosen)
-                     if widget.get_active() and chosen != current else None)
-        menu.append(item)
+    """右鍵選單：所有外觀（目前的打勾）、夥伴設定。"""
+    menu = Gtk.Menu()
+    looks = tuple((name, TITLES[name] if has_photo or name != PHOTO else NO_PHOTO)
+                  for name in APPEARANCES)
+    radio_items(menu, looks, lambda name: name == current, select,
+                enabled=lambda name: has_photo or name != PHOTO)
     menu.append(Gtk.SeparatorMenuItem())
-    settings = Gtk.MenuItem(label=SETTINGS)
-    settings.connect("activate", lambda *_: open_settings())
-    menu.append(settings)
+    menu.append(action(SETTINGS, open_settings))
     menu.show_all()
     return menu

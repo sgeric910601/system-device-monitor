@@ -3,7 +3,8 @@ import random
 import unittest
 
 from sdm.core.pet_motion import (BlinkScheduler, BlinkTimer, StrokeDetector, eye_circles, gaze,
-                                 gaze_moved, iris_offset, lid_fraction)
+                                 gaze_moved, hearts, hearts_done, iris_offset, lid_fraction,
+                                 next_saying)
 
 
 def feed(detector, points):
@@ -67,6 +68,31 @@ class Blink(unittest.TestCase):
         self.assertAlmostEqual(lid_fraction(0.27, True), 1.0)
         self.assertEqual(lid_fraction(0.36, True), 0.0)
         self.assertEqual(lid_fraction(-1.0, True), 0.0)
+
+
+class Hearts(unittest.TestCase):
+    def test_three_hearts_rise_and_fade_one_after_another(self):
+        start = hearts(0.0)
+        self.assertEqual(len(start), 3)
+        self.assertEqual([heart.alpha for heart in start], [0.0, 0.0, 0.0])
+        middle = hearts(0.5)
+        self.assertGreater(middle[0].alpha, 0.9)
+        self.assertLess(middle[0].y, start[0].y)
+        self.assertLess(middle[0].y, middle[2].y)
+        self.assertEqual([round(heart.x, 3) for heart in start], [0.409, 0.5, 0.591])
+
+    def test_hearts_finish_after_the_last_one_fades(self):
+        self.assertFalse(hearts_done(1.5))
+        self.assertTrue(hearts_done(1.61))
+        self.assertTrue(all(heart.alpha == 0 for heart in hearts(1.61)))
+
+
+class Sayings(unittest.TestCase):
+    def test_each_click_says_the_next_line(self):
+        lines = ["a", "b", "c"]
+        self.assertEqual([next_saying(lines, index) for index in range(5)],
+                         ["a", "b", "c", "a", "b"])
+        self.assertIsNone(next_saying([], 3))
 
 
 class FakeTimers:

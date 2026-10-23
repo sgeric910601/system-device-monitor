@@ -4,7 +4,8 @@
   小、標準、大、特大四個選項。
 - 位置：可以放在任何螢幕的任何地方，也可以有一部分超出螢幕，只確保至少留
   48 px（寵物比 96 px 小時留一半寬度）在重疊最多的那個螢幕上找得到；
-  完全不在任何螢幕上時回到預設位置（主螢幕工作區右下角）。
+  完全不在任何螢幕上時回到預設位置（主螢幕工作區右下角）。改大小時腳底的位置不動。
+- 對話框貼在寵物頭上，上面空間不夠時改到下方。
 """
 import math
 from typing import NamedTuple
@@ -63,6 +64,30 @@ def keep_on_screen(rect, monitors, default):
     x = min(max(rect.x, monitor.x - rect.width + keep), monitor.x + monitor.width - keep)
     y = min(max(rect.y, monitor.y - rect.height + keep), monitor.y + monitor.height - keep)
     return x, y
+
+
+def bubble_origin(pet, size, workarea, scale):
+    """對話框視窗的（x, y, 是否在下方）：貼在寵物頭上（往下疊 30 px × 大小），
+    上面放不下時改放在寵物下方；左右收進工作區。"""
+    width, height = size
+    x = pet.x + pet.width / 2 - width / 2
+    y = pet.y - height + Pet.BUBBLE_OVERLAP * scale
+    below = y < workarea.y
+    if below:
+        y = pet.y + pet.height - Pet.BUBBLE_BELOW_OVERLAP
+    x = min(max(x, workarea.x), workarea.x + workarea.width - width)
+    return round(x), round(y), below
+
+
+def resized_origin(rect, size):
+    """改大小時下緣中間（腳底）不動，回傳新的左上角。"""
+    return (round(rect.x + rect.width / 2 - size / 2), round(rect.y + rect.height - size))
+
+
+def is_drag(start, current):
+    """按住後移動超過 3 px 才算拖曳，否則是點一下。"""
+    dx, dy = current[0] - start[0], current[1] - start[1]
+    return dx * dx + dy * dy > Pet.DRAG_THRESHOLD ** 2
 
 
 def default_position(workarea, size):

@@ -122,7 +122,7 @@ class SettingsWindow:
     def present(self, section=None):
         self.context.probe()
         self.window.show_all()
-        if section is not None:
+        if section in self.scrolls:
             self.stack.set_visible_child_name(section)
         self.window.present()
 

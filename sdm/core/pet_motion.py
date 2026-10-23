@@ -5,12 +5,13 @@
 - 眨眼：每 2.5–6 秒一次，五次中有一次連眨兩下；每次閉眼、張眼各 0.09 秒。
 - 眼睛：大頭照上兩隻眼睛的中心與半徑是照片邊長的比例；眼珠往游標的方向移，
   游標越遠移得越多，最多左右半徑的 0.3、上下 0.16。
+- 被摸了：三顆愛心一個接一個往上飄 1.3 秒；點一下依序說下一句話。
 """
 import math
 import time
 
 from sdm.constants import Companion, Pet
-from sdm.core.sprite_motion import frame_interval_ms
+from sdm.core.sprite_motion import Particle, frame_interval_ms
 
 MILLISECONDS = 1000
 GAZE_STEP = (0.03, 0.05)        # 眼珠左右、上下移動小於這些（方向的比例）就不重畫
@@ -100,6 +101,42 @@ class BlinkTimer:
             return True
         self.wait()
         return False
+
+
+HEART_FADE = ((0.0, 0.0), (0.15, 1.0), (0.6, 1.0), (1.0, 0.0))   # 愛心的透明度（時間比例、透明度）
+HEART_START_Y = 0.38            # 從寵物高度 38% 的地方冒出來
+HEART_GROW = (0.6, 1.1)         # 由 0.6 倍長到 1.1 倍
+
+
+def _fade(progress):
+    for (t0, a0), (t1, a1) in zip(HEART_FADE, HEART_FADE[1:]):
+        if t0 <= progress <= t1:
+            return a0 + (a1 - a0) * (progress - t0) / (t1 - t0)
+    return 0.0
+
+
+def hearts(elapsed):
+    """被摸了：三顆愛心從頭上往上飄、變大、淡出（座標與大小都是寵物大小的比例）。"""
+    base = Pet.BASE_SIZE
+    particles = []
+    for index in range(Pet.HEART_COUNT):
+        progress = (elapsed - index * Pet.HEART_STAGGER_SECONDS) / Pet.HEART_SECONDS
+        local = min(1.0, max(0.0, progress))
+        alpha = _fade(local) if 0 <= progress <= 1 else 0.0
+        grow = HEART_GROW[0] + (HEART_GROW[1] - HEART_GROW[0]) * local
+        particles.append(Particle(0.5 + (index - 1) * Pet.HEART_SPREAD / base,
+                                  HEART_START_Y - Pet.HEART_RISE / base * local,
+                                  Pet.HEART_SIZE / base * grow, alpha))
+    return particles
+
+
+def hearts_done(elapsed):
+    return elapsed > Pet.HEART_SECONDS + (Pet.HEART_COUNT - 1) * Pet.HEART_STAGGER_SECONDS
+
+
+def next_saying(lines, index):
+    """點第 index 次（從 0 開始）時說的話；沒有話可說時為 None。"""
+    return lines[index % len(lines)] if lines else None
 
 
 def blink_seconds(twice):

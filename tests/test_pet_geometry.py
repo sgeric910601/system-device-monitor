@@ -2,8 +2,9 @@
 import math
 import unittest
 
-from sdm.core.pet_geometry import (Rect, clamp_scale, default_position, keep_on_screen,
-                                   pet_size, preset_title, size_presets)
+from sdm.core.pet_geometry import (Rect, bubble_origin, clamp_scale, default_position, is_drag,
+                                   keep_on_screen, pet_size, preset_title, resized_origin,
+                                   size_presets)
 
 SINGLE = (Rect(0, 0, 1920, 1080),)
 DUAL = (Rect(0, 0, 1920, 1080), Rect(1920, 0, 2560, 1440))
@@ -64,3 +65,33 @@ class OnScreen(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Layout(unittest.TestCase):
+    WORK = Rect(0, 32, 1920, 1048)
+
+    def test_bubble_sits_on_the_head(self):
+        x, y, below = bubble_origin(Rect(800, 600, 176, 176), (290, 150), self.WORK, 1.0)
+        self.assertEqual((x, y, below), (743, 480, False))
+
+    def test_bubble_goes_below_near_the_top_edge(self):
+        x, y, below = bubble_origin(Rect(800, 40, 176, 176), (290, 150), self.WORK, 1.0)
+        self.assertEqual((x, y, below), (743, 212, True))
+
+    def test_bubble_stays_inside_the_work_area_sideways(self):
+        self.assertEqual(bubble_origin(Rect(-60, 600, 176, 176), (290, 150), self.WORK, 1.0)[0], 0)
+        self.assertEqual(bubble_origin(Rect(1850, 600, 176, 176), (290, 150), self.WORK, 1.0)[0],
+                         1630)
+
+    def test_bubble_overlap_grows_with_the_pet(self):
+        _, y, _ = bubble_origin(Rect(800, 600, 352, 352), (290, 150), self.WORK, 2.0)
+        self.assertEqual(y, 600 - 150 + 60)
+
+    def test_resizing_keeps_the_bottom_centre(self):
+        self.assertEqual(resized_origin(Rect(100, 200, 176, 176), 352), (12, 24))
+        self.assertEqual(resized_origin(Rect(100, 200, 176, 176), 132), (122, 244))
+
+    def test_drag_starts_after_three_pixels(self):
+        self.assertFalse(is_drag((10, 10), (12, 12)))
+        self.assertTrue(is_drag((10, 10), (14, 10)))
+        self.assertTrue(is_drag((10, 10), (10, 6)))

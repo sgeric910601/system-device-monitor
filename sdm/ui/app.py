@@ -139,6 +139,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
             self.build_tray()
             self.watch_devices()
         self.apply_app_icon()
+        self.sync_pet()
         self.start_profiles()
         self.start_admin()          # 只尋找元件、確認版本，不要求授權
         GLib.idle_add(self.ask_first_run)
@@ -336,7 +337,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.closing = True
         try:
             for name, action in (("history", self.save_history), ("settings", self.flush_settings),
-                                 ("page", self.remember_page),
+                                 ("page", self.remember_page), ("pet", self.close_pet),
                                  ("sources", self.remove_sources),
                                  ("alerts", self.stop_alerts),
                                  ("subscriptions", self.unsubscribe_all),

@@ -428,6 +428,13 @@ class Pet:
     HEART_COUNT = 3
     BUBBLE_WIDTH = 290              # 對話框視窗的固定大小（px）
     BUBBLE_HEIGHT = 150
+    BUBBLE_OVERLAP = 30             # 對話框往下疊在寵物頭上的距離（px，乘上大小）
+    BUBBLE_BELOW_OVERLAP = 4        # 放在寵物下方時往上疊的距離（px）
+    BUBBLE_TEXT_WIDTH = 250         # 對話框文字的最大寬度（px）
+    HEART_STAGGER_SECONDS = 0.15    # 愛心一個接一個冒出來的間隔
+    HEART_RISE = 46                 # 愛心往上飄的距離（px，100% 大小時）
+    HEART_SPREAD = 16               # 三顆愛心的左右間距（px，100% 大小時）
+    HEART_SIZE = 18                 # 愛心大小（px，100% 大小時）
     STATE_FILE = "pet.json"         # XDG 狀態目錄中記住位置的檔案
     SAVE_DELAY_MS = 500
 
