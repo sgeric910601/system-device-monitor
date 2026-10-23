@@ -498,6 +498,7 @@
     "tests/test_pet_motion.py",
     "tests/test_pet_state.py",
     "tests/test_pet_text.py",
+    "tests/test_pet_window.py",
     "tests/test_pet_wiring.py",
     "tests/test_png_chunks.py",
     "tests/test_polkit_policy.py",

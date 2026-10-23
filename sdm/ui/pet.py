@@ -154,9 +154,12 @@ class DesktopPet:
 
     @staticmethod
     def clear(_window, cr):
+        """先把整個視窗清成透明；之後畫圖案時要恢復一般的疊加方式（同一個 Cairo 狀態會傳給子元件）。"""
+        cr.save()
         cr.set_operator(cairo.OPERATOR_SOURCE)
         cr.set_source_rgba(0, 0, 0, 0)
         cr.paint()
+        cr.restore()
         return False
 
     # 顯示、位置與大小
