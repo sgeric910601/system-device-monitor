@@ -109,6 +109,18 @@ class Expressions(unittest.TestCase):
         self.assertNotEqual(photo, bytes(render(scene("headshot")).get_data()))
 
 
+class ScaledCache(unittest.TestCase):
+    def test_each_size_is_scaled_once_and_the_cache_stays_small(self):
+        images = sprite.Images(ROOT)
+        first = images.scaled("pet-cat", 160, 106)
+        self.assertEqual((first.get_width(), first.get_height()), (160, 106))
+        self.assertIs(images.scaled("pet-cat", 160, 106), first)
+        for width in range(20, 40):
+            images.scaled("pet-cat", width, width)
+        self.assertLessEqual(len(images.scaled_cache), sprite.SCALED_CACHE_SIZE)
+        self.assertIsNone(images.scaled("missing-name", 10, 10))
+
+
 class Frames(unittest.TestCase):
     def test_frame_sheet_mode_falls_back_to_the_still_image(self):
         with tempfile.TemporaryDirectory() as temp:

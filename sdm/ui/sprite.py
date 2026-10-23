@@ -6,7 +6,8 @@
   邊緣與透明度和原圖完全相同，放大也不會有黑邊。
 - frames：預先算好的畫格圖（<名稱>-frames.png，由 scripts/make_assets.py --frames 產生，
   預設不隨程式發布）。找不到畫格圖時自動改用 procedural。
-不播放時（看不到、省電模式）兩種做法都畫第一格的靜態圖。圖片只在第一次用到時載入一次。
+不播放時（看不到、省電模式）兩種做法都畫第一格的靜態圖。圖片只在第一次用到時載入一次，
+並依畫出來的大小先縮好一份（高品質縮放只做一次），每一格只需要接近原尺寸的雙線性繪製。
 """
 import logging
 from pathlib import Path
@@ -26,6 +27,7 @@ LOG = logging.getLogger(__name__)
 COMPANION_DIR = "assets/companion"
 PROCEDURAL, FRAMES = "procedural", "frames"
 FRAMES_SUFFIX = "-frames"
+SCALED_CACHE_SIZE = 8           # 電源頁、桌面寵物與設定預覽同時用到的大小不會超過這麼多
 OPAQUE_ALPHA = 128              # 找腳底時，透明度至少一半才算看得到
 
 
@@ -67,6 +69,19 @@ class Images:
         self.folder = Path(root or paths.ROOT)/COMPANION_DIR
         self.pixbufs, self.surfaces, self.sheets = {}, {}, {}
         self.derived = {}       # 由圖片算出、只需要算一次的資料（例如眼皮的顏色）
+        self.scaled_cache = {}  # （名稱、寬、高）→ 縮好的圖面；只留最近用到的幾個大小
+
+    def scaled(self, name, width, height):
+        """縮成 width × height 的圖面（第一次用到這個大小時以高品質縮放做一次）。"""
+        key = (name, width, height)
+        if key not in self.scaled_cache:
+            source = self.surface(name)
+            if source is None:
+                return None
+            if len(self.scaled_cache) >= SCALED_CACHE_SIZE:
+                self.scaled_cache.pop(next(iter(self.scaled_cache)))
+            self.scaled_cache[key] = scale_surface(source, width, height)
+        return self.scaled_cache[key]
 
     def pixbuf(self, name):
         if name not in self.pixbufs:
@@ -107,6 +122,17 @@ class Images:
         return self.sheets[name]
 
 
+def scale_surface(source, width, height):
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, max(1, width), max(1, height))
+    context = cairo.Context(surface)
+    context.scale(width / source.get_width(), height / source.get_height())
+    context.set_source_surface(source, 0, 0)
+    context.get_source().set_filter(cairo.FILTER_GOOD)
+    context.paint()
+    surface.flush()
+    return surface
+
+
 def paint_scaled(cr, surface, rect, source_rect=None):
     """把 surface（或其中 source_rect 那一塊）縮放畫進 rect。"""
     sx, sy, sw, sh = source_rect or (0, 0, surface.get_width(), surface.get_height())
@@ -122,21 +148,18 @@ def paint_scaled(cr, surface, rect, source_rect=None):
 
 
 def draw_breathing(cr, surface, rect, t, feet=1.0):
-    """以腳底（下緣中央；feet 為腳底在圖中的高度比例）為基準放大；起伏是往上多伸展一點，腳底不離地。"""
+    """以腳底（下緣中央；feet 為腳底在圖中的高度比例）為基準放大；起伏是往上多伸展一點，腳底不離地。
+    surface 已縮成 rect 的大小，左上角對齊整數像素，靜止時與原圖一模一樣清楚。"""
     scale, bob = breath(t)
-    feet_x, feet_y = rect.x + rect.width / 2, rect.y + rect.height * feet
+    x, y = round(rect.x), round(rect.y)
+    feet_x, feet_y = x + surface.get_width() / 2, y + surface.get_height() * feet
     cr.save()
     cr.translate(feet_x, feet_y)
     cr.scale(scale, scale - bob)
     cr.translate(-feet_x, -feet_y)
-    cr.set_source_surface(surface, 0, 0)
-    matrix = cairo.Matrix(surface.get_width() / rect.width, 0, 0,
-                          surface.get_height() / rect.height, 0, 0)
-    matrix.translate(-rect.x, -rect.y)
-    cr.get_source().set_matrix(matrix)
-    cr.get_source().set_filter(cairo.FILTER_GOOD)
-    cr.rectangle(*rect)
-    cr.fill()
+    cr.set_source_surface(surface, x, y)
+    cr.get_source().set_filter(cairo.FILTER_BILINEAR)
+    cr.paint()
     cr.restore()
 
 
@@ -155,7 +178,7 @@ def draw_sprite(cr, images, name, rect, t, mode=None):
         if sheet is not None:
             draw_frame(cr, sheet, rect, t)
             return True
-    surface = images.surface(name)
+    surface = images.scaled(name, round(rect.width), round(rect.height))
     if surface is not None:
         draw_breathing(cr, surface, rect, t, images.feet(name))
     return False
