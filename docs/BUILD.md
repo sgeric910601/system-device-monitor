@@ -20,14 +20,23 @@ install-dependencies.sh 與 CI 也會安裝它。
 - /usr/share/system-device-monitor：執行期程式（device_monitor.py 與 sdm/ 套件）與圖示。
 - /usr/share/applications/system-device-monitor.desktop：桌面入口。
 - /usr/share/doc/system-device-monitor：文件與授權。
+- /usr/libexec/system-device-monitor：管理員小程式 sdm-cpu-power 與 sdm-cpu-power-service（0755）。
+- /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy：polkit 動作（0644）。
+- /usr/lib/systemd/system/system-device-monitor-cpu-power.socket 與 .service：
+  CPU 功耗取樣的 socket 與服務（0644）。安裝後預設不啟用。
 
 package-files.json（格式 2）明確列出：
 - runtime：複製到 /usr/share/system-device-monitor 下相同相對路徑的執行期檔案，權限 0644。
-- system：系統檔案，各自指定權限（不得超過 0755）；目前為空。
+- system：系統檔案，各自指定權限（不得超過 0755）；目前為上述管理員小程式、
+  polkit 動作與兩個 systemd 單元。
   只能安裝到 /usr/libexec/system-device-monitor、/usr/share/system-device-monitor、
   /usr/share/polkit-1/actions、/usr/lib/systemd/system、/usr/share/applications、
   /usr/share/icons/hicolor 之下（清單在 sdm/constants.py）；套件不安裝任何 /etc 檔案。
-- maintainer：preinst、postinst、prerm、postrm 安裝前後腳本，權限 0755；目前為空。
+- maintainer：preinst、postinst、prerm、postrm 安裝前後腳本，權限 0755；
+  目前為 packaging/debian/ 的 postinst、prerm、postrm（POSIX sh、set -e）：
+  postinst 只重新載入 systemd，socket 原本已啟用時才重新啟動它，從不自動啟用；
+  prerm 在移除時停用並停止 socket 與服務、刪除 drop-in；postrm 在 purge 時刪除
+  drop-in 與 /var/lib/system-device-monitor。DPKG_ROOT 不是空的時不碰執行中的 systemd。
 - source：公開原始碼清單，必須涵蓋所有 git 追蹤檔案。
 
 建置只複製列出的檔案，拒絕符號連結、未正規化或逃出專案的路徑，

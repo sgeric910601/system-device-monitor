@@ -128,8 +128,38 @@
     "icons/network.svg",
     "icons/power.svg"
   ],
-  "system": [],
-  "maintainer": {},
+  "system": [
+    {
+      "source": "helper/sdm-cpu-power",
+      "target": "/usr/libexec/system-device-monitor/sdm-cpu-power",
+      "mode": "0755"
+    },
+    {
+      "source": "helper/sdm-cpu-power-service",
+      "target": "/usr/libexec/system-device-monitor/sdm-cpu-power-service",
+      "mode": "0755"
+    },
+    {
+      "source": "helper/policy/tw.local.system-device-monitor.policy",
+      "target": "/usr/share/polkit-1/actions/tw.local.system-device-monitor.policy",
+      "mode": "0644"
+    },
+    {
+      "source": "helper/systemd/system-device-monitor-cpu-power.socket",
+      "target": "/usr/lib/systemd/system/system-device-monitor-cpu-power.socket",
+      "mode": "0644"
+    },
+    {
+      "source": "helper/systemd/system-device-monitor-cpu-power.service",
+      "target": "/usr/lib/systemd/system/system-device-monitor-cpu-power.service",
+      "mode": "0644"
+    }
+  ],
+  "maintainer": {
+    "postinst": "packaging/debian/postinst",
+    "prerm": "packaging/debian/prerm",
+    "postrm": "packaging/debian/postrm"
+  },
   "source": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -159,6 +189,9 @@
     "install-dependencies.sh",
     "install.py",
     "package-files.json",
+    "packaging/debian/postinst",
+    "packaging/debian/postrm",
+    "packaging/debian/prerm",
     "scripts/build_deb.py",
     "scripts/import_check.py",
     "scripts/measure_cpu.py",
@@ -337,6 +370,7 @@
     "tests/test_network.py",
     "tests/test_notifier.py",
     "tests/test_notifier_bus.py",
+    "tests/test_packaging.py",
     "tests/test_peripheral_alerts.py",
     "tests/test_polkit_policy.py",
     "tests/test_power_breakdown.py",
