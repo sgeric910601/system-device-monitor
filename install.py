@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 from sdm import paths
+from sdm.services import system_components
 from sdm.services.autostart import (desktop_entry, initialize_preferences,
                                     launcher_script, set_autostart)
 
@@ -11,9 +12,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--autostart", choices=("preserve", "on", "off"), default="preserve")
     parser.add_argument("--uninstall", action="store_true", help="Keep user preferences and source files")
+    parser.add_argument("--system-components", choices=system_components.ACTIONS,
+                        help="Install or remove the optional CPU power components "
+                             "(asks for administrator authentication through pkexec)")
     args = parser.parse_args()
     if os.geteuid() == 0:
         parser.error("Run as your desktop user, without sudo.")
+    if args.system_components:
+        raise SystemExit(system_components.run(args.system_components, paths.ROOT, say=print))
     launcher = Path.home()/".local/bin/system-device-monitor"
     desktop = paths.DATA_HOME/"applications/system-device-monitor.desktop"
     if args.uninstall:
