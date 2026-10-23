@@ -9,6 +9,16 @@ MAC_ADDRESS = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}[:_-]){5}[0-9a-f]{2}(?
 MAC_MASK = "xx:xx:xx:xx:xx:xx"
 IPV4_ADDRESS = re.compile(r"(?<![0-9.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9.])")
 IPV4_MASK = "x.x.x.x"
+_GROUP = r"[0-9a-f]{1,4}"
+_GROUPS = rf"{_GROUP}(?::{_GROUP})*"
+# 完整的 8 組，或含「::」（至少一邊有數字）的縮寫；時間（12:30:45）不算
+IPV6_ADDRESS = re.compile(rf"(?i)(?<![0-9a-f:])(?:(?:{_GROUP}:){{7}}{_GROUP}|{_GROUPS}::(?:{_GROUPS})?"
+                          rf"|::{_GROUPS})(?![0-9a-f:])")
+IPV6_MASK = "x::x"
+# 8 個以上英數字、同時有字母與數字的詞，像序號；型號也可能被遮住（寧可多遮）
+SERIAL_LIKE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])"
+                         r"[A-Za-z0-9]{8,}(?![A-Za-z0-9])")
+SERIAL_MASK = "xxxx"
 
 
 def percent(value):
@@ -61,5 +71,9 @@ def clean_text(value, limit):
 
 
 def mask_addresses(text):
-    """把像 MAC 位址（: - _ 分隔）與 IPv4 位址的部分換成 xx，用於日誌與通知等會留下的文字。"""
-    return IPV4_ADDRESS.sub(IPV4_MASK, MAC_ADDRESS.sub(MAC_MASK, text))
+    """把像 MAC 位址（: - _ 分隔）、IPv4、IPv6 位址與序號的部分換成 x，
+    用於通知與日誌等會留下的文字。"""
+    for pattern, mask in ((MAC_ADDRESS, MAC_MASK), (IPV4_ADDRESS, IPV4_MASK),
+                          (IPV6_ADDRESS, IPV6_MASK), (SERIAL_LIKE, SERIAL_MASK)):
+        text = pattern.sub(mask, text)
+    return text

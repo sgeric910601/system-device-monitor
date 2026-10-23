@@ -37,6 +37,30 @@ class Privacy(unittest.TestCase):
         self.assertEqual(mask_addresses("在 198.51.100.7 上"), "在 x.x.x.x 上")
         self.assertEqual(mask_addresses("MX Master 3"), "MX Master 3")
 
+    def test_ipv6_addresses_are_masked(self):
+        cases = {"耳機 2001:db8::8a2e:370:7334": "耳機 x::x",
+                 "fe80::1ff:fe23:4567:890a 鍵盤": "x::x 鍵盤",
+                 "2001:0db8:0000:0000:0000:ff00:0042:8329": "x::x",
+                 "Logi::Mouse": "Logi::Mouse", "12:30:45": "12:30:45"}
+        for raw, masked in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(mask_addresses(raw), masked)
+
+    def test_serial_like_tokens_are_masked(self):
+        cases = {"MX Master SN1A2B3C4D": "MX Master xxxx", "滑鼠ABC12345": "滑鼠xxxx",
+                 "G305": "G305", "Basilisk V3": "Basilisk V3", "K380 鍵盤": "K380 鍵盤",
+                 "12345678": "12345678", "Keyboards": "Keyboards",
+                 "WH1000XM4": "xxxx"}             # 型號也可能被遮住：寧可多遮
+        for raw, masked in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(mask_addresses(raw), masked)
+
+    def test_peripheral_notification_never_shows_a_serial(self):
+        reading = type("Reading", (), dict(name=messages.safe_name("滑鼠 SN0A1B2C3D4E"),
+                                           percent=9, icon="x", key="k"))()
+        alert = messages.peripheral_low(reading, 10)
+        self.assertEqual(alert.title, "滑鼠 xxxx 電量偏低：9%")
+
     def test_safe_name_cleans_and_limits(self):
         self.assertEqual(messages.safe_name("滑鼠\x1b[31m"), "滑鼠 [31m")
         self.assertEqual(len(messages.safe_name("長" * 200)), messages.NAME_MAX_CHARS)
