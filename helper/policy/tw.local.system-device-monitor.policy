@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!-- 系統與裝置監看：只有本機作用中的使用者，輸入管理員密碼後才能開關 CPU 功耗取樣。
+     pkexec 只在執行下方 exec.path 指定的小程式時使用這個動作；每次都要重新授權。 -->
+<policyconfig>
+  <vendor>System Device Monitor</vendor>
+  <vendor_url>https://github.com/sgeric910601/system-device-monitor</vendor_url>
+
+  <action id="tw.local.system-device-monitor.cpu-power">
+    <description>Enable or disable CPU power sampling for System Device Monitor</description>
+    <description xml:lang="zh_TW">開啟或關閉系統與裝置監看的 CPU 功耗取樣（套件）</description>
+    <message>Authentication is required to change CPU power sampling</message>
+    <message xml:lang="zh_TW">變更 CPU 功耗取樣需要管理員授權</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/system-device-monitor/sdm-cpu-power</annotate>
+  </action>
+</policyconfig>

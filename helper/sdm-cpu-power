@@ -1,0 +1,369 @@
+#!/usr/bin/python3 -IB
+"""系統與裝置監看：CPU 功耗取樣的管理員小程式（由 pkexec 執行）。
+
+用法：sdm-cpu-power enable｜disable｜status；sdm-cpu-power --protocol（不需要權限）。
+- enable：確認單元檔屬於 root，寫入 socket 的 drop-in（SocketUser＝呼叫者的 uid、
+  SocketMode=0600），重新載入 systemd，停止服務、啟用並重新啟動 socket（套用新的擁有者）。
+- disable：停用並停止 socket，停止服務，刪除 drop-in，重新載入 systemd。
+- status：socket 是否啟用、是否執行中，以及 drop-in 指定的使用者。
+安全規則：除了 --protocol，一律要求以 root 執行且由 pkexec 設定 PKEXEC_UID（一般使用者帳號）；
+只接受兩個固定的安裝位置，依自己的位置決定單元名稱；路徑上每一層都必須屬於 root 且群組與
+其他人不可寫，檔案以 O_NOFOLLOW 開啟；固定的 PATH，只以參數清單執行 /usr/bin/systemctl，
+從不經過 shell；標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）；
+系統日誌只記錄動作名稱與結果。只使用標準函式庫。
+"""
+import json
+import os
+import pwd
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import syslog
+from typing import Callable, NamedTuple
+
+PROTOCOL = 1
+VERSION = "1.0"
+EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
+COMMANDS = ("enable", "disable", "status")
+PROTOCOL_FLAG = "--protocol"
+HELPER_NAME = "sdm-cpu-power"
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
+SYSTEMCTL = "/usr/bin/systemctl"
+COMMAND_TIMEOUT_S = 60
+UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
+OWNER_PATTERN = re.compile(r"^SocketUser=([1-9][0-9]{0,9})$", re.MULTILINE)
+MAX_UID = 4294967294
+NOBODY = 65534
+DROPIN_PARENT = "etc/systemd/system"      # 相對於根目錄；/etc 的 drop-in 優先於套件的單元檔
+DROPIN_NAME = "owner.conf"
+DROPIN_MAX_BYTES = 4096
+DIRECTORY_MODE = 0o755
+FILE_MODE = 0o644
+UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+LOG_IDENT = "sdm-cpu-power"
+
+
+class Usage(Exception):
+    """參數不符合固定的用法。"""
+
+
+class NotPermitted(Exception):
+    """不是由 pkexec 以 root 執行，或呼叫者不是一般使用者。"""
+
+
+class Failed(Exception):
+    """無法安全地完成；訊息只含固定的英文代號。"""
+
+
+class Layout(NamedTuple):
+    kind: str
+    helper_dir: str
+    unit_dir: str                       # 相對於根目錄
+    socket: str
+    service: str
+
+    @property
+    def dropin_dir(self):
+        return self.socket + ".d"
+
+
+LAYOUTS = (
+    Layout("deb", "/usr/libexec/system-device-monitor", "usr/lib/systemd/system",
+           "system-device-monitor-cpu-power.socket", "system-device-monitor-cpu-power.service"),
+    Layout("local", "/usr/local/libexec/system-device-monitor", "etc/systemd/system",
+           "system-device-monitor-local-cpu-power.socket",
+           "system-device-monitor-local-cpu-power.service"),
+)
+
+
+class Context(NamedTuple):
+    """執行環境；測試以假根目錄、假的擁有者與假的 systemctl 代替。"""
+    root: str
+    owner: int
+    run: Callable
+    euid: int
+    user_exists: Callable
+    helper_path: str
+
+
+def log(message):
+    syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_INFO, message)
+
+
+def run_command(argv):
+    """只以參數清單執行（不經過 shell），固定的環境變數；回傳結束碼，無法執行時為 -1。"""
+    try:
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, env=SAFE_ENV,
+                              timeout=COMMAND_TIMEOUT_S, check=False).returncode
+    except (OSError, subprocess.SubprocessError):
+        return -1
+
+
+def user_exists(uid):
+    try:
+        pwd.getpwuid(uid)
+    except KeyError:
+        return False
+    return True
+
+
+def production_context():
+    return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
+                   user_exists=user_exists, helper_path=os.path.abspath(sys.argv[0]))
+
+
+# ── 參數與權限 ──────────────────────────────────────────────
+
+def parse_args(argv):
+    if len(argv) == 1 and (argv[0] in COMMANDS or argv[0] == PROTOCOL_FLAG):
+        return argv[0]
+    raise Usage()
+
+
+def caller_uid(env, context):
+    """pkexec 設定的 PKEXEC_UID：十進位、不是 root 或 nobody，而且帳號存在。"""
+    if context.euid != 0:
+        raise NotPermitted()
+    text = env.get("PKEXEC_UID", "")
+    if not UID_PATTERN.fullmatch(text):
+        raise NotPermitted()
+    uid = int(text)
+    if uid in (0, NOBODY) or uid > MAX_UID or not context.user_exists(uid):
+        raise NotPermitted()
+    return uid
+
+
+def layout_for(helper_path):
+    directory, name = os.path.split(helper_path)
+    for layout in LAYOUTS:
+        if directory == layout.helper_dir and name == HELPER_NAME:
+            return layout
+    raise Failed("unknown-location")
+
+
+# ── 受信任的目錄與檔案 ─────────────────────────────────────
+
+def check_directory(fd, owner):
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed("untrusted-directory")
+
+
+def check_file(dir_fd, name, owner):
+    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed("untrusted-file")
+
+
+def open_directory(context, relative):
+    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；回傳描述子。"""
+    fd = os.open(context.root, DIRECTORY_FLAGS)
+    try:
+        check_directory(fd, context.owner)
+        for part in [part for part in relative.split("/") if part]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_child(parent, name, owner, create=False):
+    if create:
+        try:
+            os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+        except FileExistsError:
+            pass
+    fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    try:
+        check_directory(fd, owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def check_location(context, layout):
+    """自己與兩個單元檔都必須是受信任的一般檔案。"""
+    for directory, names in ((layout.helper_dir, (HELPER_NAME,)),
+                             (layout.unit_dir, (layout.socket, layout.service))):
+        fd = open_directory(context, directory)
+        try:
+            for name in names:
+                check_file(fd, name, context.owner)
+        finally:
+            os.close(fd)
+
+
+# ── drop-in ────────────────────────────────────────────────
+
+def dropin_text(uid):
+    return ("# 由 sdm-cpu-power enable 產生，disable 時刪除：只有這個使用者能連線。\n"
+            f"[Socket]\nSocketUser={uid}\nSocketMode=0600\n")
+
+
+def replace_file(dir_fd, name, data, mode):
+    """先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW）並 fsync，再整檔取代；只取代一般檔案。"""
+    try:
+        existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise Failed("unexpected-file")
+    temporary = f".{name}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 mode, dir_fd=dir_fd)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+    os.fsync(dir_fd)
+
+
+def write_dropin(context, layout, uid):
+    parent = open_directory(context, DROPIN_PARENT)
+    try:
+        directory = open_child(parent, layout.dropin_dir, context.owner, create=True)
+        try:
+            replace_file(directory, DROPIN_NAME, dropin_text(uid).encode("utf-8"), FILE_MODE)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(parent)
+
+
+def remove_dropin(context, layout):
+    """刪除 owner.conf；目錄裡沒有其他檔案時一併刪除目錄。"""
+    parent = open_directory(context, DROPIN_PARENT)
+    try:
+        try:
+            directory = open_child(parent, layout.dropin_dir, context.owner)
+        except FileNotFoundError:
+            return
+        try:
+            info = os.stat(DROPIN_NAME, dir_fd=directory, follow_symlinks=False)
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                raise Failed("unexpected-file")
+            os.unlink(DROPIN_NAME, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(directory)
+        try:
+            os.rmdir(layout.dropin_dir, dir_fd=parent)
+        except OSError:
+            pass
+    finally:
+        os.close(parent)
+
+
+def dropin_owner(context, layout):
+    try:
+        parent = open_directory(context, DROPIN_PARENT + "/" + layout.dropin_dir)
+    except (OSError, Failed):
+        return None
+    try:
+        fd = os.open(DROPIN_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        with os.fdopen(fd, "rb") as handle:
+            text = handle.read(DROPIN_MAX_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(parent)
+    match = OWNER_PATTERN.search(text)
+    return int(match.group(1)) if match else None
+
+
+# ── 動作 ───────────────────────────────────────────────────
+
+def systemctl(context, *args):
+    return context.run([SYSTEMCTL, *args])
+
+
+def enable(context, layout, uid):
+    write_dropin(context, layout, uid)
+    for args in (("daemon-reload",), ("stop", layout.service), ("enable", layout.socket),
+                 ("restart", layout.socket)):
+        if systemctl(context, *args) != 0:
+            raise Failed("systemctl")
+    return {"ok": True, "action": "enable"}
+
+
+def disable(context, layout, _uid):
+    results = [systemctl(context, "disable", "--now", layout.socket),
+               systemctl(context, "stop", layout.service)]
+    try:
+        remove_dropin(context, layout)
+    finally:
+        results.append(systemctl(context, "daemon-reload"))
+    if any(results):
+        raise Failed("systemctl")
+    return {"ok": True, "action": "disable"}
+
+
+def status(context, layout, _uid):
+    return {"ok": True, "action": "status",
+            "enabled": systemctl(context, "is-enabled", "--quiet", layout.socket) == 0,
+            "active": systemctl(context, "is-active", "--quiet", layout.socket) == 0,
+            "owner_uid": dropin_owner(context, layout)}
+
+
+ACTIONS = {"enable": enable, "disable": disable, "status": status}
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def main(argv, env, context=None, emit=emit_json, report=log):
+    try:
+        command = parse_args(argv)
+    except Usage:
+        emit({"ok": False, "error": "usage"})
+        return EXIT_USAGE
+    if command == PROTOCOL_FLAG:
+        emit({"protocol": PROTOCOL, "version": VERSION})
+        return EXIT_OK
+    context = context or production_context()
+    try:
+        uid = caller_uid(env, context)
+        layout = layout_for(context.helper_path)
+        check_location(context, layout)
+        result = ACTIONS[command](context, layout, uid)
+    except NotPermitted:
+        report(command + " not-permitted")
+        emit({"ok": False, "error": "not-permitted"})
+        return EXIT_NOT_PERMITTED
+    except (Failed, OSError):
+        report(command + " failed")
+        emit({"ok": False, "error": "failed"})
+        return EXIT_FAILED
+    report(command + " ok")
+    emit(result)
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    ENVIRONMENT = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(SAFE_ENV)
+    sys.exit(main(sys.argv[1:], ENVIRONMENT))

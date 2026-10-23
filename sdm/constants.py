@@ -79,6 +79,10 @@ class CpuPower:
     EXIT_CODES = (0, 2, 3, 4)   # 成功、參數錯誤、執行失敗、沒有權限
     DEB_HELPER_DIR = "/usr/libexec/system-device-monitor"
     LOCAL_HELPER_DIR = "/usr/local/libexec/system-device-monitor"
+    DEB_HELPER = DEB_HELPER_DIR + "/sdm-cpu-power"                 # pkexec 執行的小程式
+    LOCAL_HELPER = LOCAL_HELPER_DIR + "/sdm-cpu-power"
+    ACTION_DEB = "tw.local.system-device-monitor.cpu-power"         # polkit 動作
+    ACTION_LOCAL = "tw.local.system-device-monitor.local.cpu-power"
     DEB_SERVICE_HELPER = DEB_HELPER_DIR + "/sdm-cpu-power-service"
     LOCAL_SERVICE_HELPER = LOCAL_HELPER_DIR + "/sdm-cpu-power-service"
     DEB_SOCKET = "/run/system-device-monitor/cpu-power.sock"

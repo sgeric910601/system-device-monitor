@@ -45,6 +45,19 @@ def parse_unit(path):
     return entries
 
 
+def imported_modules(path):
+    """檔案匯入的最上層模組名稱；不允許相對匯入。"""
+    names = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                raise AssertionError("relative import in " + path.name)
+            names.add(node.module.split(".")[0])
+    return names
+
+
 def single(entries, section, key):
     values = entries.get((section, key), [])
     if len(values) != 1:
@@ -115,18 +128,16 @@ class ServiceHelper(unittest.TestCase):
         self.assertTrue(self.path.stat().st_mode & stat.S_IXUSR)
         self.assertFalse(self.path.stat().st_mode & (stat.S_IWGRP | stat.S_IWOTH))
 
-    def test_imports_only_the_standard_library(self):
-        tree = ast.parse(self.path.read_text(encoding="utf-8"))
-        names = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                self.assertEqual(node.level, 0)
-                names.add(node.module.split(".")[0])
-        self.assertEqual(sorted(names - set(sys.stdlib_module_names)), [])
-        for forbidden in ("subprocess", "ctypes", "importlib", "shutil"):
-            self.assertNotIn(forbidden, names)
+    def test_helpers_import_only_the_standard_library(self):
+        forbidden = {"sdm-cpu-power-service": ("subprocess", "ctypes", "importlib", "shutil",
+                                               "pickle"),
+                     "sdm-cpu-power": ("ctypes", "importlib", "shutil", "pickle")}
+        self.assertEqual(sorted(path.name for path in HELPERS.glob("sdm-*")), sorted(forbidden))
+        for name, refused in forbidden.items():
+            with self.subTest(helper=name):
+                names = imported_modules(HELPERS/name)
+                self.assertEqual(sorted(names - set(sys.stdlib_module_names)), [])
+                self.assertEqual(sorted(names & set(refused)), [])
 
     def test_constants_match_the_application(self):
         self.assertEqual(service.PROTOCOL, CpuPower.PROTOCOL)
