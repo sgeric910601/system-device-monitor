@@ -177,14 +177,22 @@ def open_directory(context, relative):
     return fd
 
 
+def make_directory(parent, name):
+    """建立目錄並回傳 True；已存在時回傳 False（不改變既有目錄的權限）。"""
+    try:
+        os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+    except FileExistsError:
+        return False
+    return True
+
+
 def open_child(parent, name, owner, create=False):
-    if create:
-        try:
-            os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
-        except FileExistsError:
-            pass
+    """開啟（必要時建立）子目錄；新建的一律 0755，不受 umask 影響。"""
+    created = create and make_directory(parent, name)
     fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
     try:
+        if created:
+            os.fchmod(fd, DIRECTORY_MODE)
         check_directory(fd, owner)
     except BaseException:
         os.close(fd)

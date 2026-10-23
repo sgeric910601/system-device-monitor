@@ -200,20 +200,28 @@ def check_directory(fd, owner):
         raise Failed("untrusted-directory")
 
 
+def make_directory(parent, name):
+    """建立目錄並回傳 True；已存在時回傳 False（不改變既有目錄的權限）。"""
+    try:
+        os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+    except FileExistsError:
+        return False
+    return True
+
+
 def open_directory(context, relative, create=False):
-    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；create 時建立缺少的層。"""
+    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；create 時建立缺少的層，
+    新建的目錄一律 0755（不受 umask 影響，polkitd 與一般使用者才讀得到）。"""
     fd = os.open(context.root, DIRECTORY_FLAGS)
     try:
         check_directory(fd, context.owner)
         for part in relative.split("/"):
-            if create:
-                try:
-                    os.mkdir(part, DIRECTORY_MODE, dir_fd=fd)
-                except FileExistsError:
-                    pass
+            created = create and make_directory(fd, part)
             child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
             os.close(fd)
             fd = child
+            if created:
+                os.fchmod(fd, DIRECTORY_MODE)
             check_directory(fd, context.owner)
     except BaseException:
         os.close(fd)

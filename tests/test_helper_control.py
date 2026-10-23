@@ -143,6 +143,15 @@ class Enable(Base):
                      if name != "owner.conf"]
         self.assertEqual(leftovers, [])
 
+    def test_new_dropin_directory_is_world_readable_whatever_the_umask(self):
+        previous = os.umask(0o077)
+        try:
+            self.assertEqual(self.main(["enable"]), control.EXIT_OK)
+        finally:
+            os.umask(previous)
+        self.assertEqual(self.root.mode(os.path.dirname(DROPIN)), 0o755)
+        self.assertEqual(self.root.mode(DROPIN), 0o644)
+
     def test_local_layout_uses_its_own_units(self):
         self.helper = CpuPower.LOCAL_HELPER
         self.assertEqual(self.main(["enable"]), control.EXIT_OK)

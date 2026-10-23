@@ -106,6 +106,24 @@ class Install(Base):
         helper = self.root.path/"usr/local/libexec/system-device-monitor/sdm-cpu-power"
         self.assertEqual(helper.read_bytes(), self.contents["helper/sdm-cpu-power"])
 
+    def test_new_directories_are_world_readable_whatever_the_umask(self):
+        previous = os.umask(0o077)
+        try:
+            self.assertEqual(self.main(), installer.EXIT_OK)
+        finally:
+            os.umask(previous)
+        for directory in ("usr/local/libexec", "usr/local/libexec/system-device-monitor",
+                          "usr/local/share/polkit-1", "usr/local/share/polkit-1/actions"):
+            self.assertEqual(self.root.mode(directory), 0o755)
+        for target, mode in TARGETS.items():
+            self.assertEqual(self.root.mode(target), mode)
+
+    def test_existing_directories_keep_their_mode(self):
+        self.root.directory("usr/local/libexec")
+        os.chmod(self.root.path/"usr/local/libexec", 0o711)
+        self.assertEqual(self.main(), installer.EXIT_OK)
+        self.assertEqual(self.root.mode("usr/local/libexec"), 0o711)
+
     def test_reloads_systemd_without_enabling_anything(self):
         self.main()
         self.assertEqual(self.systemctl_calls(), [("daemon-reload",),
