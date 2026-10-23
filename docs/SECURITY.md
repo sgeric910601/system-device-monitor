@@ -32,6 +32,13 @@
 - 動作綁定 org.freedesktop.policykit.exec.path＝開關小程式的絕對路徑，pkexec 只有在執行
   這個檔案時才使用這個動作。
 - 開啟程式、開啟設定視窗都不會要求授權；只有使用者在設定裡切換「CPU 功耗取樣」時才執行 pkexec。
+- 動作 ID 的命名與自訂規則：
+  - 管理員若要寫 polkit 規則（/etc/polkit-1/rules.d）放寬或收緊這些動作，請比對完整的動作 ID
+    （例如 `action.id == "tw.local.system-device-monitor.cpu-power"`），不要用
+    `indexOf("tw.local.system-device-monitor")` 之類的前綴比對，以免同時套用到之後新增的動作。
+  - `tw.local.system-device-monitor.unattended.*` 這個前綴保留給之後不需要密碼的動作
+    （第 8 階段的充電上限與定時喚醒），它們會有各自的限制與說明；需要管理員密碼的動作
+    （例如本文件的 CPU 功耗取樣）絕不使用這個前綴。
 
 ## 開關小程式（sdm-cpu-power）
 

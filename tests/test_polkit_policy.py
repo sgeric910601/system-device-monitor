@@ -60,5 +60,20 @@ class Policies(unittest.TestCase):
         self.assertEqual(CpuPower.LOCAL_HELPER, CpuPower.LOCAL_HELPER_DIR + "/sdm-cpu-power")
 
 
+class ReservedPrefix(unittest.TestCase):
+    """之後的免密碼動作一律用另一個前綴；需要密碼的動作絕不能落在這個前綴底下。"""
+    PREFIX = "tw.local.system-device-monitor.unattended."
+
+    def test_password_actions_avoid_the_unattended_prefix(self):
+        for path in (DEB_POLICY, LOCAL_POLICY):
+            for action in actions(path):
+                self.assertFalse(action.get("id").startswith(self.PREFIX))
+
+    def test_security_notes_reserve_the_prefix_and_require_full_ids(self):
+        text = (HELPERS.parent/"docs/SECURITY.md").read_text(encoding="utf-8")
+        self.assertIn(self.PREFIX + "*", text)
+        self.assertIn("完整的動作 ID", text)
+
+
 if __name__ == "__main__":
     unittest.main()
