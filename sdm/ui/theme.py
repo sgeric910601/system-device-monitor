@@ -11,6 +11,10 @@ WARNING = "#e8913a"
 CRITICAL = "#e5534b"
 GOOD = "#3fb27f"                # 健康度良好、記憶體壓力正常
 HEX_DIGITS = 6
+# 充電夥伴與桌面寵物：休息時的 Z、充電火花、眼窩與流汗，在淺色與深色桌布上都看得清楚
+COMPANION = {"zzz": "#7f97c8", "spark": "#ffc83d", "socket": "#333d4d", "sweat": "#6cb6e8",
+             "lid_line": "#211f24", "bubble": "#fbfbfa", "bubble_text": "#222222",
+             "heart": "#ff5c8a"}
 
 # 系統監控頁 2 分鐘曲線的顏色（第一條線、第二條線）
 SERIES = {"cpu": COLORS["cpu"], "gpu": COLORS["gpu"], "memory": COLORS["ram"],

@@ -1,4 +1,4 @@
-"""筆電模式的「電源」頁：電量標題、時間卡片、電力流向、今日回顧、電量歷史與詳細資訊。
+"""筆電模式的「電源」頁：電量標題（左邊是充電夥伴）、時間卡片、電力流向、今日回顧、電量歷史與詳細資訊。
 
 所有文字都由 battery_text／battery_details 產生；這裡只負責排版，文字沒變就不重設。
 """
@@ -21,6 +21,7 @@ DETAIL_COLUMNS = 2
 DETAIL_FIELD_WIDTH = 260        # 每個欄位的最小寬度：放不下兩欄時改成一欄
 DETAIL_NAME_WIDTH = 96          # 欄位名稱的寬度（「不斷電系統型號」也放得下），值對齊
 RECAP_COLUMNS = 3
+COMPANION_SPACING = 14
 RECAP_NOTE = "依電量歷史計算（看板沒在執行的時段不列入）"
 
 
@@ -206,13 +207,22 @@ class LaptopPowerView(Gtk.Box):
         self.pack_start(self.details.container, False, False, 0)
 
     def build_header(self):
+        """左邊是充電夥伴，右邊一欄是電量標題；充電上限（之後加入）放在 limit_slot，標題下方。"""
         header_box = box(spacing=2)
         self.value = label("—", "power-value")
         self.state = label("正在讀取電池…", "power-state")
         self.headline = label("", "power-headline", True)
         for widget in (self.value, self.state, self.headline):
             header_box.pack_start(widget, False, False, 0)
-        self.pack_start(header_box, False, False, 0)
+        self.companion_slot = box(spacing=0)
+        self.companion_slot.set_valign(Gtk.Align.CENTER)
+        self.limit_slot = box(spacing=8)
+        self.limit_slot.set_valign(Gtk.Align.CENTER)
+        self.limit_slot.pack_start(header_box, False, False, 0)
+        row = box(False, COMPANION_SPACING)
+        row.pack_start(self.companion_slot, False, False, 0)
+        row.pack_start(self.limit_slot, True, True, 0)
+        self.pack_start(row, False, False, 0)
 
     def apply(self, power, now, unplugged_at, recap, hidden):
         big, state, headline, tone = header(power)

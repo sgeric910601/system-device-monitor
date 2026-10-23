@@ -7,8 +7,13 @@
   游標越遠移得越多，最多左右半徑的 0.3、上下 0.16。
 """
 import math
+import time
 
 from sdm.constants import Companion, Pet
+from sdm.core.sprite_motion import frame_interval_ms
+
+MILLISECONDS = 1000
+GAZE_STEP = (0.03, 0.05)        # 眼珠左右、上下移動小於這些（方向的比例）就不重畫
 
 
 class StrokeDetector:
@@ -50,6 +55,53 @@ class BlinkScheduler:
         return self.rng.randrange(Companion.DOUBLE_BLINK_ONE_IN) == 0
 
 
+class BlinkTimer:
+    """眨眼的計時器：等一段亂數時間後開始眨眼，眨眼期間每秒最多 12 格更新眼皮，再排下一次。
+
+    計時器由外部提供：add 以毫秒與回呼建立計時器並回傳代號，remove 以代號移除；
+    回呼回傳 False 時該計時器結束（與 GLib 相同）。changed() 在眼皮改變時呼叫。
+    """
+
+    def __init__(self, changed, add, remove, rng, clock=time.monotonic):
+        self.changed, self.add, self.remove, self.clock = changed, add, remove, clock
+        self.scheduler = BlinkScheduler(rng)
+        self.source, self.started, self.twice, self.lid = None, None, False, 0.0
+
+    @property
+    def running(self):
+        return self.source is not None
+
+    def set_running(self, running):
+        if running == self.running:
+            return
+        if running:
+            self.wait()
+            return
+        self.remove(self.source)
+        self.source, self.started = None, None
+        if self.lid:
+            self.lid = 0.0
+            self.changed()
+
+    def wait(self):
+        delay = self.scheduler.next_delay()
+        self.source = self.add(round(delay * MILLISECONDS), self.begin)
+
+    def begin(self):
+        self.twice, self.started = self.scheduler.twice(), self.clock()
+        self.source = self.add(frame_interval_ms(Companion.MAX_FPS), self.frame)
+        return False
+
+    def frame(self):
+        elapsed = self.clock() - self.started
+        self.lid = lid_fraction(elapsed, self.twice)
+        self.changed()
+        if elapsed < blink_seconds(self.twice):
+            return True
+        self.wait()
+        return False
+
+
 def blink_seconds(twice):
     """一次（或連兩次）眨眼的總長度。"""
     return 2 * Companion.BLINK_HALF_SECONDS * (2 if twice else 1)
@@ -78,6 +130,14 @@ def gaze(center, pointer, width):
     strength = min(1.0, distance / max(width * Companion.GAZE_RANGE_RATIO,
                                        Companion.GAZE_MIN_RANGE))
     return dx / distance * strength, dy / distance * strength
+
+
+def gaze_moved(previous, current):
+    """眼珠移動得夠多才重畫（參考專案：左右 0.03、上下 0.05）。"""
+    if len(previous) != len(current):
+        return True
+    return any(abs(a[0] - b[0]) > GAZE_STEP[0] or abs(a[1] - b[1]) > GAZE_STEP[1]
+               for a, b in zip(previous, current))
 
 
 def iris_offset(direction, radius):

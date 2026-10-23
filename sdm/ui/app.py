@@ -28,6 +28,7 @@ from sdm.services.ui_state import PageMemory
 from sdm.ui.alert_wiring import AlertMixin
 from sdm.ui.app_names import AppNames
 from sdm.ui.appearance_wiring import AppearanceMixin
+from sdm.ui.companion_wiring import CompanionMixin
 from sdm.ui.cpu_power_wiring import CpuPowerMixin
 from sdm.ui.main_window import PAGES, MainWindow
 from sdm.ui.monitor_wiring import MonitorMixin
@@ -59,7 +60,7 @@ class RunResult(NamedTuple):
 
 
 class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
-              AlertMixin, CpuPowerMixin, AppearanceMixin, Gtk.Application):
+              AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -238,6 +239,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.scrolls, self.footer = self.main.scrolls, self.main.footer
         self.app_names = AppNames()
         self.build_power()
+        self.build_companion()
         overview = OverviewPage(self.series, self.clickable)
         self.overview = overview
         self.graphs = overview.graphs
@@ -295,8 +297,10 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
             self.main.show_page(page)
 
     def render(self):
-        """頂端列與選單一直更新；視窗隱藏或最小化時頁面只記下需要重畫，顯示時再補。"""
+        """頂端列與選單一直更新；視窗隱藏或最小化時頁面只記下需要重畫，顯示時再補。
+        夥伴的表情也一直更新（桌面寵物在視窗隱藏時仍看得到；沒有改變時不重畫）。"""
         self.render_indicator()
+        self.update_companions()
         if self.window_shown():
             self.render_pages()
         else:

@@ -1,4 +1,4 @@
-"""看板的外觀部分（Monitor 的混入類別）：程式圖示的顏色。
+"""看板的外觀部分（Monitor 的混入類別）：程式圖示的顏色；夥伴的設定轉給 companion_wiring。
 
 - 啟動時與「設定 → 外觀」換色時：所有視窗的預設圖示、頂端列沒有項目時的程式圖示立即換成
   選擇的顏色（直接讀 assets/app，不經過圖示主題）。
@@ -57,6 +57,7 @@ class AppearanceMixin:
             rescan_icon_theme()
 
     def appearance_changed(self, changed):
-        """設定改變後呼叫（settings_wiring）：只處理外觀相關的鍵。"""
+        """設定改變後呼叫（settings_wiring）：程式圖示，以及夥伴（companion_wiring）。"""
         if changed & ICON_KEYS:
             self.apply_app_icon()
+        self.companion_settings_changed(changed)

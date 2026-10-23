@@ -3,9 +3,11 @@
 - 只在夥伴顯示中、所在的視窗看得到、省電模式沒有生效時播放；其他時候不留任何計時器，
   畫第一格的靜態圖（從靜態圖開始播放，不會跳動）。
 - 每秒最多 12 格（Companion.MAX_FPS），實際使用 Companion.FPS。
-- 呼吸：每 4 秒一次，以腳底為基準放大 1.00–1.02 倍，同時稍微往上浮。
+- 呼吸：每 4 秒一次，以腳底為基準放大 1.00–1.02 倍，身體再往上多伸展一點（腳底不動）。
 - 休息時頭上飄出 Z（往上飄、變大、淡出），充電時充電墊周圍有火花閃爍。
 - 預先算好的畫格：依原始影片每秒 15 格的速度循環，實際畫出的格數仍受上面的上限限制。
+- 各外觀需要的計時器（motion_plan）：貓咪一直呼吸；電量條只在充電時有光點流動；
+  電池夥伴醒著時會眨眼；貓咪大頭照的眼睛會眨眼並跟著游標；我的照片不會動。
 計時器由外部提供：add 以毫秒與回呼建立計時器並回傳代號，remove 以代號移除。
 """
 import math
@@ -21,6 +23,12 @@ ZZZ_SIZE = (0.10, 0.22)         # 由小變大（高度的比例）
 SPARK_SPOTS = ((0.18, 0.80), (0.82, 0.78), (0.30, 0.95), (0.70, 0.96))
 
 
+class MotionPlan(NamedTuple):
+    ticker: bool                # 逐格動畫（呼吸、粒子、光點）
+    blink: bool                 # 眨眼
+    pointer: bool               # 讀游標位置（眼睛跟著游標）
+
+
 class Particle(NamedTuple):
     x: float                    # 夥伴寬度、高度的比例
     y: float
@@ -30,6 +38,16 @@ class Particle(NamedTuple):
 
 def should_animate(mapped, window_visible, saving):
     return bool(mapped and window_visible and not saving)
+
+
+def motion_plan(appearance, state, live_eyes, follow_cursor, visible, saving):
+    """看不到或省電模式時全部停止；其他時候依外觀與表情決定要哪些計時器。"""
+    if not visible or saving:
+        return MotionPlan(False, False, False)
+    eyes = appearance == "headshot" and live_eyes
+    ticker = appearance == "cat" or (appearance == "bar" and state.on_pad)
+    blink = eyes or (appearance == "buddy" and not state.resting)
+    return MotionPlan(ticker, blink, eyes and follow_cursor)
 
 
 def frame_interval_ms(fps):
@@ -67,7 +85,7 @@ class Ticker:
 
 
 def breath(t):
-    """（放大倍數、往上浮的距離）；浮動距離是高度的比例，負值為往上。"""
+    """（放大倍數、起伏）；起伏是高度的比例，負值為往上（畫的時候變成額外的垂直伸展）。"""
     wave = (1 - math.cos(2 * math.pi * Companion.BREATH_HZ * t)) / 2
     return 1 + Companion.BREATH_SCALE * wave, -Companion.BOB_RATIO * wave
 

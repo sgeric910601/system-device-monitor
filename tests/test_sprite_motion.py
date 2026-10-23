@@ -2,8 +2,9 @@
 import unittest
 
 from sdm.constants import Companion
-from sdm.core.sprite_motion import (Ticker, breath, frame_interval_ms, should_animate,
-                                    sparks, strip_index, zzz)
+from sdm.core.companion import BUSY, CHARGING_MOOD, IDLE, CompanionState
+from sdm.core.sprite_motion import (MotionPlan, Ticker, breath, frame_interval_ms, motion_plan,
+                                    should_animate, sparks, strip_index, zzz)
 
 
 class FakeTimers:
@@ -34,6 +35,42 @@ class Gating(unittest.TestCase):
                                         (True, True, True), (False, False, True)):
             with self.subTest(mapped=mapped, visible=visible, saving=saving):
                 self.assertFalse(should_animate(mapped, visible, saving))
+
+
+class Plan(unittest.TestCase):
+    """哪些外觀需要哪種計時器：沒有需要的就不留任何計時器。"""
+    resting, charging = CompanionState(IDLE), CompanionState(CHARGING_MOOD, on_pad=True)
+
+    def plan(self, appearance, state=None, live_eyes=True, follow=True, visible=True,
+             saving=False):
+        return motion_plan(appearance, state or self.resting, live_eyes, follow, visible, saving)
+
+    def test_cat_always_breathes(self):
+        self.assertEqual(self.plan("cat"), MotionPlan(True, False, False))
+
+    def test_bar_moves_only_while_charging(self):
+        self.assertEqual(self.plan("bar"), MotionPlan(False, False, False))
+        self.assertEqual(self.plan("bar", self.charging), MotionPlan(True, False, False))
+
+    def test_buddy_blinks_unless_asleep(self):
+        self.assertEqual(self.plan("buddy"), MotionPlan(False, False, False))
+        self.assertEqual(self.plan("buddy", CompanionState(BUSY)), MotionPlan(False, True, False))
+
+    def test_headshot_eyes_blink_and_follow_the_pointer(self):
+        self.assertEqual(self.plan("headshot"), MotionPlan(False, True, True))
+        self.assertEqual(self.plan("headshot", follow=False), MotionPlan(False, True, False))
+        self.assertEqual(self.plan("headshot", live_eyes=False), MotionPlan(False, False, False))
+
+    def test_my_photo_never_moves(self):
+        self.assertEqual(self.plan("photo", self.charging), MotionPlan(False, False, False))
+
+    def test_hidden_or_power_saving_stops_everything(self):
+        for appearance in ("cat", "bar", "buddy", "headshot"):
+            for visible, saving in ((False, False), (True, True)):
+                with self.subTest(appearance=appearance, visible=visible, saving=saving):
+                    self.assertEqual(self.plan(appearance, CompanionState(BUSY, on_pad=True),
+                                               visible=visible, saving=saving),
+                                     MotionPlan(False, False, False))
 
 
 class Timing(unittest.TestCase):

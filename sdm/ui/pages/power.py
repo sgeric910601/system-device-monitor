@@ -1,5 +1,7 @@
 """「電源」頁：桌機顯示整機耗電、電力流向、耗電拆解、耗電歷史與詳細資訊；
 有系統電池（筆電）時改顯示筆電版面（laptop_power.LaptopPowerView，第一次收到筆電快照才建立）。
+充電夥伴（set_companion）放在桌機的瓦數旁；筆電放在電量標題旁（充電上限那一欄的左邊），
+切換版面時跟著移過去。
 
 自成一個 Gtk.Box，對外只有 update(power) 與 history_changed()，之後換外殼可直接重用。
 頁面沒有顯示時只記下最新資料，顯示時才更新文字與重算圖表；文字沒變就不重設。
@@ -25,6 +27,7 @@ from sdm.ui.widgets import box, clear, label
 TONE_CLASSES = {TONE_WARNING: "power-warning", TONE_CRITICAL: "power-critical"}
 SPACING = 16
 CARD_PADDING = 16     # 與 CSS .card 的 padding 相同
+COMPANION_SPACING = 14
 
 
 def set_text(widget, text):
@@ -61,7 +64,7 @@ class PowerPage(Gtk.Box):
         self.hidden_fields, self.hidden_flow = hidden_fields, hidden_flow
         self.power, self.stale = None, True
         self.row_ids, self.row_labels = None, []
-        self.laptop = None
+        self.laptop, self.companion = None, None
         self.desktop = box(spacing=SPACING)
         self.pack_start(self.desktop, False, False, 0)
         self.build_header()
@@ -82,7 +85,31 @@ class PowerPage(Gtk.Box):
         self.sub = label("正在讀取耗電…", "power-sub", True)
         header.pack_start(self.value, False, False, 0)
         header.pack_start(self.sub, False, False, 0)
-        self.desktop.pack_start(header, False, False, 0)
+        row = box(False, COMPANION_SPACING)
+        self.companion_slot = box(spacing=0)
+        self.companion_slot.set_valign(Gtk.Align.CENTER)
+        row.pack_start(self.companion_slot, False, False, 0)
+        row.pack_start(header, True, True, 0)
+        header.set_valign(Gtk.Align.CENTER)
+        self.desktop.pack_start(row, False, False, 0)
+
+    def set_companion(self, widget):
+        """充電夥伴放在目前版面的標題旁。"""
+        self.companion = widget
+        self.place_companion()
+
+    def place_companion(self):
+        if self.companion is None:
+            return
+        laptop = self.laptop is not None and self.laptop.get_visible()
+        target = self.laptop.companion_slot if laptop else self.companion_slot
+        parent = self.companion.get_parent()
+        if parent is target:
+            return
+        if parent is not None:
+            parent.remove(self.companion)
+        target.pack_start(self.companion, False, False, 0)
+        self.companion.show()
 
     def build_cards(self):
         self.flow = PowerFlow()
@@ -126,6 +153,7 @@ class PowerPage(Gtk.Box):
         if self.laptop is not None:
             self.laptop.set_visible(laptop)
             self.desktop.set_visible(not laptop)
+        self.place_companion()
 
     def set_profiles(self, state):
         """電源模式服務的狀態（sdm.services.power_profiles.ProfileState）。"""

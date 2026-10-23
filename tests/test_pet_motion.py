@@ -2,8 +2,8 @@
 import random
 import unittest
 
-from sdm.core.pet_motion import (BlinkScheduler, StrokeDetector, eye_circles, gaze,
-                                 iris_offset, lid_fraction)
+from sdm.core.pet_motion import (BlinkScheduler, BlinkTimer, StrokeDetector, eye_circles, gaze,
+                                 gaze_moved, iris_offset, lid_fraction)
 
 
 def feed(detector, points):
@@ -69,6 +69,66 @@ class Blink(unittest.TestCase):
         self.assertEqual(lid_fraction(-1.0, True), 0.0)
 
 
+class FakeTimers:
+    def __init__(self):
+        self.live, self.next_id = {}, 1
+
+    def add(self, interval, callback):
+        self.live[self.next_id] = (interval, callback)
+        self.next_id += 1
+        return self.next_id - 1
+
+    def remove(self, source):
+        del self.live[source]
+
+    def fire(self):
+        """執行唯一的計時器；回呼回傳 False 時移除（與 GLib 相同）。"""
+        (source, (_, callback)), = self.live.items()
+        if not callback():
+            self.live.pop(source, None)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 50.0
+
+    def __call__(self):
+        return self.now
+
+
+class Timer(unittest.TestCase):
+    def setUp(self):
+        self.timers, self.clock, self.changes = FakeTimers(), Clock(), []
+        self.blink = BlinkTimer(lambda: self.changes.append(self.blink.lid), self.timers.add,
+                                self.timers.remove, random.Random(5), self.clock)
+
+    def test_waits_a_random_delay_then_blinks_and_reopens(self):
+        self.blink.set_running(True)
+        (delay, _), = self.timers.live.values()
+        self.assertTrue(2500 <= delay <= 6000)
+        self.timers.fire()
+        (frame, _), = self.timers.live.values()
+        self.assertGreaterEqual(frame, 84)
+        self.clock.now += 0.09
+        self.timers.fire()
+        self.assertAlmostEqual(self.blink.lid, 1.0)
+        self.clock.now += 1.0
+        self.timers.fire()
+        self.assertEqual(self.blink.lid, 0.0)
+        (next_delay, _), = self.timers.live.values()
+        self.assertTrue(2500 <= next_delay <= 6000)
+
+    def test_stopping_opens_the_eyes_and_removes_the_timer(self):
+        self.blink.set_running(True)
+        self.timers.fire()
+        self.clock.now += 0.09
+        self.timers.fire()
+        self.blink.set_running(False)
+        self.assertEqual((self.timers.live, self.blink.lid), ({}, 0.0))
+        self.blink.set_running(False)
+        self.assertFalse(self.blink.running)
+
+
 class Eyes(unittest.TestCase):
     def test_normalized_eyes_map_to_pixels(self):
         circles = eye_circles(224, 10, 20)
@@ -90,6 +150,12 @@ class Eyes(unittest.TestCase):
     def test_small_figures_use_the_minimum_range(self):
         gx, _ = gaze((0, 0), (30, 0), 20)
         self.assertAlmostEqual(gx, 0.5)
+
+    def test_tiny_gaze_changes_do_not_redraw(self):
+        self.assertFalse(gaze_moved(((0.0, 0.0),), ((0.02, 0.04),)))
+        self.assertTrue(gaze_moved(((0.0, 0.0),), ((0.05, 0.0),)))
+        self.assertTrue(gaze_moved(((0.0, 0.0),), ((0.0, 0.06),)))
+        self.assertTrue(gaze_moved((), ((0.0, 0.0),)))
 
     def test_iris_moves_further_sideways_than_up_and_down(self):
         self.assertEqual(iris_offset((1.0, -1.0), 10), (3.0, -1.6))

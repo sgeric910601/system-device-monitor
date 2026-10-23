@@ -385,7 +385,7 @@ class Companion:
     FPS = 8                         # 實際使用的格數：呼吸很慢，8 格已經夠順
     BREATH_HZ = 0.25                # 每 4 秒呼吸一次
     BREATH_SCALE = 0.02             # 以腳底為基準放大 1.00–1.02 倍
-    BOB_RATIO = 0.008               # 上下起伏：高度的 0.8%
+    BOB_RATIO = 0.008               # 起伏：身體再往上伸展高度的 0.8%（腳底不動）
     ZZZ_PERIOD = 3.0                # 每個 Z 從頭上飄起到消失的秒數
     ZZZ_COUNT = 3
     SPARK_PERIOD = 1.4              # 充電火花一閃的週期（秒）
