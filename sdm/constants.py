@@ -85,6 +85,9 @@ class CpuPower:
     ACTION_LOCAL = "tw.local.system-device-monitor.local.cpu-power"
     DEB_SERVICE_HELPER = DEB_HELPER_DIR + "/sdm-cpu-power-service"
     LOCAL_SERVICE_HELPER = LOCAL_HELPER_DIR + "/sdm-cpu-power-service"
+    PKEXEC = "/usr/bin/pkexec"
+    PKEXEC_TIMEOUT = 120        # 等待授權與小程式完成的上限（秒）
+    PROTOCOL_TIMEOUT = 5        # 「小程式 --protocol」的逾時（秒）
     DEB_SOCKET = "/run/system-device-monitor/cpu-power.sock"
     LOCAL_SOCKET = "/run/system-device-monitor/cpu-power-local.sock"
     REQUEST = b"r\n"
@@ -94,6 +97,10 @@ class CpuPower:
     IDLE_EXIT = 30.0            # 服務沒有連線多久後結束（秒）
     CLIENT_IDLE = 30.0          # 連線多久沒有請求就被關閉（秒）
     WATTS_DIGITS = 1            # 回傳的瓦數四捨五入到 0.1 W
+    SOCKET_TIMEOUT = 1.0        # 客戶端連線與讀取回應的逾時（秒）
+    MAX_REPLY_BYTES = 256
+    BACKOFF_INITIAL = 1         # 客戶端失敗後重試的等待（秒），每次加倍
+    BACKOFF_MAX = 60
 
 
 class Supply:
