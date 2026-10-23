@@ -38,10 +38,13 @@
 - 以 #!/usr/bin/python3 -IB 執行：隔離模式、不讀環境變數與使用者的 site-packages、不寫位元組碼；
   只用標準函式庫，不載入專案裡的任何模組。
 - 用法固定為 enable、disable、status 其中一個，或不需要權限的 --protocol；其他參數一律以結束碼 2 拒絕。
-- 除了 --protocol，必須以 root 執行，而且 PKEXEC_UID 必須是十進位、不是 root 或 nobody、
-  帳號存在的使用者，否則結束碼 4。
-- 只接受兩個固定的安裝位置，並依自己的位置決定單元名稱；自己、單元檔與路徑上的每一層目錄都必須
-  屬於 root 且群組與其他人不可寫，否則結束碼 3。
+- 除了 --protocol，必須以 root 執行，而且 PKEXEC_UID 必須是十進位、在 /etc/login.defs 的
+  UID_MIN～UID_MAX 範圍內（讀不到時為 1000～60000）、不是 root 或 nobody、帳號存在的使用者，
+  否則結束碼 4。
+- 執行路徑（sys.argv[0]，不做任何正規化）必須與兩個安裝位置之一一字不差；pkexec 依這個字串比對
+  exec.path，路徑寫法不同時會改用一般的 org.freedesktop.policykit.exec 動作，所以一律拒絕。
+  依位置決定單元名稱；自己、單元檔與路徑上的每一層目錄都必須屬於 root 且群組與其他人不可寫，
+  否則結束碼 3。
 - 所有目錄都從 / 逐層以 O_NOFOLLOW 開啟；drop-in 先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW）、
   fsync 後整檔取代，既有的 owner.conf 不是一般檔案時拒絕。
 - enable：寫入 drop-in（SocketUser＝PKEXEC_UID、SocketMode=0600），重新載入 systemd，

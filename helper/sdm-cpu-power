@@ -6,8 +6,9 @@
   SocketMode=0600），重新載入 systemd，停止服務、啟用並重新啟動 socket（套用新的擁有者）。
 - disable：停用並停止 socket，停止服務，刪除 drop-in，重新載入 systemd。
 - status：socket 是否啟用、是否執行中，以及 drop-in 指定的使用者。
-安全規則：除了 --protocol，一律要求以 root 執行且由 pkexec 設定 PKEXEC_UID（一般使用者帳號）；
-只接受兩個固定的安裝位置，依自己的位置決定單元名稱；路徑上每一層都必須屬於 root 且群組與
+安全規則：除了 --protocol，一律要求以 root 執行且由 pkexec 設定 PKEXEC_UID（/etc/login.defs 的
+UID_MIN～UID_MAX 範圍內、帳號存在）；執行路徑（sys.argv[0]，不做任何正規化）必須剛好是兩個固定的
+安裝位置之一，否則 pkexec 可能沒有使用本程式的 polkit 動作；依位置決定單元名稱；路徑上每一層都必須屬於 root 且群組與
 其他人不可寫，檔案以 O_NOFOLLOW 開啟；固定的 PATH，只以參數清單執行 /usr/bin/systemctl，
 從不經過 shell；標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）；
 系統日誌只記錄動作名稱與結果。只使用標準函式庫。
@@ -37,6 +38,9 @@ UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
 OWNER_PATTERN = re.compile(r"^SocketUser=([1-9][0-9]{0,9})$", re.MULTILINE)
 MAX_UID = 4294967294
 NOBODY = 65534
+LOGIN_DEFS = "/etc/login.defs"
+LOGIN_DEFS_MAX_BYTES = 65536
+DEFAULT_UID_RANGE = (1000, 60000)       # login.defs 讀不到時的一般帳號範圍
 DROPIN_PARENT = "etc/systemd/system"      # 相對於根目錄；/etc 的 drop-in 優先於套件的單元檔
 DROPIN_NAME = "owner.conf"
 DROPIN_MAX_BYTES = 4096
@@ -87,7 +91,8 @@ class Context(NamedTuple):
     run: Callable
     euid: int
     user_exists: Callable
-    helper_path: str
+    helper_path: str                    # 實際執行的路徑（sys.argv[0]），不正規化
+    uid_range: tuple = DEFAULT_UID_RANGE
 
 
 def log(message):
@@ -113,9 +118,31 @@ def user_exists(uid):
     return True
 
 
+def parse_login_defs(text):
+    """（UID_MIN、UID_MAX）；缺少或不合理的值改用預設。"""
+    values = {}
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0] in ("UID_MIN", "UID_MAX") \
+                and UID_PATTERN.fullmatch(words[1]):
+            values[words[0]] = int(words[1])
+    low = values.get("UID_MIN", DEFAULT_UID_RANGE[0])
+    high = values.get("UID_MAX", DEFAULT_UID_RANGE[1])
+    return (low, high) if 0 < low <= high <= MAX_UID else DEFAULT_UID_RANGE
+
+
+def login_uid_range(path=LOGIN_DEFS):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return parse_login_defs(handle.read(LOGIN_DEFS_MAX_BYTES))
+    except OSError:
+        return DEFAULT_UID_RANGE
+
+
 def production_context():
     return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
-                   user_exists=user_exists, helper_path=os.path.abspath(sys.argv[0]))
+                   user_exists=user_exists, helper_path=sys.argv[0],
+                   uid_range=login_uid_range())
 
 
 # ── 參數與權限 ──────────────────────────────────────────────
@@ -127,22 +154,23 @@ def parse_args(argv):
 
 
 def caller_uid(env, context):
-    """pkexec 設定的 PKEXEC_UID：十進位、不是 root 或 nobody，而且帳號存在。"""
+    """pkexec 設定的 PKEXEC_UID：十進位、在一般帳號的範圍內、不是 root 或 nobody，而且帳號存在。"""
     if context.euid != 0:
         raise NotPermitted()
     text = env.get("PKEXEC_UID", "")
     if not UID_PATTERN.fullmatch(text):
         raise NotPermitted()
     uid = int(text)
-    if uid in (0, NOBODY) or uid > MAX_UID or not context.user_exists(uid):
+    low, high = context.uid_range
+    if uid in (0, NOBODY) or not low <= uid <= high or not context.user_exists(uid):
         raise NotPermitted()
     return uid
 
 
 def layout_for(helper_path):
-    directory, name = os.path.split(helper_path)
+    """執行路徑必須與安裝位置一字不差（不接受 //、./、.. 或相對路徑）。"""
     for layout in LAYOUTS:
-        if directory == layout.helper_dir and name == HELPER_NAME:
+        if helper_path == layout.helper_dir + "/" + HELPER_NAME:
             return layout
     raise Failed("unknown-location")
 

@@ -49,9 +49,10 @@ class Base(unittest.TestCase):
         for helper in (CpuPower.DEB_HELPER, CpuPower.LOCAL_HELPER):
             self.root.file(helper.lstrip("/"), mode=0o755)
 
-    def context(self, euid=0, known=lambda uid: True, helper=None):
+    def context(self, euid=0, known=lambda uid: True, helper=None, uid_range=(1000, 60000)):
         return control.Context(root=str(self.root.path), owner=os.getuid(), run=self.runner,
-                               euid=euid, user_exists=known, helper_path=helper or self.helper)
+                               euid=euid, user_exists=known, helper_path=helper or self.helper,
+                               uid_range=uid_range)
 
     def main(self, argv, env=ENV, **options):
         return control.main(argv, dict(env), self.context(**options), emit=self.output.append,
@@ -98,6 +99,15 @@ class Permissions(Base):
     def test_unknown_user_is_refused(self):
         self.assert_refused(known=lambda uid: False)
 
+    def test_uid_must_be_a_regular_login_account(self):
+        for value in ("999", "60001", "65000", "1"):
+            with self.subTest(value=value):
+                self.assert_refused(env={"PKEXEC_UID": value})
+        self.output.clear()
+        self.assertEqual(self.main(["status"], env={"PKEXEC_UID": "60000"}), control.EXIT_OK)
+        self.assertEqual(self.main(["status"], env={"PKEXEC_UID": "600"}, uid_range=(500, 2000)),
+                         control.EXIT_OK)
+
     def test_refusals_are_logged_without_details(self):
         self.main(["status"], env={})
         self.assertEqual(self.logged, ["status not-permitted"])
@@ -107,10 +117,25 @@ class Location(Base):
     def test_unknown_helper_location_fails(self):
         for helper in ("/tmp/sdm-cpu-power", "/usr/libexec/system-device-monitor/other",
                        "/usr/libexec/system-device-monitor/../x/sdm-cpu-power",
-                       "usr/libexec/system-device-monitor/sdm-cpu-power"):
+                       "usr/libexec/system-device-monitor/sdm-cpu-power",
+                       "/usr/libexec//system-device-monitor/sdm-cpu-power",
+                       "//usr/libexec/system-device-monitor/sdm-cpu-power",
+                       "/usr/libexec/system-device-monitor/./sdm-cpu-power",
+                       "/usr/../usr/libexec/system-device-monitor/sdm-cpu-power",
+                       "/usr/libexec/system-device-monitor/sdm-cpu-power/",
+                       "./sdm-cpu-power", "sdm-cpu-power"):
             with self.subTest(helper=helper):
                 self.assertEqual(self.main(["status"], helper=helper), control.EXIT_FAILED)
         self.assertEqual(self.runner.calls, [])
+
+    def test_production_context_keeps_the_path_exactly_as_executed(self):
+        original = control.sys.argv
+        odd = "/usr/libexec/system-device-monitor/./sdm-cpu-power"
+        control.sys.argv = [odd, "status"]
+        try:
+            self.assertEqual(control.production_context().helper_path, odd)
+        finally:
+            control.sys.argv = original
 
     def test_layouts(self):
         deb = control.layout_for(CpuPower.DEB_HELPER)
@@ -254,6 +279,26 @@ class Status(Base):
         self.root.file(DROPIN, "[Socket]\nSocketUser=root;x\n")
         self.main(["status"])
         self.assertIsNone(self.output[0]["owner_uid"])
+
+
+class LoginDefs(unittest.TestCase):
+    def test_uid_range_from_login_defs(self):
+        cases = {
+            "UID_MIN\t\t\t 1000\nUID_MAX\t\t\t60000\n": (1000, 60000),
+            "# comment\nUID_MIN 500\nUID_MAX 2000 # trailing\n": (500, 2000),
+            "UID_MIN 1500\n": (1500, 60000),
+            "": (1000, 60000),
+            "UID_MIN abc\nUID_MAX 2000\n": (1000, 2000),
+            "UID_MIN 3000\nUID_MAX 2000\n": (1000, 60000),
+            "UID_MIN 0\nUID_MAX 2000\n": (1000, 2000),
+            "SYS_UID_MIN 100\nUID_MAX 70000\n": (1000, 70000),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(control.parse_login_defs(text), expected)
+
+    def test_unreadable_login_defs_use_the_defaults(self):
+        self.assertEqual(control.login_uid_range("/nonexistent/login.defs"), (1000, 60000))
 
 
 class Commands(unittest.TestCase):
