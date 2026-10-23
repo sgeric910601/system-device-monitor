@@ -6,6 +6,8 @@
   之後再打開不會立刻補發。
 - record_only：啟動後第一次評估，以及偵測到喚醒（兩次取樣相隔超過 2 分鐘，含睡眠時間）
   後的那一次，只記錄目前狀態、不通知；登入或喚醒時不會跳出「充電完成」或「改用電池」。
+  記錄的規則與平常相同：在門檻上就算已通知，離開遲滯區間才重新啟用，仍在區間內（例如低電量
+  門檻 20% 時的 21–22%）就維持原本的狀態，喚醒後不會因為少記一次而再通知。
 - 低電量：正在放電（或接著電源但電池仍在放電）且電量 ≤ 門檻時通知；
   不再放電或電量回到門檻＋2% 以上才重新啟用。
 - 充飽：接著電源且電量 ≥ 門檻（或已達充電上限），而且這次接上電源後看過「充電中」才通知；
@@ -99,11 +101,10 @@ def step_full(fired, saw_charging, reading, prefs):
 def evaluate_laptop(state, reading, prefs, record_only=False):
     """prefs 需要 low_alert_enabled、low_threshold、full_alert_enabled、full_threshold。"""
     saw = (state.saw_charging and reading.plugged) or reading.charging
-    if record_only:
-        return LaptopAlertState(low_now(reading, prefs), full_now(reading, prefs), saw), ()
     low_fired, low = step_low(state.low_fired, reading, prefs)
     full_fired, full = step_full(state.full_fired, saw, reading, prefs)
-    return LaptopAlertState(low_fired, full_fired, saw), low + full
+    alerts = () if record_only else low + full
+    return LaptopAlertState(low_fired, full_fired, saw), alerts
 
 
 @dataclass(frozen=True)
@@ -156,11 +157,11 @@ def on_mains(state, reading, prefs, record_only):
 
 
 def comm_lost(state, prefs, record_only):
-    if record_only:
-        return replace(state, comm_fired=True), ()
+    """通訊中斷：連續用電池的計數重來；曾經通訊正常才通知（只記錄時也只在那時標記）。"""
+    state = replace(state, battery_samples=0)
     if not state.seen or state.comm_fired:
         return state, ()
-    alerts = (messages.ups_comm_lost(),) if prefs.ups_alerts_enabled else ()
+    alerts = () if record_only or not prefs.ups_alerts_enabled else (messages.ups_comm_lost(),)
     return replace(state, comm_fired=True), alerts
 
 

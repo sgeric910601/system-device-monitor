@@ -157,6 +157,23 @@ class Priming(unittest.TestCase):
         gate, _ = pass_gate(Gate(), 500.0)
         self.assertTrue(pass_gate(gate, 400.0)[1])
 
+    def test_resume_inside_the_band_keeps_the_low_alert_spent(self):
+        fired = LaptopAlertState(low_fired=True)
+        for percent in (21, 22):                       # 門檻 20：21–22 還不算回升
+            state, _ = evaluate_laptop(fired, at(DRAINING, percent), PREFS, record_only=True)
+            self.assertTrue(state.low_fired)
+            self.assertEqual(evaluate_laptop(state, at(DRAINING, 20), PREFS)[1], ())
+        state, _ = evaluate_laptop(fired, at(DRAINING, 23), PREFS, record_only=True)
+        self.assertFalse(state.low_fired)
+
+    def test_resume_inside_the_band_keeps_the_full_alert_spent(self):
+        fired = LaptopAlertState(full_fired=True, saw_charging=True)
+        state, _ = evaluate_laptop(fired, at(CHARGING, 96), PREFS, record_only=True)
+        self.assertTrue(state.full_fired)
+        self.assertEqual(evaluate_laptop(state, at(CHARGING, 100), PREFS)[1], ())
+        state, _ = evaluate_laptop(fired, at(CHARGING, 94), PREFS, record_only=True)
+        self.assertFalse(state.full_fired)
+
     def test_resume_while_low_does_not_fire(self):
         run = LaptopRun(first=at(DRAINING, 40))
         self.assertEqual(run(at(DRAINING, 12), record_only=True), [])
@@ -259,6 +276,21 @@ class UpsAlerts(unittest.TestCase):
         self.assertEqual(run(ups("COMMLOST")), [])
         self.assertEqual(run(ups()), [])
         self.assertEqual(run(ups("COMMLOST")), ["不斷電系統通訊中斷"])
+
+    def test_communication_lost_breaks_the_on_battery_streak(self):
+        run = UpsRun()
+        run(ups("ONBATT"))
+        self.assertEqual(run(ups("COMMLOST")), ["不斷電系統通訊中斷"])
+        self.assertEqual(run.state.battery_samples, 0)
+        self.assertEqual(run(ups("ONBATT")), [])
+        self.assertEqual(run(ups("ONBATT")), ["不斷電系統改用電池供電"])
+
+    def test_priming_marks_lost_communication_only_if_it_was_seen(self):
+        state, _ = evaluate_ups(UpsAlertState(), ups("COMMLOST"), PREFS, record_only=True)
+        self.assertFalse(state.comm_fired)
+        state, _ = evaluate_ups(UpsAlertState(seen=True), ups("COMMLOST"), PREFS,
+                                record_only=True)
+        self.assertTrue(state.comm_fired)
 
     def test_communication_lost_before_it_was_ever_seen_is_quiet(self):
         run = UpsRun(first=ups("COMMLOST"))
