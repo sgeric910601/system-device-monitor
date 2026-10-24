@@ -153,6 +153,30 @@ class ChargeLimit:
     CONFLICT_TIMEOUT = 3        # 偵測衝突程式時 systemctl is-active 的逾時（秒）
 
 
+class Update:
+    """一鍵更新：GitHub Releases、發布簽章的公鑰、檢查排程與下載上限。
+
+    PUBLIC_KEYS 是維護者發布金鑰的 Ed25519 公鑰（32 位元組原始公鑰的 base64），可以同時列好幾把
+    （換金鑰時新舊並存）；任何一把驗證通過即可。空的時候一律拒絕安裝更新。
+    helper/sdm-update 以 root 執行、不載入本套件，所以保留同樣的值；tests/test_update_helper 確認一致。
+    """
+    PUBLIC_KEYS = ()
+    PACKAGE = "system-device-monitor"
+    REPOSITORY = "sgeric910601/system-device-monitor"
+    RELEASES_API = "https://api.github.com/repos/" + REPOSITORY + "/releases?per_page=20"
+    RELEASES_PAGE = "https://github.com/" + REPOSITORY + "/releases"
+    TRUSTED_HOSTS = ("github.com", "api.github.com")
+    TRUSTED_SUFFIX = ".githubusercontent.com"   # 下載連結轉址到的主機（只接受子網域）
+    HTTPS_PORT = 443
+    CHECKSUMS = "SHA256SUMS"
+    SIGNATURE = "SHA256SUMS.sig"
+    UPLOADED = "uploaded"                       # GitHub 的資產狀態：上傳完成
+    VERSION_PARTS = 3                           # .deb 版本固定為「主.次.修訂」
+    MAX_NUMBER_DIGITS = 9                       # 版本號每一段最多 9 位數
+    NOTES_MAX_CHARS = 600                       # 設定視窗顯示的更新內容摘要
+    NOTES_MAX_LINES = 12
+
+
 class Supply:
     """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
     TYPE_BATTERY = "Battery"

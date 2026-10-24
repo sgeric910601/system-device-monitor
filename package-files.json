@@ -43,6 +43,7 @@
     "sdm/core/sprite_motion.py",
     "sdm/core/thermal.py",
     "sdm/core/tiers.py",
+    "sdm/core/update_logic.py",
     "sdm/data/__init__.py",
     "sdm/data/cgroups.py",
     "sdm/data/charge_conflicts.py",
@@ -336,6 +337,7 @@
     "sdm/core/sprite_motion.py",
     "sdm/core/thermal.py",
     "sdm/core/tiers.py",
+    "sdm/core/update_logic.py",
     "sdm/data/__init__.py",
     "sdm/data/cgroups.py",
     "sdm/data/charge_conflicts.py",
@@ -583,6 +585,7 @@
     "tests/test_tray_text.py",
     "tests/test_udisks.py",
     "tests/test_ui_state.py",
+    "tests/test_update_logic.py",
     "tests/test_upower.py",
     "tests/test_ups.py",
     "tests/test_widgets.py"
