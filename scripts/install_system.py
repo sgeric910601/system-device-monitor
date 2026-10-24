@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""安裝或移除原始碼資料夾的 CPU 功耗取樣元件（由 install.py 經 pkexec 以 root 執行）。
+"""安裝或移除原始碼資料夾的管理員元件：CPU 功耗取樣與充電上限（由 install.py 經 pkexec 以 root 執行）。
 
 用法：pkexec /usr/bin/python3 -I -B -c <啟動碼> <暫存>/scripts/install_system.py <本檔的 SHA-256>
       install｜remove --stage <暫存> --manifest-sha256 <64 位小寫十六進位>
@@ -12,10 +12,13 @@
   每個檔案以 O_NOFOLLOW 逐層開啟、讀進記憶體並比對雜湊，全部通過後才開始寫入。
   寫入位置與權限固定寫在這裡（/usr/local/libexec、/usr/local/share/polkit-1/actions、
   /etc/systemd/system），路徑上每一層都必須屬於 root 且群組與其他人不可寫，
-  先寫暫存檔再整檔取代。之後重新載入 systemd；只有 socket 原本已啟用時才重新啟動它。
+  先寫暫存檔再整檔取代。之後重新載入 systemd；只有 socket 原本已啟用時才重新啟動它
+  （充電上限的單元只在使用者選擇保留時由 sdm-charge-limit 啟用，這裡不啟用）。
   已安裝 .deb 套件時拒絕（兩者擇一）。
-- remove：停用並停止 socket 與服務，只刪除 FILES 列出的檔案、drop-in 與 sockets.target.wants
-  的符號連結；目錄裡還有其他檔案時保留目錄。
+- remove：停用並停止 socket 與服務、停用充電上限的單元，只刪除 FILES 列出的檔案、drop-in、
+  sockets.target.wants 與 multi-user／sleep.target.wants 的符號連結，以及原始碼版保留的
+  充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）；目錄裡還有其他檔案時
+  保留目錄。
 標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）。
 只使用標準函式庫，不載入專案裡的任何模組。
 """
@@ -43,17 +46,27 @@ HELPER_DIR = "usr/local/libexec/system-device-monitor"
 UNIT_DIR = "etc/systemd/system"
 SOCKET = "system-device-monitor-local-cpu-power.socket"
 SERVICE = "system-device-monitor-local-cpu-power.service"
+LIMIT_UNIT = "system-device-monitor-local-charge-limit.service"
+LIMIT_POLICY = "tw.local.system-device-monitor.unattended.local.charge-limit.policy"
+POLICY_DIR = "usr/local/share/polkit-1/actions"
 FILES = (           # （暫存目錄中的來源、相對於根目錄的位置、權限）
     ("helper/sdm-cpu-power", HELPER_DIR + "/sdm-cpu-power", 0o755),
     ("helper/sdm-cpu-power-service", HELPER_DIR + "/sdm-cpu-power-service", 0o755),
     ("helper/policy/tw.local.system-device-monitor.local.policy",
-     "usr/local/share/polkit-1/actions/tw.local.system-device-monitor.local.policy", 0o644),
+     POLICY_DIR + "/tw.local.system-device-monitor.local.policy", 0o644),
     ("helper/systemd/" + SOCKET, UNIT_DIR + "/" + SOCKET, 0o644),
     ("helper/systemd/" + SERVICE, UNIT_DIR + "/" + SERVICE, 0o644),
+    ("helper/sdm-charge-limit", HELPER_DIR + "/sdm-charge-limit", 0o755),
+    ("helper/policy/" + LIMIT_POLICY, POLICY_DIR + "/" + LIMIT_POLICY, 0o644),
+    ("helper/systemd/" + LIMIT_UNIT, UNIT_DIR + "/" + LIMIT_UNIT, 0o644),
 )
 DROPIN_DIR = UNIT_DIR + "/" + SOCKET + ".d"
 DROPIN_NAME = "owner.conf"
 WANTS_DIR = UNIT_DIR + "/sockets.target.wants"
+LIMIT_WANTS = tuple(f"{UNIT_DIR}/{target}.wants/{LIMIT_UNIT}"
+                    for target in ("multi-user.target", "sleep.target"))
+STATE_DIR = "var/lib/system-device-monitor"
+LIMIT_STATE = STATE_DIR + "/charge-limit-local.json"     # 只刪除原始碼版自己的狀態檔
 PACKAGE = "system-device-monitor"
 NOT_INSTALLED = ("not-installed", "config-files")
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -345,11 +358,15 @@ def remove(context, stage, digest, uid):
     read_stage(stage, digest, uid, context.lstat)
     systemctl(context, "disable", "--now", SOCKET)      # 尚未安裝或已移除時失敗也沒關係
     systemctl(context, "stop", SERVICE)
+    systemctl(context, "disable", LIMIT_UNIT)
     for _, target, _ in FILES:
         remove_entry(context, target)
     remove_entry(context, DROPIN_DIR + "/" + DROPIN_NAME)
     remove_empty_directory(context, DROPIN_DIR)
-    remove_entry(context, WANTS_DIR + "/" + SOCKET, allowed=(stat.S_IFLNK,))
+    for link in (WANTS_DIR + "/" + SOCKET, *LIMIT_WANTS):
+        remove_entry(context, link, allowed=(stat.S_IFLNK,))
+    remove_entry(context, LIMIT_STATE)
+    remove_empty_directory(context, STATE_DIR)
     remove_empty_directory(context, HELPER_DIR)
     systemctl(context, "daemon-reload")
     return {"ok": True, "action": "remove"}

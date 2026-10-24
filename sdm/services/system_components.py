@@ -1,4 +1,5 @@
-"""原始碼資料夾的管理員元件：install.py --system-components install｜remove 的使用者端。
+"""原始碼資料夾的管理員元件（CPU 功耗取樣與充電上限）：install.py --system-components
+install｜remove 的使用者端。
 
 以一般使用者執行（不需要、也不接受 sudo）：
 1. 原始碼資料夾與 git 目錄（含上層）只能由使用者或 root 寫入（見 install_guard）；
@@ -37,6 +38,9 @@ SOURCES = (
     "helper/policy/tw.local.system-device-monitor.local.policy",
     "helper/systemd/system-device-monitor-local-cpu-power.socket",
     "helper/systemd/system-device-monitor-local-cpu-power.service",
+    "helper/sdm-charge-limit",
+    "helper/policy/tw.local.system-device-monitor.unattended.local.charge-limit.policy",
+    "helper/systemd/system-device-monitor-local-charge-limit.service",
 )
 INSTALLER = "scripts/install_system.py"
 STAGED = SOURCES + (INSTALLER,)
@@ -65,7 +69,8 @@ PRIVATE_DIRECTORY = 0o700
 PRIVATE_FILE = 0o600
 REFUSED = 1                     # 使用者端拒絕或無法執行時的結束碼
 UNAUTHORIZED = (126, 127)       # pkexec：取消授權、未授權或驗證失敗
-DONE = {"install": "已安裝管理員元件。要開啟 CPU 功耗取樣：設定 → 管理員功能。",
+DONE = {"install": ("已安裝管理員元件。要開啟 CPU 功耗取樣：設定 → 管理員功能；"
+                    "筆電的充電上限在「電源」頁調整。"),
         "remove": "已移除管理員元件。"}
 FAILURES = {
     2: "安裝程式的參數錯誤，沒有做任何變更。",

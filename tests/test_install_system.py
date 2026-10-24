@@ -12,20 +12,27 @@ import threading
 from types import SimpleNamespace
 import unittest
 
-from sdm.constants import CpuPower
+from sdm.constants import ChargeLimit, CpuPower
 from tests.fixtures.fakeroot import FakeRoot
 from tests.fixtures.helpers import ROOT, load_helper, load_script
 
 installer = load_script("install_system")
 control = load_helper("sdm-cpu-power")
+limit = load_helper("sdm-charge-limit")
 SOCKET = "system-device-monitor-local-cpu-power.socket"
 SERVICE = "system-device-monitor-local-cpu-power.service"
+LIMIT_UNIT = "system-device-monitor-local-charge-limit.service"
+LIMIT_POLICY = "tw.local.system-device-monitor.unattended.local.charge-limit.policy"
+LIMIT_STATE = "var/lib/system-device-monitor/charge-limit-local.json"
 TARGETS = {
     "usr/local/libexec/system-device-monitor/sdm-cpu-power": 0o755,
     "usr/local/libexec/system-device-monitor/sdm-cpu-power-service": 0o755,
     "usr/local/share/polkit-1/actions/tw.local.system-device-monitor.local.policy": 0o644,
     "etc/systemd/system/" + SOCKET: 0o644,
     "etc/systemd/system/" + SERVICE: 0o644,
+    "usr/local/libexec/system-device-monitor/sdm-charge-limit": 0o755,
+    "usr/local/share/polkit-1/actions/" + LIMIT_POLICY: 0o644,
+    "etc/systemd/system/" + LIMIT_UNIT: 0o644,
 }
 SYSTEMCTL = "/usr/bin/systemctl"
 DPKG_QUERY = "/usr/bin/dpkg-query"
@@ -295,7 +302,30 @@ class Remove(Base):
                                                   for path in keep))
         self.assertFalse((self.root.path/"usr/local/libexec/system-device-monitor").exists())
         self.assertEqual(self.systemctl_calls(), [("disable", "--now", SOCKET), ("stop", SERVICE),
-                                                  ("daemon-reload",)])
+                                                  ("disable", LIMIT_UNIT), ("daemon-reload",)])
+
+    def test_removes_the_charge_limit_links_and_its_own_state(self):
+        links = [self.root.directory("etc/systemd/system/" + target + ".wants")/LIMIT_UNIT
+                 for target in ("multi-user.target", "sleep.target")]
+        for link in links:
+            link.symlink_to("/etc/systemd/system/" + LIMIT_UNIT)
+        self.root.file(LIMIT_STATE, "{}\n")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertFalse(any(os.path.lexists(link) for link in links))
+        self.assertFalse((self.root.path/"var/lib/system-device-monitor").exists())
+        self.assertTrue((self.root.path/"var/lib").is_dir())
+
+    def test_keeps_the_package_state_file(self):
+        self.root.file(LIMIT_STATE, "{}\n")
+        package = self.root.file("var/lib/system-device-monitor/charge-limit.json", "{}\n")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertFalse((self.root.path/LIMIT_STATE).exists())
+        self.assertTrue(package.exists())
+
+    def test_state_that_is_a_directory_is_left_alone(self):
+        self.root.directory(LIMIT_STATE)
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertTrue((self.root.path/LIMIT_STATE).is_dir())
 
     def test_keeps_the_helper_directory_when_it_holds_other_files(self):
         other = self.root.file("usr/local/libexec/system-device-monitor/notes.txt")
@@ -351,6 +381,10 @@ class Consistency(unittest.TestCase):
         self.assertEqual((installer.SOCKET, installer.SERVICE), (local.socket, local.service))
         self.assertEqual({target: mode for _, target, mode in installer.FILES}, TARGETS)
         self.assertEqual("/" + installer.HELPER_DIR, CpuPower.LOCAL_HELPER_DIR)
+        local_limit = limit.layout_for(ChargeLimit.LOCAL_HELPER)
+        self.assertEqual(installer.LIMIT_UNIT, local_limit.unit)
+        self.assertEqual("/" + installer.LIMIT_STATE, ChargeLimit.LOCAL_STATE)
+        self.assertEqual(installer.LIMIT_STATE, limit.STATE_DIR + "/" + local_limit.state)
 
     def test_sources_exist_and_are_public(self):
         manifest = json.loads((ROOT/"package-files.json").read_text(encoding="utf-8"))
