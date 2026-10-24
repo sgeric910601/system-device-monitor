@@ -3,7 +3,8 @@ import unittest
 
 import cairo
 
-from sdm.ui.pet import DesktopPet, is_x11
+from sdm.core.companion import BUSY, CHARGING_MOOD, IDLE, CompanionState
+from sdm.ui.pet import DesktopPet, is_x11, shape_key
 
 
 class Clear(unittest.TestCase):
@@ -23,6 +24,23 @@ class Clear(unittest.TestCase):
         cr.paint()
         surface.flush()
         self.assertNotEqual(bytes(surface.get_data())[:4], bytes(4))
+
+
+class Shape(unittest.TestCase):
+    """點擊範圍依圖案的透明度：任何會改變外形的東西都要重算。"""
+
+    def test_mood_level_and_charging_change_the_shape(self):
+        base = shape_key("buddy", CompanionState(IDLE, 0.5), 0)
+        for state in (CompanionState(BUSY, 0.5), CompanionState(IDLE, 0.6),
+                      CompanionState(CHARGING_MOOD, 0.5, on_pad=True)):
+            with self.subTest(state=state):
+                self.assertNotEqual(shape_key("buddy", state, 0), base)
+
+    def test_photo_version_matters_only_for_my_photo(self):
+        state = CompanionState(IDLE, 0.5)
+        self.assertNotEqual(shape_key("photo", state, 1), shape_key("photo", state, 2))
+        self.assertEqual(shape_key("cat", state, 1), shape_key("cat", state, 2))
+        self.assertNotEqual(shape_key("cat", state, 1), shape_key("headshot", state, 1))
 
 
 class Session(unittest.TestCase):

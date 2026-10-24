@@ -21,6 +21,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from sdm.constants import Companion, Pet
+from sdm.core.companion import PHOTO
 from sdm.core.pet_geometry import (Rect, bubble_origin, default_position, is_drag,
                                    keep_on_screen, pet_size, resized_origin)
 from sdm.core.pet_motion import StrokeDetector, hearts, hearts_done, next_saying
@@ -55,6 +56,12 @@ class PetHost(NamedTuple):
     open_settings: Callable[[], None]
 
 
+def shape_key(appearance, state, photo_version):
+    """會改變圖案外形（透明度）的東西：外觀、表情與電量（嘴巴、電量環、充電墊），以及我的照片。
+    眼睛與動畫不算（點擊範圍以靜態圖計算）。"""
+    return appearance, state, photo_version if appearance == PHOTO else None
+
+
 def is_x11(display):
     return "X11" in type(display).__name__
 
@@ -69,17 +76,20 @@ def heart_path(cr, x, y, size):
 
 
 class PetView(CompanionView):
-    """桌面寵物的圖案：再加上被摸時冒出的愛心；外觀改變時通知重算輸入範圍。"""
+    """桌面寵物的圖案：再加上被摸時冒出的愛心；外形可能改變時通知重算輸入範圍。"""
 
     def __init__(self, photos, images, shape_changed):
         super().__init__(photos, images, pet=True)
         self.shape_changed = shape_changed
         self.hearts_start, self.hearts_source = None, None
 
+    def current_shape(self):
+        return shape_key(self.appearance, self.state, self.photos.version)
+
     def configure(self, appearance=None, state=None, live_eyes=None, follow_cursor=None):
-        before = (self.appearance, self.state.on_pad)
+        before = self.current_shape()
         super().configure(appearance, state, live_eyes, follow_cursor)
-        if (self.appearance, self.state.on_pad) != before:
+        if self.current_shape() != before:
             self.shape_changed()
 
     def burst(self):
