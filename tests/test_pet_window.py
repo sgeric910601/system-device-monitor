@@ -4,7 +4,8 @@ import unittest
 import cairo
 
 from sdm.core.companion import BUSY, CHARGING_MOOD, IDLE, CompanionState
-from sdm.ui.pet import DesktopPet, is_x11, shape_key
+from sdm.core.pet_geometry import Rect
+from sdm.ui.pet import DesktopPet, is_x11, monitor_rects, shape_key
 
 
 class Clear(unittest.TestCase):
@@ -41,6 +42,41 @@ class Shape(unittest.TestCase):
         self.assertNotEqual(shape_key("photo", state, 1), shape_key("photo", state, 2))
         self.assertEqual(shape_key("cat", state, 1), shape_key("cat", state, 2))
         self.assertNotEqual(shape_key("cat", state, 1), shape_key("headshot", state, 1))
+
+
+class Box:
+    def __init__(self, x, y, width, height):
+        self.x, self.y, self.width, self.height = x, y, width, height
+
+
+class FakeMonitor:
+    def __init__(self, geometry, workarea):
+        self.geometry, self.workarea = geometry, workarea
+
+    def get_geometry(self):
+        return self.geometry
+
+    def get_workarea(self):
+        return self.workarea
+
+
+class FakeDisplay:
+    def __init__(self, monitors):
+        self.monitors = monitors
+
+    def get_n_monitors(self):
+        return len(self.monitors)
+
+    def get_monitor(self, index):
+        return self.monitors[index]
+
+
+class Monitors(unittest.TestCase):
+    def test_work_areas_are_used_not_the_full_screens(self):
+        display = FakeDisplay([FakeMonitor(Box(0, 0, 1920, 1080), Box(0, 32, 1920, 1048)),
+                               FakeMonitor(Box(1920, 0, 2560, 1440), Box(1920, 0, 2560, 1400))])
+        self.assertEqual(monitor_rects(display), [Rect(0, 32, 1920, 1048),
+                                                  Rect(1920, 0, 2560, 1400)])
 
 
 class Session(unittest.TestCase):

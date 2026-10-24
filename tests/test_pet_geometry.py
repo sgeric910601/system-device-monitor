@@ -2,9 +2,9 @@
 import math
 import unittest
 
-from sdm.core.pet_geometry import (Rect, bubble_origin, clamp_scale, default_position, is_drag,
-                                   keep_on_screen, pet_size, preset_title, resized_origin,
-                                   size_presets)
+from sdm.core.pet_geometry import (Rect, best_monitor, bubble_origin, clamp_scale,
+                                   default_position, is_drag, keep_on_screen, pet_size,
+                                   preset_title, resized_origin, size_presets)
 
 SINGLE = (Rect(0, 0, 1920, 1080),)
 DUAL = (Rect(0, 0, 1920, 1080), Rect(1920, 0, 2560, 1440))
@@ -55,6 +55,19 @@ class OnScreen(unittest.TestCase):
     def test_gap_beside_a_shorter_monitor_uses_the_monitor_with_most_overlap(self):
         x, y = keep_on_screen(Rect(1850, 1050, 176, 176), DUAL, (0, 0))
         self.assertEqual((x, y), (1850, 1050))
+
+    def test_equal_overlap_prefers_the_monitor_under_the_centre(self):
+        left, right = Rect(0, 0, 1920, 1080), Rect(1920, 0, 1920, 1080)
+        straddling = Rect(1832, 100, 176, 176)
+        self.assertEqual(best_monitor(straddling, (left, right)), 1)
+        self.assertEqual(best_monitor(straddling, (right, left)), 0)
+        self.assertEqual(best_monitor(Rect(1831, 100, 176, 176), (left, right)), 0)
+        self.assertIsNone(best_monitor(Rect(5000, 0, 10, 10), (left, right)))
+
+    def test_work_area_keeps_the_pet_off_the_top_bar(self):
+        work = (Rect(0, 32, 1920, 1048),)
+        self.assertEqual(keep_on_screen(Rect(100, 1060, 176, 176), work, (0, 0)), (100, 1032))
+        self.assertEqual(keep_on_screen(Rect(100, -100, 176, 176), work, (0, 0)), (100, -96))
 
     def test_no_monitors_uses_the_default(self):
         self.assertEqual(keep_on_screen(Rect(10, 10, 176, 176), (), (5, 6)), (5, 6))

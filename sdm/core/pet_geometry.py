@@ -3,7 +3,8 @@
 - 大小：100% 時邊長 176 px（和日曆小工具差不多），範圍 50%–200%；設定與右鍵選單提供
   小、標準、大、特大四個選項。
 - 位置：可以放在任何螢幕的任何地方，也可以有一部分超出螢幕，只確保至少留
-  48 px（寵物比 96 px 小時留一半寬度）在重疊最多的那個螢幕上找得到；
+  48 px（寵物比 96 px 小時留一半寬度）在重疊最多的那個螢幕的工作區裡找得到
+  （重疊一樣多時以寵物中心所在的螢幕為準）；
   完全不在任何螢幕上時回到預設位置（主螢幕工作區右下角）。改大小時腳底的位置不動。
 - 對話框貼在寵物頭上，上面空間不夠時改到下方。
 """
@@ -53,13 +54,26 @@ def _overlap(a, b):
     return width * height if width > 0 and height > 0 else 0
 
 
+def _contains(monitor, x, y):
+    return monitor.x <= x < monitor.x + monitor.width and monitor.y <= y < monitor.y + monitor.height
+
+
+def best_monitor(rect, monitors):
+    """重疊面積最大的螢幕索引；面積相同時選寵物中心所在的螢幕。完全不重疊時為 None。"""
+    cx, cy = rect.x + rect.width / 2, rect.y + rect.height / 2
+    scored = [(_overlap(rect, monitor), _contains(monitor, cx, cy), index)
+              for index, monitor in enumerate(monitors)]
+    area, _, index = max(scored, key=lambda item: item[:2], default=(0, False, None))
+    return index if area > 0 else None
+
+
 def keep_on_screen(rect, monitors, default):
-    """回傳調整後的（x, y）。monitors 為各螢幕的範圍；default 為找不到螢幕時的位置。"""
-    areas = [(_overlap(rect, monitor), index) for index, monitor in enumerate(monitors)]
-    best = max(areas, default=(0, None))
-    if best[0] <= 0:
+    """回傳調整後的（x, y）。monitors 為各螢幕的工作區（扣掉頂端列與 Dock）；
+    default 為找不到螢幕時的位置。"""
+    index = best_monitor(rect, monitors)
+    if index is None:
         return default
-    monitor = monitors[best[1]]
+    monitor = monitors[index]
     keep = min(Pet.KEEP_VISIBLE, rect.width / 2)
     x = min(max(rect.x, monitor.x - rect.width + keep), monitor.x + monitor.width - keep)
     y = min(max(rect.y, monitor.y - rect.height + keep), monitor.y + monitor.height - keep)

@@ -177,9 +177,7 @@ class DesktopPet:
     # 顯示、位置與大小
 
     def monitors(self):
-        display = self.window.get_display()
-        return [Rect(*rectangle(display.get_monitor(index).get_geometry()))
-                for index in range(display.get_n_monitors())]
+        return monitor_rects(self.window.get_display())
 
     def workarea(self, point=None):
         display = self.window.get_display()
@@ -373,6 +371,12 @@ class DesktopPet:
                         self.host.open_power, self.host.open_settings)
         menu.attach_to_widget(self.window, None)
         menu.popup_at_pointer(event)
+
+
+def monitor_rects(display):
+    """每個螢幕的工作區（扣掉頂端列與 Dock）。"""
+    return [Rect(*rectangle(display.get_monitor(index).get_workarea()))
+            for index in range(display.get_n_monitors())]
 
 
 def rectangle(gdk_rectangle):
