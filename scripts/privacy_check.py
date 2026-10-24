@@ -2,6 +2,7 @@
 """Check public file lists and private-data patterns without printing values."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -15,12 +16,16 @@ PATTERNS = {
     "personal home path": re.compile(rb"/(?:home|Users)/[A-Za-z0-9_.-]+"),
     "private mount path": re.compile(rb"/mnt/[A-Za-z0-9_.-]+/"),
     "MAC address": re.compile(rb"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f])"),
-    "private key": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
+    "private key": re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"),
 }
 EMAIL = re.compile(rb"[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BLOCKED = {"settings.json", "preferences.json", "device-aliases.json", "config.json", "credentials.json",
            "dependency-status", "smoke.json"}
 BLOCKED_SUFFIXES = {".png", ".jpg", ".jpeg", ".log", ".key", ".pem", ".p12", ".pfx", ".bak", ".pyc"}
+# 專案資料夾裡（含 .gitignore 忽略的檔案）不能有私鑰：發布簽章的私鑰只放在專案以外
+KEY_SUFFIXES = {".pem", ".key", ".p12", ".pfx"}
+MAX_SCAN_BYTES = 64 * 1024
+SKIPPED_FOLDERS = {".git", "__pycache__"}      # git 歷史另由 gitleaks 掃描；位元組碼不會發布
 # 公開的 PNG 只能放在 assets/ 底下並列在清單中；解包的產物只允許清單中的檔案出現在已知的位置
 ASSETS = "assets"
 PACKAGE_APP = "usr/share/system-device-monitor/"
@@ -68,6 +73,25 @@ def findings(path, png_allowed=False):
             break
     return issues
 
+def stray_private_keys(root):
+    """專案資料夾裡（.git 與 __pycache__ 以外，不跟隨符號連結）副檔名像私鑰、或開頭含私鑰標頭的檔案。"""
+    found = []
+    for directory, folders, names in os.walk(root):
+        folders[:] = sorted(name for name in folders if name not in SKIPPED_FOLDERS)
+        for name in names:
+            path = Path(directory)/name
+            if path.suffix in KEY_SUFFIXES or (not path.is_symlink() and path.is_file()
+                                               and has_private_key(path)):
+                found.append(path.relative_to(root).as_posix())
+    return sorted(found)
+
+def has_private_key(path):
+    try:
+        with open(path, "rb") as handle:
+            return bool(PATTERNS["private key"].search(handle.read(MAX_SCAN_BYTES)))
+    except OSError:
+        return False
+
 def packaged_sources(manifest):
     """system 與 maintainer 條目引用的來源檔。"""
     system = manifest.get("system", [])
@@ -112,6 +136,8 @@ def main():
                 errors.append((name, "missing or unsafe file"))
             else:
                 files.append(p)
+        errors.extend((name, "private key file in the project folder")
+                      for name in stray_private_keys(ROOT))
         if (ROOT/".git").exists():
             tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT).decode().split("\0")
             errors.extend((name, "tracked file not in public allowlist") for name in tracked if name and name not in names)

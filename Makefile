@@ -12,5 +12,6 @@ deb:
 	$(PYTHON) -B scripts/build_deb.py
 source:
 	$(PYTHON) -B scripts/release_assets.py --source-only
+# 發布簽章：make release-assets SIGNING_KEY=<專案以外的私鑰>（或設定 SDM_RELEASE_SIGNING_KEY）
 release-assets: deb
-	$(PYTHON) -B scripts/release_assets.py
+	$(PYTHON) -B scripts/release_assets.py $(if $(SIGNING_KEY),--signing-key "$(SIGNING_KEY)")
