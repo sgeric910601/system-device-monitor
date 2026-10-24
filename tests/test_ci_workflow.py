@@ -5,6 +5,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT/".github/workflows/ci.yml").read_text(encoding="utf-8")
 HELPER = "/usr/libexec/system-device-monitor/sdm-cpu-power"
+LIMIT = "/usr/libexec/system-device-monitor/sdm-charge-limit"
 
 
 class Workflow(unittest.TestCase):
@@ -47,6 +48,46 @@ class Workflow(unittest.TestCase):
                      "/usr/share/polkit-1/actions/tw.local.system-device-monitor.policy"):
             self.assertIn(f"test ! -e {path}", WORKFLOW)
 
+
+
+class ChargeLimit(unittest.TestCase):
+    """充電上限的小程式、polkit 動作與重新套用的單元：沒有電池的執行器上也要檢查得到的部分。"""
+
+    def test_modes_policy_and_unit(self):
+        for text in (f"limit={LIMIT}",
+                     "pkaction --verbose --action-id tw.local.system-device-monitor.unattended."
+                     "charge-limit", "implicit active: *auth_admin_keep$",
+                     'systemd-analyze verify "$limit_unit"',
+                     'systemd-analyze security --offline=true --threshold=10 "$limit_unit"',
+                     "systemctl is-enabled system-device-monitor-charge-limit.service"):
+            self.assertIn(text, WORKFLOW)
+
+    def test_bad_arguments_and_permissions(self):
+        for text in ('expect 0 "$limit" --protocol', "expect 2 as_user $args",
+                     '"set BAT0 49"', '"set BAT0 101"', '"set BAT0 -80"', '"set BAT0 79.5"',
+                     '"set BAT0 8e1"', '"set BAT0 080"', '"set BAT0 1e2"',
+                     'expect 2 as_user set BAT0 " 80"', 'expect 4 "$limit" set BAT0 80',
+                     'expect 4 sudo "$limit" restore --from-unit'):
+            self.assertIn(text, WORKFLOW)
+
+    def test_no_battery_gives_one_json_line_and_exit_two_or_three(self):
+        self.assertIn("out=$(as_user set BAT0 80)", WORKFLOW)
+        self.assertIn('case "$got" in 2|3)', WORKFLOW)
+        self.assertIn("len(lines)==1", WORKFLOW)
+
+    def test_restore_runs_under_real_systemd(self):
+        self.assertIn("sudo systemctl start system-device-monitor-charge-limit.service", WORKFLOW)
+        self.assertIn("-p Result --value system-device-monitor-charge-limit.service", WORKFLOW)
+
+    def test_remove_and_purge_leave_nothing_behind(self):
+        for path in ("/usr/lib/systemd/system/system-device-monitor-charge-limit.service",
+                     "/etc/systemd/system/multi-user.target.wants/"
+                     "system-device-monitor-charge-limit.service",
+                     "/etc/systemd/system/sleep.target.wants/"
+                     "system-device-monitor-charge-limit.service",
+                     "/usr/share/polkit-1/actions/"
+                     "tw.local.system-device-monitor.unattended.charge-limit.policy"):
+            self.assertIn(f"test ! -e {path}", WORKFLOW)
 
 if __name__ == "__main__":
     unittest.main()

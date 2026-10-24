@@ -105,6 +105,59 @@ jobs:
           test ! -e /etc/systemd/system/system-device-monitor-cpu-power.socket.d
           # 開著移除套件：prerm 必須停用並清除
           sudo env PKEXEC_UID="$(id -u)" "$helper" enable
+      - name: Charge limit components
+        run: |
+          set -eu
+          limit=/usr/libexec/system-device-monitor/sdm-charge-limit
+          limit_unit=/usr/lib/systemd/system/system-device-monitor-charge-limit.service
+          limit_policy=/usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy
+          expect() {
+            want=$1; shift
+            set +e; "$@"; got=$?; set -e
+            if [ "$got" != "$want" ]; then echo "expected exit $want, got $got: $*"; exit 1; fi
+          }
+          as_user() { sudo env PKEXEC_UID="$(id -u)" "$limit" "$@"; }
+          test "$(stat -c '%U %a' "$limit")" = "root 755"
+          for path in "$limit_policy" "$limit_unit"; do
+            test "$(stat -c '%U %a' "$path")" = "root 644"
+          done
+          pkaction --verbose --action-id tw.local.system-device-monitor.unattended.charge-limit | tee /tmp/pkaction-limit.txt
+          grep -Eq 'implicit any: *no$' /tmp/pkaction-limit.txt
+          grep -Eq 'implicit inactive: *no$' /tmp/pkaction-limit.txt
+          grep -Eq 'implicit active: *auth_admin_keep$' /tmp/pkaction-limit.txt
+          systemd-analyze verify "$limit_unit"
+          systemd-analyze security --offline=true --threshold=10 "$limit_unit"
+          test "$(systemctl is-enabled system-device-monitor-charge-limit.service || true)" = "disabled"
+          expect 0 "$limit" --protocol
+          # 參數錯誤一律結束碼 2（$args 刻意不加引號，以空白分成多個參數）
+          for args in "set" "set BAT0" "set BAT0 49" "set BAT0 101" "set BAT0 -80" "set BAT0 79.5" \
+                      "set BAT0 8e1" "set BAT0 080" "set BAT0 1e2" "set BAT0/../x 80" "set bat-0 80" \
+                      "set BAT0 80 --start 80" "set BAT0 80 --start 90" "set BAT0 80 --persist maybe" \
+                      "set BAT0 80 --persist on --persist off" "restore" "bogus"; do
+            expect 2 as_user $args
+          done
+          expect 2 as_user set BAT0 " 80"
+          expect 2 as_user set "BAT0 " 80
+          expect 2 as_user set "" 80
+          expect 2 as_user set BAT0 ""
+          # 執行器沒有電池：結束碼必須是 2 或 3，標準輸出剛好一行 JSON
+          set +e; out=$(as_user set BAT0 80); got=$?; set -e
+          case "$got" in 2|3) ;; *) echo "unexpected exit $got: $out"; exit 1;; esac
+          printf '%s\n' "$out" | /usr/bin/python3 -c 'import json,sys; lines=sys.stdin.read().splitlines(); assert len(lines)==1, lines; value=json.loads(lines[0]); assert value["ok"] is False, value; print(value)'
+          as_user status | /usr/bin/python3 -c 'import json,sys; value=json.loads(sys.stdin.read()); assert value["ok"] and value["enabled"] is False and value["persist"] is None, value; print(value)'
+          expect 4 "$limit" set BAT0 80
+          expect 4 sudo "$limit" set BAT0 80
+          expect 4 sudo "$limit" restore --from-unit
+          expect 4 sudo env PKEXEC_UID="$(id -u)" INVOCATION_ID=0123456789abcdef0123456789abcdef "$limit" restore --from-unit
+          test ! -e /var/lib/system-device-monitor
+          # 在真正的 systemd 中執行重新套用（以 root 寫入一個保留值）：執行器沒有電池，略過但必須成功
+          sudo install -d -m 0755 /var/lib/system-device-monitor
+          printf '%s\n' '{"end": 80, "format": 1, "start": null, "supply": "BAT0"}' | sudo tee /var/lib/system-device-monitor/charge-limit.json >/dev/null
+          sudo systemctl start system-device-monitor-charge-limit.service
+          test "$(systemctl show -p Result --value system-device-monitor-charge-limit.service)" = "success"
+          test "$(systemctl show -p ExecMainStatus --value system-device-monitor-charge-limit.service)" = "0"
+          sudo rm -f /var/lib/system-device-monitor/charge-limit.json
+          sudo rmdir /var/lib/system-device-monitor
       - name: Remove and purge
         run: |
           set -eu
@@ -114,11 +167,15 @@ jobs:
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.service
           test ! -e /etc/systemd/system/system-device-monitor-cpu-power.socket.d
           test ! -e /etc/systemd/system/sockets.target.wants/system-device-monitor-cpu-power.socket
+          test ! -e /usr/lib/systemd/system/system-device-monitor-charge-limit.service
+          test ! -e /etc/systemd/system/multi-user.target.wants/system-device-monitor-charge-limit.service
+          test ! -e /etc/systemd/system/sleep.target.wants/system-device-monitor-charge-limit.service
           test ! -e /run/system-device-monitor/cpu-power.sock
           test "$(systemctl is-active system-device-monitor-cpu-power.socket || true)" != "active"
           sudo apt-get purge -y system-device-monitor
           test ! -e /var/lib/system-device-monitor
           test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy
+          test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy
           test ! -e /usr/libexec/system-device-monitor
           if ls /etc/polkit-1/rules.d 2>/dev/null | grep -q system-device-monitor; then exit 1; fi
           if dpkg-query -W system-device-monitor 2>/dev/null; then exit 1; fi
