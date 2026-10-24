@@ -315,10 +315,9 @@ class Automatic(Base):
     def done(self, ok, value):
         self.results.append((ok, value))
 
-    def test_applies_without_persisting(self):
+    def test_applies_without_touching_persistence(self):
         self.control.apply_automatically(90, self.done)
-        self.assertEqual(self.runner.writes(), [[PKEXEC, HELPER, "set", "BAT0", "90",
-                                                 "--persist", "off"]])
+        self.assertEqual(self.runner.writes(), [[PKEXEC, HELPER, "set", "BAT0", "90"]])
         self.sysfs(90)
         self.runner.finish(0, ok_output(90))
         self.assertEqual(self.results, [(True, 90)])
@@ -351,6 +350,12 @@ class Automatic(Base):
     def test_value_that_is_not_an_option(self):
         self.control.apply_automatically(87, self.done)
         self.assertEqual(self.results, [(False, None)])
+
+    def test_persisted_user_value_is_left_alone(self):
+        self.save_state()
+        self.control.reload()
+        self.control.apply_automatically(90, self.done)
+        self.assertNotIn("--persist", self.runner.writes()[0])
 
     def test_queued_requests_run_in_order(self):
         self.control.apply_automatically(90, self.done)

@@ -10,7 +10,7 @@
   --persist on|off（依「開機與喚醒後保留」），逾時 120 秒；成功後再以一般權限讀 sysfs 確認
   （最多 3 次、間隔 0.3 秒）。驅動不接受某個值時改用實際套用的值，並從選項移除被拒絕的值。
 - 自動寫入（之後的智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
-  每 0.1 秒確認一次，最多等 10 秒；一律 --persist off（只保留使用者自己設定的值）。
+  每 0.1 秒確認一次，最多等 10 秒；不帶 --persist，不改變使用者保留的值與重新套用的單元。
 不需要授權就能知道的事（是否支援、目前的上限、是否保留）都以一般權限讀取，
 開啟程式時不會要求密碼。所有方法都在主執行緒呼叫。
 """
@@ -241,7 +241,7 @@ class ChargeControl:
             self.next_automatic()
             return
         self.automatic, self.debouncer.busy = True, True
-        self.write(target, False, lambda ok: self.automatic_done(done, ok))
+        self.write(target, None, lambda ok: self.automatic_done(done, ok))
 
     def poll_automatic(self):
         """每 0.1 秒：使用者還在調整就把等待次數減一，用完就放棄這一筆。"""
@@ -269,10 +269,12 @@ class ChargeControl:
     # ── 寫入與確認 ─────────────────────────────────────────
 
     def write(self, target, persist, finished):
-        """pkexec 小程式 set；finished(是否成功) 只呼叫一次。"""
+        """pkexec 小程式 set；persist 為 None 時不帶 --persist（保留狀態不變）。
+        finished(是否成功) 只呼叫一次。"""
         state = self.state
-        argv = [CpuPower.PKEXEC, state.layout.helper, "set", state.supply, str(target),
-                "--persist", "on" if persist else "off"]
+        argv = [CpuPower.PKEXEC, state.layout.helper, "set", state.supply, str(target)]
+        if persist is not None:
+            argv += ["--persist", "on" if persist else "off"]
         self.update(busy=True, outcome="", message="")
         self.runner.run(argv, ChargeLimit.PKEXEC_TIMEOUT,
                         lambda status, output: self.helper_done(target, status, output,
