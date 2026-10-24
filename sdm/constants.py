@@ -178,6 +178,14 @@ class Update:
     OPENSSL = "/usr/bin/openssl"                # 驗證簽章（Ed25519）
     SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
     COMMAND_TIMEOUT = 30                        # openssl、dpkg-deb 等單次執行的上限（秒）
+    API_MAX_BYTES = 1024 * 1024                 # 下載大小上限：API 的 JSON
+    CHECKSUMS_MAX_BYTES = 64 * 1024             # SHA256SUMS
+    SIGNATURE_MAX_BYTES = 1024                  # SHA256SUMS.sig
+    DEB_MAX_BYTES = 30 * 1024 * 1024            # .deb
+    REQUEST_TIMEOUT = 15                        # 每次連線與讀取的逾時（秒）
+    API_DEADLINE = 30                           # 整個 API 或小檔案請求的上限（秒）
+    DOWNLOAD_DEADLINE = 300                     # 下載 .deb 的上限（秒）
+    MAX_REDIRECTS = 5
 
 
 class Supply:
