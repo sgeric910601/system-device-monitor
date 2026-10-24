@@ -1,0 +1,726 @@
+#!/usr/bin/python3 -IB
+"""系統與裝置監看：充電上限的管理員小程式（由 pkexec，或開機與喚醒後由 systemd 單元執行）。
+
+用法：
+  sdm-charge-limit set <電池> <上限> [--start <起點>] [--persist on|off]
+  sdm-charge-limit status
+  sdm-charge-limit restore --from-unit        只由 system-device-monitor-charge-limit.service 執行
+  sdm-charge-limit --protocol                 不需要權限
+參數（不符時結束碼 2，在檢查權限之前）：電池名稱只能是 1–32 個英文字母、數字或底線；上限是
+50–100 的十進位整數（不接受前導 0、正負號、空白、小數或指數）；起點是 0–99 且小於上限；
+--start 與 --persist 各最多一次、順序不限。
+權限：
+- set、status：必須以 root 執行，PKEXEC_UID 為十進位、在 /etc/login.defs 的 UID_MIN～UID_MAX 之間
+  （讀不到時 1000～60000）、不是 root 或 nobody、帳號存在。
+- restore：必須以 root 執行而且沒有 PKEXEC_UID（經由 pkexec 一律拒絕），INVOCATION_ID 是 systemd
+  設定的 32 位小寫十六進位，父程序是 PID 1。
+- 執行路徑（sys.argv[0]，不做任何正規化）必須剛好是兩個安裝位置之一，否則 pkexec 可能沒有使用
+  本程式的 polkit 動作；依位置決定單元與狀態檔。自己、單元檔與路徑上每一層都必須屬於 root 且
+  群組與其他人不可寫。
+電池：/sys/class/power_supply/<電池> 的實際位置必須在 /sys/devices 之下，type 為 Battery、
+scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold；屬性檔一律以 O_NOFOLLOW
+開啟，必須是一般檔案。
+寫入：上限不高於目前的起點時，先把起點改成指定的值（沒有指定時為上限 − 5），再寫上限；
+否則先寫上限，再寫指定的起點。已經相同的值不再寫。屬性檔以 O_WRONLY｜O_NOFOLLOW 開啟、
+寫入十進位數字，再讀回確認（最多 3 次、間隔 0.3 秒）；不符時結束碼 3 並回報實際的值。
+保留：--persist on 把這次的電池、上限與起點寫入 /var/lib/system-device-monitor 的狀態檔（目錄 0755、
+檔案 0644，先寫同目錄的暫存檔並 fsync 再整檔取代），並啟用單元；--persist off 刪除狀態檔並停用單元；
+沒有指定時不改變。寫入沒有套用時不改變保留狀態。restore 只讀狀態檔（root 擁有的一般檔案、
+4 KB 以內、格式完全相符），電池仍在時才重新套用，不執行任何外部程式。
+只以參數清單執行 /usr/bin/systemctl（不經過 shell），固定的 PATH；標準輸出只有一行 JSON；
+結束碼固定（0 成功、2 參數錯誤、3 失敗或沒有套用、4 沒有權限）；系統日誌只記錄動作名稱與結果。
+只使用標準函式庫。
+"""
+import json
+import os
+import pwd
+import re
+import secrets
+import stat
+import subprocess
+import sys
+import syslog
+import time
+from typing import Callable, NamedTuple, Optional
+
+PROTOCOL = 1
+VERSION = "1.0"
+EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
+HELPER_NAME = "sdm-charge-limit"
+PROTOCOL_FLAG = "--protocol"
+FROM_UNIT = "--from-unit"
+OPTION_START, OPTION_PERSIST = "--start", "--persist"
+PERSIST_ON, PERSIST_OFF, PERSIST_UNCHANGED = "on", "off", "unchanged"
+NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
+SYSTEMCTL = "/usr/bin/systemctl"
+COMMAND_TIMEOUT_S = 60
+UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
+SUPPLY_PATTERN = re.compile(r"[A-Za-z0-9_]{1,32}")
+END_PATTERN = re.compile(r"5[0-9]|[6-9][0-9]|100")
+START_PATTERN = re.compile(r"[0-9]|[1-9][0-9]")
+INVOCATION_PATTERN = re.compile(r"[0-9a-f]{32}")
+MAX_UID = 4294967294
+NOBODY = 65534
+LOGIN_DEFS = "/etc/login.defs"
+LOGIN_DEFS_MAX_BYTES = 65536
+DEFAULT_UID_RANGE = (1000, 60000)       # login.defs 讀不到時的一般帳號範圍
+SUPPLY_DIR = "sys/class/power_supply"   # 相對於根目錄
+DEVICES_DIR = "sys/devices"
+END_FILE = "charge_control_end_threshold"
+START_FILE = "charge_control_start_threshold"
+TYPE_BATTERY = "Battery"
+SCOPE_DEVICE = "Device"
+ATTRIBUTE_MAX_BYTES = 64
+PERCENT_MAX_DIGITS = 3
+MIN_END, MAX_END, MAX_START = 50, 100, 99
+MAX_BATTERIES = 32
+START_GAP = 5                           # 必須先降低起點、又沒有指定時：上限 − 5
+READBACK_ATTEMPTS = 3
+READBACK_INTERVAL_S = 0.3
+STATE_PARENT = "var/lib"
+STATE_DIR = STATE_PARENT + "/system-device-monitor"
+STATE_FORMAT = 1
+STATE_MAX_BYTES = 4096
+STATE_KEYS = frozenset({"format", "supply", "end", "start"})
+DIRECTORY_MODE = 0o755
+FILE_MODE = 0o644
+UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+WRITE_FLAGS = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+LOG_IDENT = "sdm-charge-limit"
+
+
+class Usage(Exception):
+    """參數不符合固定的用法。"""
+
+
+class NotPermitted(Exception):
+    """呼叫方式不符：不是經由 pkexec 的一般使用者，或不是 systemd 單元。"""
+
+
+class Failed(Exception):
+    """無法安全地完成；訊息是固定的英文代號（也是輸出的 error）。"""
+
+
+class Outcome(Exception):
+    """已經寫入但結果不如預期：回報實際的上限與起點。"""
+
+    def __init__(self, error, end, start):
+        super().__init__(error)
+        self.error, self.end, self.start = error, end, start
+
+
+class Layout(NamedTuple):
+    kind: str
+    helper_dir: str
+    unit_dir: str                       # 相對於根目錄
+    unit: str
+    state: str                          # STATE_DIR 裡的狀態檔名
+
+
+LAYOUTS = (
+    Layout("deb", "/usr/libexec/system-device-monitor", "usr/lib/systemd/system",
+           "system-device-monitor-charge-limit.service", "charge-limit.json"),
+    Layout("local", "/usr/local/libexec/system-device-monitor", "etc/systemd/system",
+           "system-device-monitor-local-charge-limit.service", "charge-limit-local.json"),
+)
+
+
+class Request(NamedTuple):
+    supply: str
+    end: int
+    start: Optional[int] = None
+    persist: str = PERSIST_UNCHANGED
+
+
+class Context(NamedTuple):
+    """執行環境；測試以假根目錄、假的擁有者、假的 systemctl 與假的驅動代替。"""
+    root: str
+    owner: int
+    run: Callable
+    euid: int
+    user_exists: Callable
+    helper_path: str                    # 實際執行的路徑（sys.argv[0]），不正規化
+    uid_range: tuple = DEFAULT_UID_RANGE
+    sleep: Callable = time.sleep
+    ppid: int = 0
+    write: Callable = os.write
+
+
+def log(message):
+    syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_INFO, message)
+
+
+def run_command(argv):
+    """只以參數清單執行（不經過 shell），固定的環境變數；回傳結束碼，無法執行時為 -1。"""
+    try:
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, env=SAFE_ENV,
+                              timeout=COMMAND_TIMEOUT_S, check=False).returncode
+    except (OSError, subprocess.SubprocessError):
+        return -1
+
+
+def user_exists(uid):
+    try:
+        pwd.getpwuid(uid)
+    except KeyError:
+        return False
+    return True
+
+
+def parse_login_defs(text):
+    """（UID_MIN、UID_MAX）；缺少或不合理的值改用預設。"""
+    values = {}
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0] in ("UID_MIN", "UID_MAX") \
+                and UID_PATTERN.fullmatch(words[1]):
+            values[words[0]] = int(words[1])
+    low = values.get("UID_MIN", DEFAULT_UID_RANGE[0])
+    high = values.get("UID_MAX", DEFAULT_UID_RANGE[1])
+    return (low, high) if 0 < low <= high <= MAX_UID else DEFAULT_UID_RANGE
+
+
+def login_uid_range(path=LOGIN_DEFS):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return parse_login_defs(handle.read(LOGIN_DEFS_MAX_BYTES))
+    except OSError:
+        return DEFAULT_UID_RANGE
+
+
+def production_context():
+    return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
+                   user_exists=user_exists, helper_path=sys.argv[0],
+                   uid_range=login_uid_range(), sleep=time.sleep, ppid=os.getppid(),
+                   write=os.write)
+
+
+# ── 參數 ───────────────────────────────────────────────────
+
+def parse_options(words):
+    """--start 與 --persist：成對出現、各最多一次、順序不限。"""
+    if len(words) % 2:
+        raise Usage()
+    options = {}
+    for key, value in zip(words[::2], words[1::2]):
+        if key not in (OPTION_START, OPTION_PERSIST) or key in options:
+            raise Usage()
+        options[key] = value
+    return options
+
+
+def parse_set(words):
+    if len(words) < 2:
+        raise Usage()
+    supply, end_text = words[0], words[1]
+    options = parse_options(words[2:])
+    start_text = options.get(OPTION_START)
+    persist = options.get(OPTION_PERSIST, PERSIST_UNCHANGED)
+    if not SUPPLY_PATTERN.fullmatch(supply) or not END_PATTERN.fullmatch(end_text) \
+            or (start_text is not None and not START_PATTERN.fullmatch(start_text)) \
+            or (OPTION_PERSIST in options and persist not in (PERSIST_ON, PERSIST_OFF)):
+        raise Usage()
+    end = int(end_text)
+    start = None if start_text is None else int(start_text)
+    if start is not None and start >= end:
+        raise Usage()
+    return Request(supply, end, start, persist)
+
+
+def parse_args(argv):
+    """（命令、Request 或 None）；不符合固定用法時拋出 Usage。"""
+    if argv in ([PROTOCOL_FLAG], ["status"]):
+        return argv[0], None
+    if argv == ["restore", FROM_UNIT]:
+        return "restore", None
+    if argv and argv[0] == "set":
+        return "set", parse_set(argv[1:])
+    raise Usage()
+
+
+# ── 權限與位置 ─────────────────────────────────────────────
+
+def caller_uid(env, context):
+    """pkexec 設定的 PKEXEC_UID：十進位、在一般帳號的範圍內、不是 root 或 nobody，而且帳號存在。"""
+    if context.euid != 0:
+        raise NotPermitted()
+    text = env.get("PKEXEC_UID", "")
+    if not UID_PATTERN.fullmatch(text):
+        raise NotPermitted()
+    uid = int(text)
+    low, high = context.uid_range
+    if uid in (0, NOBODY) or not low <= uid <= high or not context.user_exists(uid):
+        raise NotPermitted()
+    return uid
+
+
+def unit_caller(env, context):
+    """restore：root、沒有 PKEXEC_UID、systemd 設定的 INVOCATION_ID、父程序是 PID 1。"""
+    if context.euid != 0 or "PKEXEC_UID" in env or context.ppid != 1 \
+            or not INVOCATION_PATTERN.fullmatch(env.get("INVOCATION_ID", "")):
+        raise NotPermitted()
+    return 0
+
+
+def layout_for(helper_path):
+    """執行路徑必須與安裝位置一字不差（不接受 //、./、.. 或相對路徑）。"""
+    for layout in LAYOUTS:
+        if helper_path == layout.helper_dir + "/" + HELPER_NAME:
+            return layout
+    raise Failed("unknown-location")
+
+
+def check_directory(fd, owner):
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed("untrusted-directory")
+
+
+def check_file(dir_fd, name, owner):
+    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed("untrusted-file")
+
+
+def open_directory(context, relative):
+    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；回傳描述子。"""
+    fd = os.open(context.root, DIRECTORY_FLAGS)
+    try:
+        check_directory(fd, context.owner)
+        for part in [part for part in relative.split("/") if part]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def check_location(context, layout):
+    """自己與單元檔都必須是受信任的一般檔案。"""
+    for directory, name in ((layout.helper_dir, HELPER_NAME), (layout.unit_dir, layout.unit)):
+        fd = open_directory(context, directory)
+        try:
+            check_file(fd, name, context.owner)
+        except FileNotFoundError:
+            raise Failed("untrusted-file") from None
+        finally:
+            os.close(fd)
+
+
+# ── 電池的屬性檔 ───────────────────────────────────────────
+
+def read_attribute(dir_fd, name):
+    """屬性檔的文字（一般檔案，不跟隨符號連結）；不存在、讀不到或不是一般檔案時為 None。"""
+    try:
+        fd = os.open(name, READ_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, ATTRIBUTE_MAX_BYTES)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return data.decode("ascii", "replace").strip()
+
+
+def read_percent(dir_fd, name):
+    text = read_attribute(dir_fd, name)
+    if not text or len(text) > PERCENT_MAX_DIGITS or not (text.isascii() and text.isdigit()):
+        return None
+    value = int(text)
+    return value if value <= MAX_END else None
+
+
+def current_values(dir_fd):
+    return {END_FILE: read_percent(dir_fd, END_FILE), START_FILE: read_percent(dir_fd, START_FILE)}
+
+
+def open_battery(context, supply):
+    """電池目錄的描述子：實際位置在 /sys/devices 之下、type 為 Battery、scope 不是 Device。"""
+    devices = os.path.realpath(os.path.join(context.root, DEVICES_DIR))
+    real = os.path.realpath(os.path.join(context.root, SUPPLY_DIR, supply))
+    if real == devices or os.path.commonpath([devices, real]) != devices:
+        raise Failed("not-a-battery")
+    try:
+        fd = os.open(real, DIRECTORY_FLAGS)
+    except OSError:
+        raise Failed("not-a-battery") from None
+    if read_attribute(fd, "type") != TYPE_BATTERY or read_attribute(fd, "scope") == SCOPE_DEVICE:
+        os.close(fd)
+        raise Failed("not-a-battery")
+    return fd
+
+
+def target_steps(request, current, has_start):
+    """（屬性檔、值）的寫入順序：上限不高於目前的起點時先降低起點。"""
+    if request.start is not None and not has_start:
+        raise Failed("unsupported")
+    start = current[START_FILE]
+    if has_start and start is not None and request.end <= start:
+        lowered = request.start if request.start is not None else \
+            max(request.end - START_GAP, 0)
+        return [(START_FILE, lowered), (END_FILE, request.end)]
+    steps = [(END_FILE, request.end)]
+    if request.start is not None:
+        steps.append((START_FILE, request.start))
+    return steps
+
+
+def write_value(context, dir_fd, name, value):
+    """寫入十進位數字；寫入的位元組數不符時回傳 False。"""
+    data = str(value).encode("ascii")
+    fd = os.open(name, WRITE_FLAGS, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Failed("unsupported")
+        return context.write(fd, data) == len(data)
+    finally:
+        os.close(fd)
+
+
+def write_steps(context, dir_fd, steps, current):
+    """依序寫入不同的值；驅動拒絕（例如 EINVAL）或沒有寫完時停止並回傳 False。"""
+    for name, value in steps:
+        if current[name] == value:
+            continue
+        try:
+            if not write_value(context, dir_fd, name, value):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def confirmed(context, dir_fd, expected, attempts):
+    for attempt in range(attempts):
+        if attempt:
+            context.sleep(READBACK_INTERVAL_S)
+        actual = current_values(dir_fd)
+        if all(actual[name] == value for name, value in expected.items()):
+            return True
+    return False
+
+
+def apply_request(context, dir_fd, request):
+    """寫入並讀回確認；回傳實際的（上限、起點），沒有套用時拋出 Outcome。"""
+    if read_attribute(dir_fd, END_FILE) is None:
+        raise Failed("unsupported")
+    current = current_values(dir_fd)
+    steps = target_steps(request, current, read_attribute(dir_fd, START_FILE) is not None)
+    written = write_steps(context, dir_fd, steps, current)
+    attempts = READBACK_ATTEMPTS if written else 1
+    applied = confirmed(context, dir_fd, dict(steps), attempts)
+    actual = current_values(dir_fd)
+    if not applied:
+        raise Outcome(NOT_APPLIED, actual[END_FILE], actual[START_FILE])
+    return actual[END_FILE], actual[START_FILE]
+
+
+# ── 保留（狀態檔與單元）───────────────────────────────────
+
+def make_directory(parent, name):
+    """建立目錄並回傳 True；已存在時回傳 False（不改變既有目錄的權限）。"""
+    try:
+        os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+    except FileExistsError:
+        return False
+    return True
+
+
+def open_state_directory(context, create):
+    """/var/lib/system-device-monitor 的描述子；新建的一律 0755，不受 umask 影響。"""
+    parent = open_directory(context, STATE_PARENT)
+    try:
+        name = os.path.basename(STATE_DIR)
+        created = create and make_directory(parent, name)
+        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        if created:
+            os.fchmod(fd, DIRECTORY_MODE)
+        check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def replace_file(dir_fd, name, data, mode):
+    """先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW）並 fsync，再整檔取代；只取代一般檔案。"""
+    try:
+        existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise Failed("unexpected-file")
+    temporary = f".{name}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 mode, dir_fd=dir_fd)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+    os.fsync(dir_fd)
+
+
+def state_bytes(request):
+    value = {"format": STATE_FORMAT, "supply": request.supply, "end": request.end,
+             "start": request.start}
+    return (json.dumps(value, sort_keys=True) + "\n").encode("utf-8")
+
+
+def save_state(context, layout, request):
+    directory = open_state_directory(context, create=True)
+    try:
+        replace_file(directory, layout.state, state_bytes(request), FILE_MODE)
+    finally:
+        os.close(directory)
+
+
+def remove_state(context, layout):
+    """刪除狀態檔（目錄空了一併刪除）；回傳原本是否存在。"""
+    try:
+        directory = open_state_directory(context, create=False)
+    except FileNotFoundError:
+        return False
+    try:
+        info = os.stat(layout.state, dir_fd=directory, follow_symlinks=False)
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            raise Failed("unexpected-file")
+        os.unlink(layout.state, dir_fd=directory)
+    except FileNotFoundError:
+        return False
+    finally:
+        os.close(directory)
+    parent = open_directory(context, STATE_PARENT)
+    try:
+        os.rmdir(os.path.basename(STATE_DIR), dir_fd=parent)
+    except OSError:
+        pass
+    finally:
+        os.close(parent)
+    return True
+
+
+def systemctl(context, *args):
+    return context.run([SYSTEMCTL, *args])
+
+
+def persist(context, layout, request):
+    """on：寫入狀態檔並啟用單元；off：刪除狀態檔，單元已啟用時停用；unchanged：不動。"""
+    if request.persist == PERSIST_ON:
+        save_state(context, layout, request)
+        ok = systemctl(context, "enable", layout.unit) == 0
+    elif request.persist == PERSIST_OFF:
+        removed = remove_state(context, layout)
+        enabled = removed or systemctl(context, "is-enabled", "--quiet", layout.unit) == 0
+        ok = not enabled or systemctl(context, "disable", layout.unit) == 0
+    else:
+        return
+    if not ok:
+        raise Failed("systemctl")
+
+
+def is_integer(value):
+    return type(value) is int
+
+
+def parse_state(data):
+    """狀態檔的內容 → Request；格式不完全相符時拋出 Failed。"""
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
+        raise Failed("invalid-state") from None
+    if not isinstance(value, dict) or set(value) != STATE_KEYS \
+            or not is_integer(value["format"]) or value["format"] != STATE_FORMAT:
+        raise Failed("invalid-state")
+    supply, end, start = value["supply"], value["end"], value["start"]
+    if not isinstance(supply, str) or not SUPPLY_PATTERN.fullmatch(supply) \
+            or not is_integer(end) or not MIN_END <= end <= MAX_END:
+        raise Failed("invalid-state")
+    if start is not None and (not is_integer(start) or not 0 <= start <= MAX_START
+                              or start >= end):
+        raise Failed("invalid-state")
+    return Request(supply, end, start)
+
+
+def read_state(context, layout):
+    """狀態檔的位元組；不存在時為 None。必須是 root 擁有、群組與其他人不可寫的一般檔案。"""
+    try:
+        directory = open_state_directory(context, create=False)
+    except FileNotFoundError:
+        return None
+    try:
+        fd = os.open(layout.state, READ_FLAGS, dir_fd=directory)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise Failed("invalid-state") from None
+    finally:
+        os.close(directory)
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+                or info.st_mode & UNSAFE_BITS or info.st_size > STATE_MAX_BYTES:
+            raise Failed("invalid-state")
+        data = handle.read(STATE_MAX_BYTES + 1)
+    if len(data) > STATE_MAX_BYTES:
+        raise Failed("invalid-state")
+    return data
+
+
+def load_state(context, layout):
+    data = read_state(context, layout)
+    return None if data is None else parse_state(data)
+
+
+# ── 動作 ───────────────────────────────────────────────────
+
+def set_limit(context, layout, request):
+    fd = open_battery(context, request.supply)
+    try:
+        end, start = apply_request(context, fd, request)
+    finally:
+        os.close(fd)
+    try:
+        persist(context, layout, request)
+    except (Failed, OSError):
+        raise Outcome(PERSIST_FAILED, end, start) from None
+    return {"ok": True, "action": "set", "supply": request.supply, "end": end, "start": start,
+            "persist": request.persist}
+
+
+def restored(value):
+    return {"ok": True, "action": "restore", "restored": value}
+
+
+def restore(context, layout, _request):
+    """重新套用保留的值；沒有保留、電池不在或不再支援時略過。"""
+    request = load_state(context, layout)
+    if request is None:
+        return restored(False)
+    try:
+        fd = open_battery(context, request.supply)
+    except Failed:
+        return restored(False)
+    try:
+        if read_attribute(fd, END_FILE) is None:
+            return restored(False)
+        apply_request(context, fd, request)
+    finally:
+        os.close(fd)
+    return restored(True)
+
+
+def battery_entry(context, name):
+    try:
+        fd = open_battery(context, name)
+    except Failed:
+        return None
+    try:
+        if read_attribute(fd, END_FILE) is None:
+            return None
+        values = current_values(fd)
+    finally:
+        os.close(fd)
+    return {"supply": name, "end": values[END_FILE], "start": values[START_FILE]}
+
+
+def saved_state(context, layout):
+    try:
+        request = load_state(context, layout)
+    except (Failed, OSError):
+        return "invalid"
+    if request is None:
+        return None
+    return {"supply": request.supply, "end": request.end, "start": request.start}
+
+
+def status(context, layout, _request):
+    try:
+        names = sorted(os.listdir(os.path.join(context.root, SUPPLY_DIR)))
+    except OSError:
+        names = []
+    names = [name for name in names if SUPPLY_PATTERN.fullmatch(name)][:MAX_BATTERIES]
+    batteries = [entry for entry in (battery_entry(context, name) for name in names) if entry]
+    return {"ok": True, "action": "status", "batteries": batteries,
+            "persist": saved_state(context, layout),
+            "enabled": systemctl(context, "is-enabled", "--quiet", layout.unit) == 0}
+
+
+ACTIONS = {"set": set_limit, "restore": restore, "status": status}
+
+
+def run_action(command, request, env, context):
+    if command == "restore":
+        unit_caller(env, context)
+    else:
+        caller_uid(env, context)
+    layout = layout_for(context.helper_path)
+    check_location(context, layout)
+    return ACTIONS[command](context, layout, request)
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def outcome_of(command, request, env, context):
+    """（結束碼、輸出、日誌的結果）。"""
+    try:
+        result = run_action(command, request, env, context)
+    except NotPermitted:
+        return EXIT_NOT_PERMITTED, {"ok": False, "error": "not-permitted"}, "not-permitted"
+    except Outcome as outcome:
+        return EXIT_FAILED, {"ok": False, "error": outcome.error, "applied": outcome.end,
+                             "applied_start": outcome.start}, outcome.error
+    except Failed as error:
+        return EXIT_FAILED, {"ok": False, "error": str(error)}, "failed"
+    except OSError:
+        return EXIT_FAILED, {"ok": False, "error": "failed"}, "failed"
+    return EXIT_OK, result, "skipped" if result.get("restored") is False else "ok"
+
+
+def main(argv, env, context=None, emit=emit_json, report=log):
+    try:
+        command, request = parse_args(list(argv))
+    except Usage:
+        emit({"ok": False, "error": "usage"})
+        return EXIT_USAGE
+    if command == PROTOCOL_FLAG:
+        emit({"protocol": PROTOCOL, "version": VERSION})
+        return EXIT_OK
+    code, output, result = outcome_of(command, request, env, context or production_context())
+    report(command + " " + result)
+    emit(output)
+    return code
+
+
+if __name__ == "__main__":
+    ENVIRONMENT = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(SAFE_ENV)
+    sys.exit(main(sys.argv[1:], ENVIRONMENT))

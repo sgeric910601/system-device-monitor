@@ -156,7 +156,8 @@ class ServiceHelper(unittest.TestCase):
     def test_helpers_import_only_the_standard_library(self):
         forbidden = {"sdm-cpu-power-service": ("subprocess", "ctypes", "importlib", "shutil",
                                                "pickle"),
-                     "sdm-cpu-power": ("ctypes", "importlib", "shutil", "pickle")}
+                     "sdm-cpu-power": ("ctypes", "importlib", "shutil", "pickle"),
+                     "sdm-charge-limit": ("ctypes", "importlib", "shutil", "pickle")}
         self.assertEqual(sorted(path.name for path in HELPERS.glob("sdm-*")), sorted(forbidden))
         for name, refused in forbidden.items():
             with self.subTest(helper=name):
