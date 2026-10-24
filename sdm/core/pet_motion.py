@@ -1,6 +1,6 @@
 """桌面寵物與大頭照的動作（純邏輯，移植參考專案 DesktopPet 與 CatEyes）。
 
-- 摸牠：滑鼠在寵物上左右來回，每次換方向記一次（移動超過 2 px 才算），1.5 秒內換 3 次
+- 摸牠：滑鼠在寵物上左右來回，每次換方向記一次（累積移動超過 2 px 才算），1.5 秒內換 3 次
   就算摸了一下；之後 1.2 秒內不再算，避免一直冒愛心。
 - 眨眼：每 2.5–6 秒一次，五次中有一次連眨兩下；每次閉眼、張眼各 0.09 秒。
 - 眼睛：大頭照上兩隻眼睛的中心與半徑是照片邊長的比例；眼珠往游標的方向移，
@@ -27,10 +27,15 @@ class StrokeDetector:
         self.last_x, self.turns = None, []
 
     def feed(self, x, now):
-        """滑鼠移到 x（視窗座標）；這次移動完成「摸一下」時回傳 True。"""
-        last, self.last_x = self.last_x, x
-        if last is None or abs(x - last) <= Pet.STROKE_MIN_PX:
+        """滑鼠移到 x（視窗座標）；這次移動完成「摸一下」時回傳 True。
+        離上一個記下的位置超過 2 px 才算移動並更新位置，事件很密時小步移動也會累積起來。"""
+        last = self.last_x
+        if last is None:
+            self.last_x = x
             return False
+        if abs(x - last) <= Pet.STROKE_MIN_PX:
+            return False
+        self.last_x = x
         direction = 1 if x > last else -1
         if self.direction and direction != self.direction:
             self.turns.append(now)

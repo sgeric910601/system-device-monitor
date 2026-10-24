@@ -30,6 +30,19 @@ class Stroke(unittest.TestCase):
         points = [(20 if index % 2 == 0 else 80, index * 0.8) for index in range(10)]
         self.assertEqual(feed(StrokeDetector(), points), [])
 
+    def test_slow_strokes_in_small_steps_still_count(self):
+        """滑鼠事件很密時每次只動 1–2 px：累積超過門檻才算一次移動。"""
+        for step in (1, 2):
+            with self.subTest(step=step):
+                points, x, now = [], 20, 0.0
+                for sweep in range(4):
+                    direction = 1 if sweep % 2 == 0 else -1
+                    for _ in range(60 // step):
+                        x += direction * step
+                        now += 0.005
+                        points.append((x, now))
+                self.assertEqual(len(feed(StrokeDetector(), points)), 1)
+
     def test_tiny_moves_are_ignored(self):
         points = [(20 + (index % 2) * 2, index / 10) for index in range(20)]
         self.assertEqual(feed(StrokeDetector(), points), [])
