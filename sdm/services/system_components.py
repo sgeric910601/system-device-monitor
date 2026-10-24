@@ -1,11 +1,14 @@
 """原始碼資料夾的管理員元件：install.py --system-components install｜remove 的使用者端。
 
 以一般使用者執行（不需要、也不接受 sudo）：
-1. 原始碼資料夾與 git 目錄（含上層）只能由使用者或 root 寫入（見 install_guard）。
-2. 要安裝的檔案必須已提交到 git 且沒有修改，否則拒絕；安裝的一定是 HEAD 的內容。
-3. 以 git archive HEAD 取出這些檔案；tar 成員只能是預期的一般檔案與它們的上層目錄，
-   內容讀進記憶體後自己寫到新的私人暫存目錄（XDG_RUNTIME_DIR 底下，目錄 0700、檔案 0600、
-   O_EXCL、O_NOFOLLOW），從不使用 tarfile 的解壓縮功能。
+1. 原始碼資料夾與 git 目錄（含上層）只能由使用者或 root 寫入（見 install_guard）；
+   本地的 git 設定不得含 include、includeIf、filter 或 core.attributesFile。
+2. 以 git ls-tree 找出 HEAD 中這些檔案的 blob（只接受 100644／100755 的一般檔案），
+   以 git cat-file blob 讀出原始內容並以物件 ID 驗證：不套用任何 filter、export-subst、ident
+   或換行轉換，也不使用 git archive 或 git status。
+3. 工作樹必須與 HEAD 相同：自己計算工作樹檔案的 blob 物件 ID 比對（不經過 git，不會觸發
+   clean filter）；安裝的一定是 HEAD 的內容。內容寫到新的私人暫存目錄（XDG_RUNTIME_DIR 底下，
+   目錄 0700、檔案 0600、O_EXCL、O_NOFOLLOW）。
 4. 每個檔案的 SHA-256 寫成 manifest.json；確認暫存目錄與上層都安全、顯示 HEAD 的提交後，執行
    pkexec /usr/bin/python3 -I -B -c BOOTSTRAP <暫存>/scripts/install_system.py <它的 SHA-256>
    install｜remove --stage <暫存> --manifest-sha256 <manifest 的 SHA-256>。
@@ -13,14 +16,14 @@
 5. 結束後刪除暫存目錄。已安裝 .deb 套件時不安裝（兩者擇一），但可以移除。
 """
 import hashlib
-import io
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+import re
 import shlex
 import shutil
+import stat
 import subprocess
-import tarfile
 import tempfile
 
 from sdm.services.install_guard import (BOOTSTRAP, ComponentError, check_repository,  # noqa: F401
@@ -36,14 +39,17 @@ SOURCES = (
 )
 INSTALLER = "scripts/install_system.py"
 STAGED = SOURCES + (INSTALLER,)
-DIRECTORIES = frozenset(str(parent) for name in STAGED
-                        for parent in PurePosixPath(name).parents if str(parent) != ".")
+BLOB_MODES = ("100644", "100755")
+OBJECT_FORMATS = {"sha1": 40, "sha256": 64}
+FORBIDDEN_CONFIG = ("include.", "includeif.", "filter.")
+FORBIDDEN_CONFIG_KEYS = ("core.attributesfile",)
+HEX = re.compile(r"[0-9a-f]+")
 ACTIONS = ("install", "remove")
 GIT = "/usr/bin/git"
 # 使用者端 git 指令的固定選項與環境：不執行 hooks、不用 fsmonitor、不連任何遠端，
 # 不讀系統與使用者的設定檔、不套用 replace 物件與系統的屬性檔，也不繼承任何 GIT_* 變數。
 SAFE_GIT_OPTIONS = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-                    "-c", "protocol.allow=never")
+                    "-c", "protocol.allow=never", "-c", "core.attributesFile=/dev/null")
 SAFE_GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1"}
 PKEXEC = "/usr/bin/pkexec"
@@ -67,7 +73,9 @@ FAILURES = {
 UNAUTHORIZED_TEXT = "未授權：管理員授權被取消或失敗，沒有做任何變更。"
 DIRTY = "管理員元件的檔案有未提交的修改；請先提交或還原，安裝的一定是已提交的版本。"
 UNTRACKED = "找不到已提交的管理員元件檔案；需要以 git 取得的原始碼資料夾。"
-BAD_ARCHIVE = "git archive 的內容不符合預期，已停止。"
+BAD_TREE = "HEAD 中的管理員元件不是一般檔案，或內容與物件 ID 不符，已停止。"
+UNSAFE_CONFIG = ("原始碼資料夾的 git 設定含 include、includeIf、filter 或 core.attributesFile，"
+                 "讀取時可能執行指令或改變內容；為了安全不安裝。")
 DEB_INSTALLED = "已安裝 .deb 套件：管理員元件已包含在套件中，不需要再從原始碼安裝。"
 NO_PKEXEC = "無法執行 pkexec（需要 policykit-1／polkitd）。"
 STAGE_FAILED = "無法建立暫存目錄，沒有做任何變更。"
@@ -118,30 +126,67 @@ def package_installed():
         words[2] not in ("not-installed", "config-files")
 
 
-def check_clean(root, git):
-    git(git_command(root, "ls-files", "--error-unmatch", "--", *STAGED))
-    status = git(git_command(root, "status", "--porcelain", "--untracked-files=no", "--", *STAGED))
-    if status.strip():
-        raise ComponentError(DIRTY)
+def check_local_config(root, git):
+    """本地（與 worktree）的 git 設定不得含會執行指令或改變內容的鍵；指定檔案時不展開 include。"""
+    for scope in ("--local", "--worktree"):
+        for item in git(git_command(root, "config", scope, "--list", "-z")).split(b"\0"):
+            key = item.split(b"\n", 1)[0].decode("utf-8", "replace").strip().lower()
+            if key.startswith(FORBIDDEN_CONFIG) or key in FORBIDDEN_CONFIG_KEYS:
+                raise ComponentError(UNSAFE_CONFIG)
 
 
-def export(root, git):
-    """HEAD 中這些檔案的內容；tar 裡有任何預期以外的成員就拒絕。"""
-    data = git(git_command(root, "archive", "--format=tar", "HEAD", "--", *STAGED))
+def object_format(root, git):
+    name = git(git_command(root, "rev-parse", "--show-object-format")).decode("ascii",
+                                                                             "replace").strip()
+    if name not in OBJECT_FORMATS:
+        raise ComponentError(BAD_TREE)
+    return name
+
+
+def object_id(data, algorithm):
+    """git 的 blob 物件 ID（「blob 長度\\0」＋內容的雜湊）。"""
+    return hashlib.new(algorithm, b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def head_blobs(root, git, algorithm):
+    """HEAD 中每個要安裝的檔案 → 物件 ID；必須剛好一次、而且是一般檔案的 blob。"""
+    listing = git(git_command(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *STAGED))
+    blobs = {}
+    for item in listing.split(b"\0"):
+        if not item:
+            continue
+        meta, _, raw_name = item.partition(b"\t")
+        fields = meta.decode("ascii", "replace").split(" ")
+        name = raw_name.decode("utf-8", "replace")
+        if len(fields) != 3 or fields[0] not in BLOB_MODES or fields[1] != "blob" \
+                or len(fields[2]) != OBJECT_FORMATS[algorithm] or not HEX.fullmatch(fields[2]) \
+                or name not in STAGED or name in blobs:
+            raise ComponentError(BAD_TREE)
+        blobs[name] = fields[2]
+    if set(blobs) != set(STAGED):
+        raise ComponentError(UNTRACKED)
+    return blobs
+
+
+def check_clean(root, blobs, algorithm, lstat, read):
+    """工作樹的檔案必須是一般檔案，而且內容與 HEAD 的 blob 相同。"""
+    for name, oid in blobs.items():
+        path = str(Path(root)/name)
+        try:
+            if not stat.S_ISREG(lstat(path).st_mode) or object_id(read(path), algorithm) != oid:
+                raise ComponentError(DIRTY)
+        except OSError:
+            raise ComponentError(DIRTY) from None
+
+
+def read_blobs(root, git, blobs, algorithm):
+    """以 cat-file blob 讀出原始內容，並確認內容符合物件 ID。"""
     contents = {}
-    try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
-            for member in archive.getmembers():
-                name = member.name.rstrip("/") if member.isdir() else member.name
-                if member.isdir() and name in DIRECTORIES:
-                    continue
-                if not member.isreg() or name not in STAGED or name in contents:
-                    raise ComponentError(BAD_ARCHIVE)
-                contents[name] = archive.extractfile(member).read()
-    except tarfile.TarError:
-        raise ComponentError(BAD_ARCHIVE) from None
-    if set(contents) != set(STAGED):
-        raise ComponentError(BAD_ARCHIVE)
+    for name, oid in blobs.items():
+        data = git(git_command(root, "cat-file", "blob", oid))
+        if object_id(data, algorithm) != oid:
+            raise ComponentError(BAD_TREE)
+        contents[name] = data
     return contents
 
 
@@ -192,8 +237,11 @@ def gather(action, root, git, uid, private_gid, files):
     """檢查原始碼資料夾、取出 HEAD 的檔案與要顯示的提交；不安全時拋出 ComponentError。
     files 為（lstat、listdir、read、listxattr）。"""
     check_repository(root, git_command(root), git, uid, files[0], private_gid, *files[1:])
-    check_clean(root, git)
-    contents = export(root, git)
+    check_local_config(root, git)
+    algorithm = object_format(root, git)
+    blobs = head_blobs(root, git, algorithm)
+    check_clean(root, blobs, algorithm, files[0], files[2])
+    contents = read_blobs(root, git, blobs, algorithm)
     return contents, head_text(action, git(git_command(root, "log", "-1", "--format=%h %s",
                                                        "HEAD")))
 

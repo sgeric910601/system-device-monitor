@@ -422,6 +422,7 @@
     "tests/test_settings_persistence.py",
     "tests/test_settings_store.py",
     "tests/test_settings_text.py",
+    "tests/test_source_install_git.py",
     "tests/test_storage.py",
     "tests/test_system_components.py",
     "tests/test_system_units.py",

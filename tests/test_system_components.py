@@ -1,15 +1,14 @@
 """原始碼資料夾安裝管理員元件的使用者端（install.py --system-components）。
 
-git 以假的函式代替（回傳測試自己做的 tar），pkexec 以記錄參數的假函式代替：
+git 以假的函式代替（ls-tree 與 cat-file 回傳專案裡真正的檔案），pkexec 以記錄參數的假函式代替：
 測試在假 pkexec 被呼叫的當下檢查暫存目錄的內容、權限與雜湊，結束後確認暫存目錄已刪除。
+真正的 git（filter、include、export-subst）見 test_source_install_git。
 """
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
 import stat
-import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -19,66 +18,69 @@ from tests.fixtures.helpers import ROOT, load_script
 
 installer = load_script("install_system")
 CHECKOUT = Path("/opt/checkout with space")
-
-
-def tar_bytes(entries):
-    """（名稱、內容或 None 代表目錄、類型）→ tar 位元組。"""
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as archive:
-        for name, data, kind in entries:
-            info = tarfile.TarInfo(name)
-            info.type = kind
-            if kind == tarfile.SYMTYPE:
-                info.linkname = "/etc/shadow"
-            if data is not None:
-                info.size = len(data)
-            archive.addfile(info, io.BytesIO(data) if data is not None else None)
-    return buffer.getvalue()
-
-
-def real_entries():
-    directories = sorted({str(Path(name).parent) for name in components.STAGED})
-    return ([(name, None, tarfile.DIRTYPE) for name in directories]
-            + [(name, (ROOT/name).read_bytes(), tarfile.REGTYPE) for name in components.STAGED])
-
-
 GIT_DIR = str(CHECKOUT/".git")
 HEAD = b"abc1234 feat: add the \x1b[31mCPU\x1b[0m sampler\n"
+SAFE_CONFIG = b"core.repositoryformatversion\n0\0core.bare\nfalse\0remote.origin.url\nx\0"
+
+
+def blob_id(data, algorithm="sha1"):
+    return hashlib.new(algorithm, b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def tree_listing(names=None, algorithm="sha1", modes=None):
+    names = components.STAGED if names is None else names
+    modes = modes or {}
+    rows = []
+    for name in names:
+        data = (ROOT/name).read_bytes() if (ROOT/name).is_file() else b""
+        kind = "commit" if modes.get(name) == "160000" else "blob"
+        rows.append(f"{modes.get(name, '100644')} {kind} {blob_id(data, algorithm)}\t{name}")
+    return "\0".join(rows).encode() + b"\0"
 
 
 class FakeGit:
-    def __init__(self, status=b"", archive=None, tracked=True, common=b".git", git_dir=GIT_DIR):
-        self.status, self.tracked, self.calls, self.common = status, tracked, [], common
-        self.git_dir = git_dir
-        self.archive = tar_bytes(real_entries()) if archive is None else archive
+    def __init__(self, common=b".git", git_dir=GIT_DIR, config=SAFE_CONFIG, listing=None,
+                 algorithm="sha1", blobs=None):
+        self.calls, self.common, self.git_dir, self.config = [], common, git_dir, config
+        self.algorithm = algorithm
+        self.listing = tree_listing(algorithm=algorithm) if listing is None else listing
+        self.blobs = blobs or {blob_id((ROOT/name).read_bytes(), algorithm): (ROOT/name).read_bytes()
+                               for name in components.STAGED}
 
     def __call__(self, argv):
         self.calls.append(argv)
         position = argv.index("-C") + 2
-        command = argv[position]
-        if command == "ls-files" and not self.tracked:
-            raise components.ComponentError("not tracked")
+        command, wanted = argv[position], argv[position + 1] if len(argv) > position + 1 else ""
         if command == "rev-parse":
-            wanted = argv[position + 1]
-            return (self.git_dir.encode() if wanted == "--absolute-git-dir" else self.common) \
-                + b"\n"
-        return {"ls-files": b"", "status": self.status, "archive": self.archive,
-                "log": HEAD}[command]
+            return {"--absolute-git-dir": self.git_dir.encode(), "--git-common-dir": self.common,
+                    "--show-object-format": self.algorithm.encode()}[wanted] + b"\n"
+        if command == "config":
+            return self.config
+        if command == "cat-file":
+            return self.blobs[argv[-1]]
+        return {"ls-tree": self.listing, "log": HEAD}[command]
 
 
 def entry(kind="dir", uid=None, mode=0o755, gid=None):
     uid = os.getuid() if uid is None else uid
-    bits = {"dir": stat.S_IFDIR, "file": stat.S_IFREG}[kind]
+    bits = {"dir": stat.S_IFDIR, "file": stat.S_IFREG, "link": stat.S_IFLNK}[kind]
     return SimpleNamespace(st_mode=bits | mode, st_uid=uid, st_gid=os.getgid() if gid is None
                            else gid)
 
 
 class FakeTree:
-    """原始碼資料夾（/opt/checkout with space）用假的 stat，其他路徑（暫存目錄）用真的。"""
+    """原始碼資料夾（/opt/checkout with space）用假的 stat，工作樹內容取自專案裡真正的檔案；
+    其他路徑（暫存目錄）用真的。"""
 
     def __init__(self):
         self.entries = {"/": entry(uid=0), "/opt": entry(uid=0), str(CHECKOUT): entry(),
                         GIT_DIR: entry()}
+        for name in components.STAGED:
+            parts = name.split("/")
+            for end in range(1, len(parts)):
+                self.entries.setdefault(str(CHECKOUT/"/".join(parts[:end])), entry())
+            self.entries[str(CHECKOUT/name)] = entry("file", mode=0o644)
+        self.content = {str(CHECKOUT/name): (ROOT/name).read_bytes() for name in components.STAGED}
 
     def __call__(self, path):
         path = str(path)
@@ -93,9 +95,8 @@ class FakeTree:
         return sorted({key[len(prefix):].split("/")[0] for key in self.entries
                        if key.startswith(prefix)})
 
-    @staticmethod
-    def read(path):
-        return b""
+    def read(self, path):
+        return self.content.get(str(path), b"")
 
     @staticmethod
     def listxattr(path):
@@ -160,18 +161,48 @@ class Run(unittest.TestCase):
         files = installer.parse_manifest(self.seen[0]["manifest"])
         self.assertEqual(sorted(files), sorted(components.SOURCES))
 
-    def test_git_reads_only_the_component_paths_from_head(self):
+    def test_git_reads_only_raw_blobs_from_head(self):
         self.run_action()
         prefix = ["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-                  "-c", "protocol.allow=never", "-C", str(CHECKOUT)]
+                  "-c", "protocol.allow=never", "-c", "core.attributesFile=/dev/null",
+                  "-C", str(CHECKOUT)]
+        listing = {name: line.split(b" ")[2].split(b"\t")[0].decode()
+                   for line in self.git.listing.split(b"\0") if line
+                   for name in [line.split(b"\t")[1].decode()]}
         self.assertEqual(self.git.calls, [
             prefix + ["rev-parse", "--absolute-git-dir"],
             prefix + ["rev-parse", "--git-common-dir"],
-            prefix + ["ls-files", "--error-unmatch", "--", *components.STAGED],
-            prefix + ["status", "--porcelain", "--untracked-files=no", "--",
-                      *components.STAGED],
-            prefix + ["archive", "--format=tar", "HEAD", "--", *components.STAGED],
+            prefix + ["config", "--local", "--list", "-z"],
+            prefix + ["config", "--worktree", "--list", "-z"],
+            prefix + ["rev-parse", "--show-object-format"],
+            prefix + ["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *components.STAGED],
+            *[prefix + ["cat-file", "blob", listing[name]] for name in components.STAGED],
             prefix + ["log", "-1", "--format=%h %s", "HEAD"]])
+        for argv in self.git.calls:
+            self.assertNotIn("archive", argv)
+            self.assertNotIn("status", argv)
+
+    def test_forbidden_local_config_is_refused_before_reading_anything(self):
+        for key in (b"include.path", b"includeif.gitdir:/srv/.path", b"filter.x.smudge",
+                    b"filter.lfs.process", b"core.attributesfile", b"INCLUDE.path"):
+            with self.subTest(key=key):
+                git = FakeGit(config=SAFE_CONFIG + key + b"\nvalue\0")
+                self.assertEqual(self.run_action(git=git), 1)
+                self.assertIn("git 設定", self.messages[-1])
+                commands = [argv[argv.index("-C") + 2] for argv in git.calls]
+                self.assertNotIn("ls-tree", commands)
+                self.assertNotIn("cat-file", commands)
+        self.assertEqual(self.seen, [])
+
+    def test_sha256_repositories_are_supported(self):
+        self.assertEqual(self.run_action(git=FakeGit(algorithm="sha256")), 0)
+
+    def test_blob_that_does_not_match_its_id_is_refused(self):
+        git = FakeGit()
+        first = next(iter(git.blobs))
+        git.blobs[first] = b"tampered"
+        self.assertEqual(self.run_action(git=git), 1)
+        self.assertEqual(self.seen, [])
 
     def test_head_commit_is_shown_before_authorization(self):
         order = []
@@ -248,28 +279,37 @@ class Run(unittest.TestCase):
         self.assertEqual(self.run_action("remove"), 0)
         self.assertIn("remove", self.seen[0]["argv"])
 
-    def test_modified_files_are_refused(self):
-        self.assertEqual(self.run_action(git=FakeGit(status=b" M helper/sdm-cpu-power\n")), 1)
+    def test_modified_working_tree_is_refused(self):
+        name = str(CHECKOUT/"helper/sdm-cpu-power")
+        for change in ("content", "symlink", "missing"):
+            with self.subTest(change=change):
+                tree = FakeTree()
+                if change == "content":
+                    tree.content[name] += b"# edited\n"
+                elif change == "symlink":
+                    tree.entries[name] = entry("link", mode=0o777)
+                else:
+                    del tree.entries[name]
+                self.assertEqual(self.run_action(tree=tree), 1)
+                self.assertIn("未提交", self.messages[-1])
         self.assertEqual(self.seen, [])
-        self.assertIn("未提交", self.messages[-1])
 
-    def test_untracked_files_are_refused(self):
-        self.assertEqual(self.run_action(git=FakeGit(tracked=False)), 1)
-        self.assertEqual(self.seen, [])
-
-    def test_unexpected_archive_members_are_refused(self):
-        entries = real_entries()
-        cases = (entries + [("helper/extra", b"x", tarfile.REGTYPE)],
-                 [entry for entry in entries if entry[0] != "helper/sdm-cpu-power"],
-                 [(name, None, tarfile.SYMTYPE) if name == "helper/sdm-cpu-power"
-                  else (name, data, kind) for name, data, kind in entries],
-                 entries + [("../escape", b"x", tarfile.REGTYPE)],
-                 entries + [(components.STAGED[0], b"again", tarfile.REGTYPE)])
-        for archive in cases:
-            with self.subTest(names=[name for name, _, _ in archive][-1:]):
-                self.assertEqual(self.run_action(git=FakeGit(archive=tar_bytes(archive))), 1)
+    def test_head_must_hold_exactly_the_expected_regular_files(self):
+        staged = list(components.STAGED)
+        cases = (tree_listing(staged[1:]),
+                 tree_listing(staged + ["helper/extra"]),
+                 tree_listing(staged + [staged[0]]),
+                 tree_listing(modes={staged[0]: "120000"}),
+                 tree_listing(modes={staged[0]: "160000"}),
+                 tree_listing(modes={staged[0]: "100664"}),
+                 b"garbage\0")
+        for listing in cases:
+            with self.subTest(listing=listing[:40]):
+                self.assertEqual(self.run_action(git=FakeGit(listing=listing)), 1)
         self.assertEqual(self.seen, [])
         self.assertTrue(all(not stage.exists() for stage in self.stages))
+        self.assertEqual(self.run_action(git=FakeGit(
+            listing=tree_listing(modes={"helper/sdm-cpu-power": "100755"}))), 0)
 
     def test_installed_package_blocks_install_but_not_remove(self):
         self.assertEqual(self.run_action(deb=True), 1)
@@ -396,9 +436,10 @@ class Commands(unittest.TestCase):
             self.assertEqual(components.git_output(argv, environ=environ), b"ok")
         finally:
             components.subprocess.run = original
-        self.assertEqual(seen["argv"][:8], ["/usr/bin/git", "-c", "core.hooksPath=/dev/null",
-                                            "-c", "core.fsmonitor=false", "-c",
-                                            "protocol.allow=never", "-C"])
+        self.assertEqual(seen["argv"][:10], ["/usr/bin/git", "-c", "core.hooksPath=/dev/null",
+                                             "-c", "core.fsmonitor=false", "-c",
+                                             "protocol.allow=never", "-c",
+                                             "core.attributesFile=/dev/null", "-C"])
         self.assertEqual(seen["env"], {"PATH": "/usr/bin", "HOME": "/var/empty-home",
                                        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
                                        "GIT_NO_REPLACE_OBJECTS": "1", "GIT_ATTR_NOSYSTEM": "1"})

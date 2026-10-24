@@ -103,13 +103,18 @@
   hooks 不使用所以略過）都必須是同樣規則下的目錄或一般檔案，不接受符號連結或特殊檔案；
   objects/info/alternates、http-alternates、info/grafts 與 replace refs（refs/replace/ 或
   packed-refs 裡的 refs/replace/）會改變取出的內容，一律拒絕。
-- 使用者端的 git 指令只讀取（rev-parse、ls-files、status、archive、log），而且以
-  `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never` 執行，
-  環境去掉所有繼承的 GIT_* 變數，再設 GIT_CONFIG_NOSYSTEM=1、GIT_CONFIG_GLOBAL=/dev/null、
-  GIT_NO_REPLACE_OBJECTS=1、GIT_ATTR_NOSYSTEM=1：不執行 hooks、不連任何遠端、
-  不讀系統或使用者層級的 git 設定。
-- 要安裝的檔案必須已提交且沒有修改；以 git archive HEAD 取出，tar 裡只接受預期的一般檔案，
-  內容由程式自己寫到新的私人暫存目錄，從不使用 tar 的解壓縮。暫存目錄放在 XDG_RUNTIME_DIR
+- 使用者端的 git 指令只讀取（rev-parse、config --list、ls-tree、cat-file blob、log），而且以
+  `-c core.hooksPath=/dev/null -c core.fsmonitor=false -c protocol.allow=never
+  -c core.attributesFile=/dev/null` 執行，環境去掉所有繼承的 GIT_* 變數，再設
+  GIT_CONFIG_NOSYSTEM=1、GIT_CONFIG_GLOBAL=/dev/null、GIT_NO_REPLACE_OBJECTS=1、
+  GIT_ATTR_NOSYSTEM=1：不執行 hooks、不連任何遠端、不讀系統或使用者層級的 git 設定。
+- 本地（與 worktree）的 git 設定含 include.*、includeIf.*、filter.* 或 core.attributesFile 時
+  一律拒絕（列出設定時指定檔案，不會展開 include）：這些設定可能在讀取時執行指令或改變內容。
+- 要安裝的內容是 HEAD 中原始的 blob：以 ls-tree 找出物件 ID（只接受 100644／100755 的一般檔案，
+  不接受符號連結或子模組），以 cat-file blob 讀出，再以物件 ID 驗證內容；不經過 git archive，
+  不套用任何 filter、export-subst、ident 或換行轉換。工作樹是否有未提交的修改由程式自己計算
+  工作樹檔案的物件 ID 比對（不執行 git status，不會觸發 clean filter）。
+- 內容由程式自己寫到新的私人暫存目錄。暫存目錄放在 XDG_RUNTIME_DIR
   （屬於你、0700、上層安全），沒有時才用 root 擁有且有黏著位元的 /tmp；執行 pkexec 前
   再確認暫存目錄是你的 0700 目錄、每一層上層都安全。
 - 執行 pkexec 前在終端機顯示要安裝的提交（短雜湊與標題）。
