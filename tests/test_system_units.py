@@ -179,6 +179,18 @@ class ServiceHelper(unittest.TestCase):
         self.assertEqual((service.EXIT_OK, service.EXIT_USAGE, service.EXIT_FAILED,
                           service.EXIT_NOT_PERMITTED), CpuPower.EXIT_CODES)
 
+    def test_sampling_phase_is_described_precisely(self):
+        texts = {"service": self.path.read_text(encoding="utf-8"),
+                 "security": (HELPERS.parent/"docs/SECURITY.md").read_text(encoding="utf-8"),
+                 "privacy": (HELPERS.parent/"docs/PRIVACY.md").read_text(encoding="utf-8")}
+        for name, text in texts.items():
+            with self.subTest(document=name):
+                self.assertIn("相位", text)
+                self.assertIn("重新啟動", text)
+                for claim in ("無法決定視窗的起點", "無法選擇視窗的起點", "無法被請求對準",
+                              "攻擊者無法對準"):
+                    self.assertNotIn(claim, text)
+
     def test_helper_paths_are_in_the_two_install_locations(self):
         for helper, directory in ((CpuPower.DEB_SERVICE_HELPER, CpuPower.DEB_HELPER_DIR),
                                   (CpuPower.LOCAL_SERVICE_HELPER, CpuPower.LOCAL_HELPER_DIR)):
