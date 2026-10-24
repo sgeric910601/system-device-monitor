@@ -5,7 +5,7 @@ import stat
 import sys
 import unittest
 
-from sdm.constants import CpuPower, Power
+from sdm.constants import ChargeLimit, CpuPower, Power
 from tests.fixtures.helpers import HELPERS, git_mode, load_helper
 
 service = load_helper("sdm-cpu-power-service")
@@ -139,9 +139,9 @@ class ServiceUnits(unittest.TestCase):
         self.assertLessEqual(len(HARDENING["User"]), 31)
 
     def test_unit_directory_has_only_these_units(self):
-        self.assertEqual(sorted(path.name for path in UNITS.iterdir()),
-                         sorted(name + suffix for name in (DEB, LOCAL)
-                                for suffix in (".service", ".socket")))
+        expected = [name + suffix for name in (DEB, LOCAL) for suffix in (".service", ".socket")]
+        expected += [ChargeLimit.DEB_UNIT, ChargeLimit.LOCAL_UNIT]
+        self.assertEqual(sorted(path.name for path in UNITS.iterdir()), sorted(expected))
 
 
 class ServiceHelper(unittest.TestCase):

@@ -2,7 +2,7 @@
 import unittest
 import xml.etree.ElementTree as ElementTree
 
-from sdm.constants import CpuPower
+from sdm.constants import ChargeLimit, CpuPower
 from tests.fixtures.helpers import HELPERS
 
 POLICIES = HELPERS/"policy"
@@ -42,8 +42,9 @@ class Policies(unittest.TestCase):
         self.check(LOCAL_POLICY, CpuPower.ACTION_LOCAL, CpuPower.LOCAL_HELPER)
 
     def test_file_names_match_the_action_ids(self):
+        limits = (ChargeLimit.ACTION_DEB + ".policy", ChargeLimit.ACTION_LOCAL + ".policy")
         self.assertEqual(sorted(path.name for path in POLICIES.iterdir()),
-                         sorted((DEB_POLICY.name, LOCAL_POLICY.name)))
+                         sorted((DEB_POLICY.name, LOCAL_POLICY.name) + limits))
         self.assertTrue(CpuPower.ACTION_DEB.startswith(DEB_POLICY.stem))
         self.assertTrue(CpuPower.ACTION_LOCAL.startswith(LOCAL_POLICY.stem))
 

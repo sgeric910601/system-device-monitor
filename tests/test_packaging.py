@@ -21,6 +21,8 @@ MANIFEST = json.loads((ROOT/"package-files.json").read_text(encoding="utf-8"))
 SCRIPTS = ROOT/"packaging/debian"
 SOCKET = "system-device-monitor-cpu-power.socket"
 SERVICE = "system-device-monitor-cpu-power.service"
+LIMIT_UNIT = "system-device-monitor-charge-limit.service"
+LIMIT_POLICY = "tw.local.system-device-monitor.unattended.charge-limit.policy"
 LIBEXEC = "/usr/libexec/system-device-monitor/"
 UNITS = "/usr/lib/systemd/system/"
 SYSTEM = [
@@ -32,6 +34,10 @@ SYSTEM = [
      "mode": "0644"},
     {"source": "helper/systemd/" + SOCKET, "target": UNITS + SOCKET, "mode": "0644"},
     {"source": "helper/systemd/" + SERVICE, "target": UNITS + SERVICE, "mode": "0644"},
+    {"source": "helper/sdm-charge-limit", "target": LIBEXEC + "sdm-charge-limit", "mode": "0755"},
+    {"source": "helper/policy/" + LIMIT_POLICY,
+     "target": "/usr/share/polkit-1/actions/" + LIMIT_POLICY, "mode": "0644"},
+    {"source": "helper/systemd/" + LIMIT_UNIT, "target": UNITS + LIMIT_UNIT, "mode": "0644"},
 ] + [{"source": f"assets/app/mint-{size}.png",
       "target": f"/usr/share/icons/hicolor/{size}x{size}/apps/system-device-monitor.png",
       "mode": "0644"} for size in (128, 512)]      # 預設的程式圖示（薄荷綠）
@@ -63,10 +69,13 @@ class Manifest(unittest.TestCase):
                 self.assertEqual(oct(mode(stage/"DEBIAN"/name)), oct(0o755))
             names = {path.name for path in stage.rglob("*")}
             for local in ("tw.local.system-device-monitor.local.policy", "install_system.py",
-                          "system-device-monitor-local-cpu-power.socket", "owner.conf"):
+                          "system-device-monitor-local-cpu-power.socket", "owner.conf",
+                          "tw.local.system-device-monitor.unattended.local.charge-limit.policy",
+                          "system-device-monitor-local-charge-limit.service",
+                          "charge-limit.json"):
                 self.assertNotIn(local, names)
             self.assertEqual(sorted(path.name for path in (stage/LIBEXEC.strip("/")).iterdir()),
-                             ["sdm-cpu-power", "sdm-cpu-power-service"])
+                             ["sdm-charge-limit", "sdm-cpu-power", "sdm-cpu-power-service"])
 
 
 class ScriptText(unittest.TestCase):
@@ -105,7 +114,15 @@ class ScriptText(unittest.TestCase):
         for name in MAINTAINER:
             with self.subTest(script=name):
                 self.assertNotIn("rm -r", self.text(name))
-                self.assertNotIn("/var/lib", self.text(name))
+                if name != "postrm":
+                    self.assertNotIn("/var/lib", self.text(name))
+
+    def test_purge_removes_only_the_charge_limit_state_file(self):
+        lines = [line.strip() for line in self.text("postrm").splitlines()
+                 if ("/var/lib" in line or "STATE_DIR" in line) and not line.startswith("#")]
+        self.assertEqual(lines, ['STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"',
+                                 'rm -f "$STATE_DIR/charge-limit.json"',
+                                 'rmdir "$STATE_DIR" 2>/dev/null || true'])
 
     def test_unit_names_match_the_shipped_units(self):
         for name in MAINTAINER:
@@ -113,6 +130,13 @@ class ScriptText(unittest.TestCase):
             self.assertIn(f"SOCKET={SOCKET}\n", text)
             if "SERVICE=" in text:
                 self.assertIn(f"SERVICE={SERVICE}\n", text)
+            if "LIMIT_UNIT=" in text:
+                self.assertIn(f"LIMIT_UNIT={LIMIT_UNIT}\n", text)
+
+    def test_prerm_disables_the_charge_limit_unit(self):
+        text = self.text("prerm")
+        self.assertIn('systemctl disable "$LIMIT_UNIT"', text)
+        self.assertNotIn("charge-limit.json", text)
 
     def test_live_systemd_is_skipped_for_an_offline_root(self):
         for name in MAINTAINER:
@@ -137,6 +161,8 @@ class ScriptRuns(unittest.TestCase):
         self.dropin = self.root/"etc/systemd/system"/(SOCKET + ".d")
         self.wants = self.root/"etc/systemd/system/sockets.target.wants"/SOCKET
         self.state = self.root/"var/lib/system-device-monitor"
+        self.limit_wants = [self.root/"etc/systemd/system"/(target + ".wants")/LIMIT_UNIT
+                            for target in ("multi-user.target", "sleep.target")]
 
     def populate(self):
         self.dropin.mkdir(parents=True)
@@ -160,6 +186,42 @@ class ScriptRuns(unittest.TestCase):
         self.assertFalse(self.dropin.exists())
         self.assertFalse(os.path.lexists(self.wants))
         self.assertTrue(self.state.exists())
+
+    def populate_limit(self):
+        for link in self.limit_wants:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to("/usr/lib/systemd/system/" + LIMIT_UNIT)
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state/"charge-limit.json").write_text("{}\n")
+
+    def test_prerm_remove_disables_the_charge_limit_unit_but_keeps_its_state(self):
+        self.populate_limit()
+        self.run_script("prerm", "remove")
+        self.assertFalse(any(os.path.lexists(link) for link in self.limit_wants))
+        self.assertTrue((self.state/"charge-limit.json").exists())
+
+    def test_prerm_upgrade_keeps_the_charge_limit_unit(self):
+        self.populate_limit()
+        self.run_script("prerm", "upgrade", "1.0")
+        self.assertTrue(all(os.path.lexists(link) for link in self.limit_wants))
+
+    def test_postrm_purge_removes_the_charge_limit_state(self):
+        self.populate_limit()
+        self.run_script("postrm", "purge")
+        self.assertFalse(self.state.exists())
+
+    def test_postrm_purge_keeps_other_state_files(self):
+        self.populate_limit()
+        local = self.state/"charge-limit-local.json"
+        local.write_text("{}\n")
+        self.run_script("postrm", "purge")
+        self.assertFalse((self.state/"charge-limit.json").exists())
+        self.assertTrue(local.exists())
+
+    def test_postrm_remove_keeps_the_charge_limit_state(self):
+        self.populate_limit()
+        self.run_script("postrm", "remove")
+        self.assertTrue((self.state/"charge-limit.json").exists())
 
     def test_prerm_upgrade_keeps_everything(self):
         self.populate()

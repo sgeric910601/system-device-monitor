@@ -200,6 +200,21 @@
       "mode": "0644"
     },
     {
+      "source": "helper/sdm-charge-limit",
+      "target": "/usr/libexec/system-device-monitor/sdm-charge-limit",
+      "mode": "0755"
+    },
+    {
+      "source": "helper/policy/tw.local.system-device-monitor.unattended.charge-limit.policy",
+      "target": "/usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy",
+      "mode": "0644"
+    },
+    {
+      "source": "helper/systemd/system-device-monitor-charge-limit.service",
+      "target": "/usr/lib/systemd/system/system-device-monitor-charge-limit.service",
+      "mode": "0644"
+    },
+    {
       "source": "assets/app/mint-128.png",
       "target": "/usr/share/icons/hicolor/128x128/apps/system-device-monitor.png",
       "mode": "0644"
@@ -242,11 +257,15 @@
     "docs/USAGE.md",
     "helper/policy/tw.local.system-device-monitor.local.policy",
     "helper/policy/tw.local.system-device-monitor.policy",
+    "helper/policy/tw.local.system-device-monitor.unattended.charge-limit.policy",
+    "helper/policy/tw.local.system-device-monitor.unattended.local.charge-limit.policy",
     "helper/sdm-charge-limit",
     "helper/sdm-cpu-power",
     "helper/sdm-cpu-power-service",
+    "helper/systemd/system-device-monitor-charge-limit.service",
     "helper/systemd/system-device-monitor-cpu-power.service",
     "helper/systemd/system-device-monitor-cpu-power.socket",
+    "helper/systemd/system-device-monitor-local-charge-limit.service",
     "helper/systemd/system-device-monitor-local-cpu-power.service",
     "helper/systemd/system-device-monitor-local-cpu-power.socket",
     "icons/cpu.svg",
@@ -452,6 +471,7 @@
     "tests/test_cgroups.py",
     "tests/test_charge_limit.py",
     "tests/test_charge_limit_helper.py",
+    "tests/test_charge_limit_unit.py",
     "tests/test_charge_limit_writes.py",
     "tests/test_chart_layout.py",
     "tests/test_ci_workflow.py",
