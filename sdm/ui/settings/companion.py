@@ -83,22 +83,40 @@ def choose_dialog(parent):
     return dialog
 
 
+def status_line(css):
+    widget = wrapped("", css)
+    widget.set_no_show_all(True)
+    return widget
+
+
 def photo_card(controls, companion):
-    status = wrapped("", "power-warning")
-    status.set_no_show_all(True)
+    """選照片在背景解碼，期間顯示「處理中…」並停用兩個按鈕。"""
+    progress, problem, busy = status_line("muted"), status_line("power-warning"), []
 
     def changed():
         companion.photo_changed()
         controls.changed(frozenset({PHOTO_CHANGED}))
 
+    def show(widget, message):
+        widget.set_text(message or "")
+        widget.set_visible(bool(message))
+
+    def finished(message):
+        busy.clear()
+        show(progress, None)
+        show(problem, message)
+        controls.changed(frozenset({PHOTO_CHANGED}))
+
     def choose(button):
         dialog = choose_dialog(button.get_toplevel())
         path = dialog.get_filename() if dialog.run() == Gtk.ResponseType.ACCEPT else None
-        if path:
-            problem = text.choose_photo(companion.photos, path, controls.apply, changed)
-            status.set_text(problem or "")
-            status.set_visible(bool(problem))
         dialog.destroy()
+        if path:
+            busy.append(path)
+            show(progress, text.BUSY)
+            show(problem, None)
+            controls.changed(frozenset({PHOTO_CHANGED}))
+            text.choose_photo(companion.photos, path, controls.apply, changed, finished)
 
     def remove(_button):
         text.remove_photo(companion.photos, controls.store.value(KEY), controls.apply, changed)
@@ -107,9 +125,10 @@ def photo_card(controls, companion):
                                 (text.REMOVE, remove, companion.photos.has_photo)):
         button = Gtk.Button(label=title)
         button.connect("clicked", action)
-        controls.enable_when(button, KEY, when=when)
+        controls.enable_when(button, KEY, when=lambda when=when: not busy and when())
         buttons.pack_start(button, False, False, 0)
-    return card("我的照片", buttons, status, wrapped(text.photo_note(companion.photos), "muted"))
+    return card("我的照片", buttons, progress, problem,
+                wrapped(text.photo_note(companion.photos), "muted"))
 
 
 def build(controls, context):

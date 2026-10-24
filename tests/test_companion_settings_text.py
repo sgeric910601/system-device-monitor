@@ -13,11 +13,12 @@ class FakePhotos:
     def has_photo(self):
         return self.photo
 
-    def save(self, source):
-        if self.fail:
-            raise PhotoError(self.fail)
-        self.saved.append(source)
-        self.photo = True
+    def save_async(self, source, done):
+        """與真的 PhotoStore 相同：背景處理完才回報（這裡立即回報）。"""
+        if not self.fail:
+            self.saved.append(source)
+            self.photo = True
+        done(self.fail)
 
     def remove(self):
         self.removed += 1
@@ -53,17 +54,22 @@ class PhotoActions(unittest.TestCase):
         self.changes.append(changes)
 
     def test_choosing_a_photo_switches_to_it(self):
-        photos = FakePhotos()
-        message = text.choose_photo(photos, "/picked.jpg", self.apply, lambda: self.redraws.append(1))
-        self.assertIsNone(message)
+        photos, finished = FakePhotos(), []
+        text.choose_photo(photos, "/picked.jpg", self.apply, lambda: self.redraws.append(1),
+                          finished.append)
+        self.assertEqual(finished, [None])
         self.assertEqual((photos.saved, self.changes, self.redraws),
                          (["/picked.jpg"], [{"companion_appearance": "photo"}], [1]))
 
     def test_a_bad_photo_keeps_everything(self):
-        photos = FakePhotos(fail="讀不到這張照片，請換一張")
-        message = text.choose_photo(photos, "/bad.jpg", self.apply, lambda: self.redraws.append(1))
-        self.assertEqual(message, "讀不到這張照片，請換一張")
+        photos, finished = FakePhotos(fail="讀不到這張照片，請換一張"), []
+        text.choose_photo(photos, "/bad.jpg", self.apply, lambda: self.redraws.append(1),
+                          finished.append)
+        self.assertEqual(finished, ["讀不到這張照片，請換一張"])
         self.assertEqual((self.changes, self.redraws), ([], []))
+
+    def test_busy_text(self):
+        self.assertEqual(text.BUSY, "處理中…")
 
     def test_removing_the_photo_falls_back_to_the_headshot(self):
         photos = FakePhotos()

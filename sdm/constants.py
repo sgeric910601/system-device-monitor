@@ -408,6 +408,9 @@ class Companion:
     PHOTO_PIXELS = 512              # 我的照片裁成正方形、存成 512 × 512
     PHOTO_DECODE_PIXELS = 2048      # 解碼時先縮到不超過 2048 px，大照片也不佔太多記憶體
     PHOTO_MAX_BYTES = 50 * 1024 * 1024
+    PHOTO_MAX_PIXELS = 100_000_000  # 解碼前先看宣告的尺寸：超過 1 億像素或任一邊超過 16384 就不解碼
+    PHOTO_MAX_SIDE = 16384
+    PHOTO_FORMATS = ("png", "jpeg", "webp", "gif", "bmp")   # 只接受常見的照片格式
 
 
 class Pet:

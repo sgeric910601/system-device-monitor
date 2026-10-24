@@ -2,7 +2,6 @@
 from sdm.constants import Companion
 from sdm.core.companion import HEADSHOT, PHOTO
 from sdm.core.pet_geometry import size_presets
-from sdm.services.companion_photo import PhotoError
 
 SCALES = size_presets()
 PLACES = ((False, "浮在視窗上"), (True, "放在桌布上（其他視窗會蓋住牠）"))
@@ -16,6 +15,7 @@ PHOTO_PRIVACY = ("照片會從中間裁成正方形、縮成 512 × 512，重新
                  "只放在這台電腦的資料夾，不會上傳。")
 PREVIEW_PHOTO = "示範模式不使用自己的照片，截圖只會出現內建的貓咪大頭照。"
 CHOOSE = "選擇照片…"
+BUSY = "處理中…"
 REMOVE = "移除照片"
 CHOOSER_TITLE = "選擇夥伴的照片"
 CHOOSER_ACCEPT = "使用這張照片"
@@ -41,15 +41,15 @@ def icon_note(problem):
     return ICON_RELOGIN if not problem else problem + "。" + ICON_RELOGIN
 
 
-def choose_photo(photos, path, apply, changed):
-    """存好照片後改用「我的照片」；照片不能用時回傳要顯示的原因，設定不變。"""
-    try:
-        photos.save(path)
-    except PhotoError as error:
-        return str(error)
-    changed()
-    apply(companion_appearance=PHOTO)
-    return None
+def choose_photo(photos, path, apply, changed, finished):
+    """在背景處理照片；存好後（回到主執行緒）改用「我的照片」。
+    finished 收到要顯示的原因（照片不能用時，設定不變）或 None。"""
+    def done(message):
+        if message is None:
+            changed()
+            apply(companion_appearance=PHOTO)
+        finished(message)
+    photos.save_async(path, done)
 
 
 def remove_photo(photos, appearance, apply, changed):
