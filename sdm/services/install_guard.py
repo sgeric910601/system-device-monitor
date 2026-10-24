@@ -4,8 +4,10 @@
   上層目錄，都必須屬於 root 或使用者、其他人不可寫；群組可寫只允許 root 擁有且有黏著位元的
   目錄（/tmp），或使用者私人群組（與帳號同名、沒有其他成員、也不是任何其他帳號的主要群組，
   Ubuntu 預設 umask 002 的情況）。否則別的帳號可能改掉 git 取出的內容。
-  有 POSIX ACL（system.posix_acl_access，目錄另有 system.posix_acl_default）的項目，群組位元其實是
-  ACL 的遮罩，可能讓其他帳號寫入，所以不套用私人群組的放寬；無法確認時同樣不放寬。
+  放寬只用在本機檔案系統上、而且沒有任何 system.* 延伸屬性（POSIX、NFSv4、rich、CIFS 等 ACL）
+  的項目：有 ACL 時群組位元其實是 ACL 的遮罩，可能讓其他帳號寫入；網路與 FUSE 檔案系統
+  （nfs*、cifs、smb3、fuse*、9p、ceph、glusterfs…）的擁有者與權限可能由伺服器決定。
+  無法確認時一律不放寬（只看嚴格的權限位元）。
 - git 目錄與共用 git 目錄裡的每一項（HEAD、config、packed-refs、refs、info、objects 等，
   hooks 除外：git 指令一律以 core.hooksPath=/dev/null 執行）都必須是同樣規則下的目錄或一般檔案；
   objects/info/alternates、http-alternates、info/grafts 與 replace refs 會改變取出的內容，一律拒絕。
@@ -22,7 +24,9 @@ import grp
 import os
 from pathlib import PurePosixPath
 import pwd
+import re
 import stat
+from typing import Callable, NamedTuple, Optional
 
 UNSAFE_REPOSITORY = ("原始碼資料夾、它的 .git 或上層目錄可以被其他帳號寫入，為了安全不安裝；"
                      "請改用只有你（或 root）能寫入的資料夾。")
@@ -40,8 +44,13 @@ HEAD_TEXT = {"install": "將以管理員權限安裝這個提交的元件：{}",
 HEAD_MAX_CHARS = 120
 TMP = "/tmp"
 OTHERS = 0o077
-ACL_ATTRIBUTES = ("system.posix_acl_access", "system.posix_acl_default")
+SYSTEM_XATTR = "system."                # ACL 類延伸屬性的命名空間；出現任何一個就不放寬
 NO_XATTRS = (errno.ENOTSUP, errno.EOPNOTSUPP)       # 檔案系統不支援延伸屬性＝沒有 ACL
+MOUNTINFO = "/proc/self/mountinfo"
+NETWORK_FSTYPES = frozenset({"cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "fuse",
+                             "fuseblk", "afs", "lustre", "gpfs", "ocfs2", "gfs2"})
+NETWORK_PREFIXES = ("nfs", "fuse.")
+MOUNT_ESCAPE = re.compile(r"\\([0-7]{3})")
 
 BOOTSTRAP = """import hashlib, json, os, stat, sys
 LIMIT = 1 << 20
@@ -103,48 +112,102 @@ def system_listxattr(path):
     return os.listxattr(path, follow_symlinks=False)
 
 
-def has_acl(path, listxattr):
-    """有存取或預設 ACL 時為 True；不支援延伸屬性為 False；無法確認（沒有路徑、沒有查詢函式或
-    其他錯誤）時視為有。"""
-    if path is None or listxattr is None:
+def read_mountinfo():
+    with open(MOUNTINFO, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+class MountTable:
+    """/proc/self/mountinfo 的（掛載點、檔案系統類型）；fstype(path) 取最長的相符掛載點。"""
+
+    def __init__(self, mounts):
+        self.mounts = mounts
+
+    @classmethod
+    def load(cls, read=read_mountinfo):
+        try:
+            text = read()
+        except OSError:
+            return cls(())
+        mounts = []
+        for line in text.splitlines():
+            left, separator, right = line.partition(" - ")
+            fields, tail = left.split(), right.split()
+            if separator and len(fields) >= 5 and tail:
+                point = MOUNT_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), fields[4])
+                mounts.append((point, tail[0]))
+        return cls(tuple(mounts))
+
+    def fstype(self, path):
+        best, kind = None, None
+        for point, fstype in self.mounts:
+            inside = point == "/" or path == point or path.startswith(point.rstrip("/") + "/")
+            if inside and (best is None or len(point) > len(best)):
+                best, kind = point, fstype
+        return kind
+
+
+def mount_fstype(path, read=read_mountinfo):
+    return MountTable.load(read).fstype(path)
+
+
+def network_filesystem(fstype):
+    """網路、叢集或 FUSE 檔案系統（擁有者與權限可能由別處決定）；不知道時也算。"""
+    return fstype is None or fstype in NETWORK_FSTYPES or fstype.startswith(NETWORK_PREFIXES)
+
+
+class GroupPolicy(NamedTuple):
+    """使用者私人群組的放寬：gid、延伸屬性查詢與檔案系統類型查詢。"""
+    gid: int
+    listxattr: Optional[Callable]
+    fstype: Callable
+
+
+def has_system_xattr(path, listxattr):
+    """有任何 system.* 延伸屬性（各種 ACL）時為 True；不支援延伸屬性為 False；
+    無法確認（沒有查詢函式或其他錯誤）時視為有。"""
+    if listxattr is None:
         return True
     try:
         names = listxattr(path)
     except OSError as error:
         return error.errno not in NO_XATTRS
-    return any(name in ACL_ATTRIBUTES for name in names)
+    return any(name.startswith(SYSTEM_XATTR) for name in names)
 
 
-def writable_by_others(info, private_gid, path=None, listxattr=None):
-    """除了擁有者（與 root 擁有、有黏著位元的情況）以外，還有誰能寫入。
-    群組可寫只在群組是使用者私人群組而且沒有 ACL 時才不算。"""
+def relaxed(info, path, policy):
+    """群組可寫是否只代表使用者自己：私人群組、本機檔案系統、沒有任何 ACL。"""
+    if policy is None or path is None or info.st_gid != policy.gid:
+        return False
+    return not network_filesystem(policy.fstype(path)) and \
+        not has_system_xattr(path, policy.listxattr)
+
+
+def writable_by_others(info, policy=None, path=None):
+    """除了擁有者（與 root 擁有、有黏著位元的情況）以外，還有誰能寫入。"""
     sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
     if info.st_mode & stat.S_IWOTH:
         return not sticky_root
     if info.st_mode & stat.S_IWGRP:
-        if sticky_root:
-            return False
-        private = private_gid is not None and info.st_gid == private_gid
-        return not private or has_acl(path, listxattr)
+        return not (sticky_root or relaxed(info, path, policy))
     return False
 
 
-def safe_entry(info, uid, private_gid=None, allow_file=False, path=None, listxattr=None):
+def safe_entry(info, uid, policy=None, allow_file=False, path=None):
     kind_ok = stat.S_ISDIR(info.st_mode) or (allow_file and stat.S_ISREG(info.st_mode))
-    return kind_ok and info.st_uid in (0, uid) and \
-        not writable_by_others(info, private_gid, path, listxattr)
+    return kind_ok and info.st_uid in (0, uid) and not writable_by_others(info, policy, path)
 
 
-def safe_chain(path, uid, lstat, private_gid=None, allow_file=False, listxattr=None):
+def safe_chain(path, uid, lstat, policy=None, allow_file=False):
     """path 本身與每一層上層目錄都安全（不跟隨符號連結：符號連結一律不算目錄）。"""
     pure = PurePosixPath(path)
     if not pure.is_absolute() or os.path.normpath(str(pure)) != str(path):
         return False
     try:
-        if not all(safe_entry(lstat(str(parent)), uid, private_gid, path=str(parent),
-                              listxattr=listxattr) for parent in reversed(pure.parents)):
+        if not all(safe_entry(lstat(str(parent)), uid, policy, path=str(parent))
+                   for parent in reversed(pure.parents)):
             return False
-        return safe_entry(lstat(str(pure)), uid, private_gid, allow_file, str(pure), listxattr)
+        return safe_entry(lstat(str(pure)), uid, policy, allow_file, str(pure))
     except OSError:
         return False
 
@@ -169,7 +232,7 @@ def read_bytes(path):
         return handle.read()
 
 
-def scan_git_dir(top, uid, private_gid, lstat, listdir, read=read_bytes, listxattr=None):
+def scan_git_dir(top, uid, policy, lstat, listdir, read=read_bytes):
     """top 底下每一項（hooks 除外）都必須是使用者或 root 擁有、別人不能寫的目錄或一般檔案，
     而且沒有 alternates、grafts 或 replace refs。不安全時拋出 ComponentError。"""
     pending = [""]
@@ -189,7 +252,7 @@ def scan_git_dir(top, uid, private_gid, lstat, listdir, read=read_bytes, listxat
             except OSError:
                 raise ComponentError(UNSAFE_GIT_DATA) from None
             if child in REDIRECTIONS or child.startswith(REPLACE_REFS) \
-                    or not safe_entry(info, uid, private_gid, True, path, listxattr):
+                    or not safe_entry(info, uid, policy, True, path):
                 raise ComponentError(UNSAFE_GIT_DATA)
             if stat.S_ISDIR(info.st_mode):
                 pending.append(child)
@@ -242,24 +305,24 @@ def check_stage(stage, uid, lstat):
         raise ComponentError(UNSAFE_STAGE)
 
 
-def check_repository(root, git_base, git, uid, lstat, private_gid, listdir=os.listdir,
-                     read=read_bytes, listxattr=system_listxattr):
+def check_repository(root, git_base, git, uid, lstat, policy, listdir=os.listdir,
+                     read=read_bytes):
     """原始碼資料夾、.git、git 目錄與共用 git 目錄（以及上層）只有使用者或 root 能寫，
     git 目錄裡的每一項也一樣。"""
     root = str(root)
-    if not safe_chain(root, uid, lstat, private_gid, listxattr=listxattr) or \
-            not safe_chain(root + "/.git", uid, lstat, private_gid, True, listxattr):
+    if not safe_chain(root, uid, lstat, policy) or \
+            not safe_chain(root + "/.git", uid, lstat, policy, allow_file=True):
         raise ComponentError(UNSAFE_REPOSITORY)
     git_dir = git(git_base + ["rev-parse", "--absolute-git-dir"]).decode("utf-8", "replace")
     common = git(git_base + ["rev-parse", "--git-common-dir"]).decode("utf-8", "replace")
     common = os.path.normpath(os.path.join(root, common.strip()))
     git_dir = git_dir.strip()
     for path in (git_dir, common):
-        if not safe_chain(path, uid, lstat, private_gid, listxattr=listxattr):
+        if not safe_chain(path, uid, lstat, policy):
             raise ComponentError(UNSAFE_REPOSITORY)
     tops = [common] + ([] if git_dir == common or git_dir.startswith(common + "/") else [git_dir])
     for top in tops:
-        scan_git_dir(top, uid, private_gid, lstat, listdir, read, listxattr)
+        scan_git_dir(top, uid, policy, lstat, listdir, read)
 
 
 def head_text(action, raw):

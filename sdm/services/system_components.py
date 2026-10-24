@@ -26,9 +26,10 @@ import stat
 import subprocess
 import tempfile
 
-from sdm.services.install_guard import (BOOTSTRAP, ComponentError, check_repository,  # noqa: F401
-                                        check_stage, head_text, read_bytes, stage_parent,
-                                        system_listxattr, user_private_gid)
+from sdm.services.install_guard import (BOOTSTRAP, ComponentError, GroupPolicy,  # noqa: F401
+                                        MountTable, check_repository, check_stage, head_text,
+                                        read_bytes, stage_parent, system_listxattr,
+                                        user_private_gid)
 
 SOURCES = (
     "helper/sdm-cpu-power",
@@ -247,10 +248,10 @@ def result_text(action, status):
 PRIVATE_GROUP = object()        # run() 的預設：查詢使用者私人群組
 
 
-def gather(action, root, git, uid, private_gid, files):
+def gather(action, root, git, uid, policy, files):
     """檢查原始碼資料夾、取出 HEAD 的檔案與要顯示的提交；不安全時拋出 ComponentError。
-    files 為（lstat、listdir、read、listxattr）。"""
-    check_repository(root, git_command(root), git, uid, files[0], private_gid, *files[1:])
+    files 為（lstat、listdir、read）；policy 為私人群組的放寬（None：不放寬）。"""
+    check_repository(root, git_command(root), git, uid, files[0], policy, *files[1:])
     check_local_config(root, git)
     algorithm = object_format(root, git)
     blobs = head_blobs(root, git, algorithm)
@@ -262,11 +263,13 @@ def gather(action, root, git, uid, private_gid, files):
 
 def run(action, root, say, git=git_output, call=subprocess.call, make_stage=None,
         deb_installed=package_installed, lstat=os.lstat, uid=None, private_gid=PRIVATE_GROUP,
-        listdir=os.listdir, read=read_bytes, listxattr=system_listxattr):
+        listdir=os.listdir, read=read_bytes, listxattr=system_listxattr, fstype=None):
     """安裝或移除；回傳結束碼（pkexec 的結束碼，或使用者端拒絕時的 1）。"""
     uid = os.getuid() if uid is None else uid
     if private_gid is PRIVATE_GROUP:
         private_gid = user_private_gid(uid)
+    policy = None if private_gid is None else GroupPolicy(
+        private_gid, listxattr, fstype or MountTable.load().fstype)
     if make_stage is None:
         make_stage = lambda: tempfile.mkdtemp(prefix=STAGE_PREFIX,  # noqa: E731
                                               dir=stage_parent(os.environ, uid, lstat))
@@ -274,8 +277,7 @@ def run(action, root, say, git=git_output, call=subprocess.call, make_stage=None
         say(DEB_INSTALLED)
         return REFUSED
     try:
-        contents, head = gather(action, root, git, uid, private_gid,
-                                (lstat, listdir, read, listxattr))
+        contents, head = gather(action, root, git, uid, policy, (lstat, listdir, read))
         stage = make_stage()
     except ComponentError as error:
         say(str(error))

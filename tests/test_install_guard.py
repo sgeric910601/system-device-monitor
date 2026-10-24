@@ -102,13 +102,14 @@ CLEAN = {"HEAD": node("file"), "config": node("file"), "refs": node(), "refs/hea
 
 class GitData(unittest.TestCase):
     def scan(self, changes=None, packed=b"", private_gid=GID, remove=(), acls=None,
-             check_acls=True):
+             check_acls=True, fstype="ext4"):
         entries = dict(CLEAN, **(changes or {}))
         for name in remove:
             entries.pop(name)
         tree = FakeGitDir(entries, packed, acls)
-        guard.scan_git_dir(TOP, ME, private_gid, tree.lstat, tree.listdir, tree.read,
-                           tree.listxattr if check_acls else None)
+        policy = None if private_gid is None else guard.GroupPolicy(
+            private_gid, tree.listxattr if check_acls else None, lambda path: fstype)
+        guard.scan_git_dir(TOP, ME, policy, tree.lstat, tree.listdir, tree.read)
 
     def refused(self, *args, **options):
         with self.assertRaises(guard.ComponentError):
@@ -139,7 +140,25 @@ class GitData(unittest.TestCase):
         self.scan(writable)
         self.refused(writable, acls={"config": ["system.posix_acl_access"]})
         self.refused(writable, acls={"objects": ["user.note", "system.posix_acl_default"]})
-        self.scan(writable, acls={"config": ["user.note", "security.selinux"]})
+        self.scan(writable, acls={"config": ["user.note", "security.selinux", "trusted.x"]})
+
+    def test_any_system_xattr_disables_the_relaxation(self):
+        writable = {"config": node("file", mode=0o664)}
+        for name in ("system.nfs4_acl", "system.richacl", "system.cifs_acl", "system.cifs_ntsd",
+                     "system.sockprotoname", "system.anything"):
+            with self.subTest(name=name):
+                self.refused(writable, acls={"config": [name]})
+
+    def test_network_and_fuse_filesystems_use_strict_mode_bits(self):
+        writable = {"config": node("file", mode=0o664)}
+        for fstype in ("nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse", "fuse.sshfs", "fuseblk",
+                       "9p", "ceph", "glusterfs", None):
+            with self.subTest(fstype=fstype):
+                self.refused(writable, fstype=fstype)
+        for fstype in ("ext4", "btrfs", "xfs", "tmpfs", "zfs", "f2fs"):
+            with self.subTest(fstype=fstype):
+                self.scan(writable, fstype=fstype)
+        self.scan(fstype="nfs4")      # 沒有群組可寫的項目時不需要放寬
 
     def test_acls_on_entries_that_need_no_relaxation_do_not_matter(self):
         self.scan(acls={"config": ["system.posix_acl_access"],
@@ -159,11 +178,16 @@ class GitData(unittest.TestCase):
 
         def lstat(path):
             return entries[path]
-        self.assertTrue(guard.safe_chain("/src/app", ME, lstat, GID, listxattr=lambda p: []))
-        self.assertFalse(guard.safe_chain(
-            "/src/app", ME, lstat, GID,
-            listxattr=lambda p: ["system.posix_acl_access"] if p == "/src/app" else []))
-        self.assertFalse(guard.safe_chain("/src/app", ME, lstat, GID))
+
+        def policy(listxattr, fstype=lambda path: "ext4"):
+            return guard.GroupPolicy(GID, listxattr, fstype)
+        self.assertTrue(guard.safe_chain("/src/app", ME, lstat, policy(lambda p: [])))
+        self.assertFalse(guard.safe_chain("/src/app", ME, lstat, policy(
+            lambda p: ["system.posix_acl_access"] if p == "/src/app" else [])))
+        self.assertFalse(guard.safe_chain("/src/app", ME, lstat, policy(None)))
+        self.assertFalse(guard.safe_chain("/src/app", ME, lstat,
+                                          policy(lambda p: [], lambda path: "nfs4")))
+        self.assertFalse(guard.safe_chain("/src/app", ME, lstat))
 
     def test_links_and_special_files_are_refused(self):
         self.refused({"refs/heads/main": node("link", mode=0o777)})
@@ -186,8 +210,45 @@ class GitData(unittest.TestCase):
             if path.endswith("/objects"):
                 raise PermissionError(path)
             return tree.listdir(path)
+        policy = guard.GroupPolicy(GID, tree.listxattr, lambda path: "ext4")
         with self.assertRaises(guard.ComponentError):
-            guard.scan_git_dir(TOP, ME, GID, tree.lstat, broken, tree.read, tree.listxattr)
+            guard.scan_git_dir(TOP, ME, policy, tree.lstat, broken, tree.read)
+
+
+MOUNTINFO = r"""22 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw
+30 22 0:40 / /net/share rw,relatime shared:9 - nfs4 server:/export rw
+31 30 8:17 / /net/share/local\040disk rw shared:10 - ext4 /dev/sdb1 rw
+32 22 0:41 / /srv/remote rw - fuse.sshfs host:/x rw
+33 22 0:42 / /net/sharedrive rw - cifs //server/x rw
+34 22 0:43 / /weird rw shared:11 optional:1 - 9p trans rw
+"""
+
+
+class Mounts(unittest.TestCase):
+    def fstype(self, path):
+        return guard.mount_fstype(path, lambda: MOUNTINFO)
+
+    def test_longest_matching_mount_point_wins(self):
+        cases = {"/": "ext4", "/usr/lib": "ext4", "/net/share": "nfs4", "/net/share/x/y": "nfs4",
+                 "/net/share/local disk/app": "ext4", "/net/sharedrive/app": "cifs",
+                 "/net/shared": "ext4", "/srv/remote/repo": "fuse.sshfs",
+                 "/weird/a": "9p"}
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(self.fstype(path), expected)
+
+    def test_unreadable_or_garbled_mountinfo_is_unknown(self):
+        def broken():
+            raise OSError("no proc")
+        self.assertIsNone(guard.mount_fstype("/x", broken))
+        self.assertIsNone(guard.mount_fstype("/x", lambda: "garbage line\n"))
+
+    def test_network_types(self):
+        for fstype in ("nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "fuseblk", "9p", "ceph",
+                       "glusterfs", None):
+            self.assertTrue(guard.network_filesystem(fstype))
+        for fstype in ("ext4", "btrfs", "tmpfs", "overlay"):
+            self.assertFalse(guard.network_filesystem(fstype))
 
 
 if __name__ == "__main__":

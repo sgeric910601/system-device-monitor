@@ -96,9 +96,13 @@
   上層目錄，都必須屬於你或 root、其他人不可寫；群組可寫只接受 root 擁有且有黏著位元的目錄
   （/tmp），或你的使用者私人群組（與帳號同名、沒有其他成員、也不是任何其他帳號的主要群組，
   Ubuntu 預設 umask 002 建立的資料夾就是這樣）。否則別的帳號可能改掉 git 取出的內容。
-  有 POSIX ACL 的項目（system.posix_acl_access，或目錄的 system.posix_acl_default）不套用這個
-  放寬：有 ACL 時群組位元其實是 ACL 的遮罩，例如 `u:別人:rwx` 也會顯示成群組可寫；
-  檔案系統不支援延伸屬性時視為沒有 ACL，其他無法確認的情況一律不放寬。
+  這個放寬只用在本機檔案系統上、而且沒有任何 system.* 延伸屬性的項目：POSIX ACL
+  （system.posix_acl_access、目錄的 system.posix_acl_default）、NFSv4、rich 與 CIFS 的 ACL
+  都在這個命名空間；有 ACL 時群組位元其實是 ACL 的遮罩，例如 `u:別人:rwx` 也會顯示成群組可寫。
+  位在網路、叢集或 FUSE 檔案系統（依 /proc/self/mountinfo：nfs*、cifs、smb3、smbfs、fuse、
+  fuse.*、fuseblk、9p、ceph、glusterfs 等）的項目，擁有者與權限可能由伺服器或 FUSE 程式決定，
+  只看嚴格的權限位元。檔案系統不支援延伸屬性（ENOTSUP）時視為沒有 ACL；其他無法確認的情況
+  （查詢失敗、找不到掛載點）一律不放寬。
 - git 目錄與共用 git 目錄裡的每一項（HEAD、config、packed-refs、refs、info、objects 等；
   hooks 不使用所以略過）都必須是同樣規則下的目錄或一般檔案，不接受符號連結或特殊檔案；
   objects/info/alternates、http-alternates、info/grafts 與 replace refs（refs/replace/ 或

@@ -137,7 +137,8 @@ class Run(unittest.TestCase):
                               make_stage=self.make_stage, deb_installed=lambda: deb,
                               say=self.messages.append, lstat=self.tree, uid=os.getuid(),
                               private_gid=private_gid, listdir=self.tree.listdir,
-                              read=self.tree.read, listxattr=self.tree.listxattr)
+                              read=self.tree.read, listxattr=self.tree.listxattr,
+                              fstype=lambda path: "ext4")
 
     def test_stages_a_private_copy_and_runs_pkexec(self):
         self.assertEqual(self.run_action(), 0)
