@@ -1,12 +1,14 @@
 # 安全說明：管理員元件
 
-看板本身一律以一般使用者執行，不需要也不接受 sudo。唯一需要管理員權限的功能是選用的
-「CPU 功耗取樣」：Linux 的 RAPL 能量計數器（/sys/class/powercap/intel-rapl:0/energy_uj）
-只有 root 能讀。這份文件說明為了這個功能安裝了什麼、每個元件能做什麼，以及刻意不做的事。
+看板本身一律以一般使用者執行，不需要也不接受 sudo。需要管理員權限的只有兩個選用功能：
+「CPU 功耗取樣」（Linux 的 RAPL 能量計數器 /sys/class/powercap/intel-rapl:0/energy_uj 只有 root 能讀），
+以及筆電的「充電上限」（/sys/class/power_supply/<電池>/charge_control_*_threshold 只有 root 能寫）。
+這份文件說明為了這些功能安裝了什麼、每個元件能做什麼，以及刻意不做的事。
 
 ## 要保護的東西與威脅
 
-- 保護對象：root 權限、其他使用者的資料，以及 RAPL 計數器可能洩漏的資訊（見下方「RAPL 旁路」）。
+- 保護對象：root 權限、其他使用者的資料、RAPL 計數器可能洩漏的資訊（見下方「RAPL 旁路」），
+  以及電池的充電門檻（只能在你授權後、以驗證過的值改變）。
 - 假設的攻擊者：這台電腦上的其他本機帳號、一般使用者權限的惡意程式，以及被竄改的安裝來源。
 - 不在範圍內：已經取得你帳號權限的攻擊者在你輸入管理員密碼前竄改要執行的程式
   （與執行 sudo make install 時相同）、已經取得 root 的攻擊者。
@@ -20,25 +22,37 @@
 | polkit 動作 | /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.local.policy | root 0644 |
 | socket 與服務單元 | /usr/lib/systemd/system/system-device-monitor-cpu-power.{socket,service} | /etc/systemd/system/system-device-monitor-local-cpu-power.{socket,service} | root 0644 |
 | drop-in（開啟時才建立） | /etc/systemd/system/system-device-monitor-cpu-power.socket.d/owner.conf | /etc/systemd/system/system-device-monitor-local-cpu-power.socket.d/owner.conf | root 0644 |
+| 充電上限小程式 sdm-charge-limit | /usr/libexec/system-device-monitor/ | /usr/local/libexec/system-device-monitor/ | root 0755 |
+| polkit 動作（充電上限） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.unattended.local.charge-limit.policy | root 0644 |
+| 重新套用充電上限的單元 | /usr/lib/systemd/system/system-device-monitor-charge-limit.service | /etc/systemd/system/system-device-monitor-local-charge-limit.service | root 0644 |
+| 保留的充電上限（開啟保留時才建立） | /var/lib/system-device-monitor/charge-limit.json | /var/lib/system-device-monitor/charge-limit-local.json | root 0644（目錄 0755） |
 
 兩種安裝方式擇一：已安裝 .deb 時原始碼安裝會拒絕；.deb 安裝時若發現原始碼安裝的元件會提示移除。
-不安裝任何 polkit 規則（/etc/polkit-1/rules.d）、setuid 程式或開機自動啟用的服務。
+不安裝任何 polkit 規則（/etc/polkit-1/rules.d）或 setuid 程式，安裝時也不啟用任何服務；
+充電上限的單元只有在你開啟「開機與喚醒後保留」並授權後，才由小程式啟用。
 
 ## polkit 動作
 
-- .deb：tw.local.system-device-monitor.cpu-power；原始碼安裝：tw.local.system-device-monitor.local.cpu-power。
-- 只有本機作用中的工作階段可以授權（allow_active＝auth_admin），每次都要輸入管理員密碼
-  （不是 auth_admin_keep）；非作用中的工作階段與遠端一律拒絕（allow_any、allow_inactive＝no）。
-- 動作綁定 org.freedesktop.policykit.exec.path＝開關小程式的絕對路徑，pkexec 只有在執行
+- CPU 功耗取樣：.deb 為 tw.local.system-device-monitor.cpu-power，原始碼安裝為
+  tw.local.system-device-monitor.local.cpu-power。只有本機作用中的工作階段可以授權
+  （allow_active＝auth_admin），每次都要輸入管理員密碼（不是 auth_admin_keep）。
+- 充電上限：.deb 為 tw.local.system-device-monitor.unattended.charge-limit，原始碼安裝為
+  tw.local.system-device-monitor.unattended.local.charge-limit。同樣只有本機作用中的工作階段可以授權，
+  預設是 auth_admin_keep：輸入管理員密碼後，polkit 的暫時授權只屬於執行 pkexec 的那個程序
+  （看板），約 5 分鐘內同一個看板再次調整不必重新輸入，其他程式不能沿用。
+- 非作用中的工作階段與遠端一律拒絕（allow_any、allow_inactive＝no）。
+- 每個動作都綁定 org.freedesktop.policykit.exec.path＝小程式的絕對路徑，pkexec 只有在執行
   這個檔案時才使用這個動作。
-- 開啟程式、開啟設定視窗都不會要求授權；只有使用者在設定裡切換「CPU 功耗取樣」時才執行 pkexec。
+- 開啟程式、開啟設定視窗都不會要求授權；只有使用者在設定裡切換「CPU 功耗取樣」、放開充電上限
+  滑桿（或停 0.6 秒）、切換「開機與喚醒後保留」時才執行 pkexec。
 - 動作 ID 的命名與自訂規則：
   - 管理員若要寫 polkit 規則（/etc/polkit-1/rules.d）放寬或收緊這些動作，請比對完整的動作 ID
     （例如 `action.id == "tw.local.system-device-monitor.cpu-power"`），不要用
     `indexOf("tw.local.system-device-monitor")` 之類的前綴比對，以免同時套用到之後新增的動作。
-  - `tw.local.system-device-monitor.unattended.*` 這個前綴保留給之後不需要密碼的動作
-    （第 8 階段的充電上限與定時喚醒），它們會有各自的限制與說明；需要管理員密碼的動作
-    （例如本文件的 CPU 功耗取樣）絕不使用這個前綴。
+  - `tw.local.system-device-monitor.unattended.*` 這個前綴只用在「之後可以由使用者自己選擇加入的
+    polkit 規則改成免密碼」的動作：目前是充電上限，之後還有智慧充電的定時喚醒。它們的預設仍然
+    需要管理員密碼（auth_admin_keep），套件與原始碼安裝都不安裝任何規則。必須每次都輸入密碼的動作
+    （例如本文件的 CPU 功耗取樣、之後的安裝更新）絕不使用這個前綴。
 
 ## 開關小程式（sdm-cpu-power）
 
@@ -92,6 +106,62 @@
   藉此選擇新的相位，但拿到的仍然是 1 秒、0.1 W 的平均。
 - 不執行外部程式、不寫入任何檔案、不讀計數器以外的檔案。
 
+## 充電上限小程式（sdm-charge-limit）
+
+- 以 #!/usr/bin/python3 -IB 執行，只用標準函式庫，不載入專案裡的任何模組。
+- 用法固定：`set <電池> <上限> [--start <起點>] [--persist on|off]`、`status`、
+  `restore --from-unit`，或不需要權限的 `--protocol`。在檢查權限之前先驗證參數，不符一律結束碼 2：
+  - 電池名稱：`^[A-Za-z0-9_]{1,32}$`（BAT0、BATT、CMB0…；不接受 /、..、空白或非 ASCII）。
+  - 上限：`^(5[0-9]|[6-9][0-9]|100)$`，也就是 50–100 的十進位整數，不接受前導 0、正負號、
+    空白、小數或指數（49、101、-80、79.5、8e1、 80、080、1e2 都拒絕）。
+  - 起點：`^([0-9]|[1-9][0-9])$` 而且小於上限；--start 與 --persist 各最多一次，順序不限，
+    --persist 只接受 on 或 off。
+- set 與 status 必須以 root 執行，而且 PKEXEC_UID 的規則與 CPU 功耗開關相同（十進位、在
+  /etc/login.defs 的 UID_MIN～UID_MAX 之間、不是 root 或 nobody、帳號存在），否則結束碼 4。
+- restore 只給重新套用的單元使用：必須是 root、沒有 PKEXEC_UID、有 systemd 設定的 INVOCATION_ID
+  （32 位小寫十六進位）而且父程序是 PID 1；經由 pkexec 執行一律拒絕（結束碼 4）。
+- 執行路徑（sys.argv[0]，不正規化）必須與兩個安裝位置之一一字不差，依位置決定單元與狀態檔；
+  自己、單元檔與路徑上每一層目錄都必須屬於 root 且群組與其他人不可寫，否則結束碼 3。
+- 電池檢查：/sys/class/power_supply/<電池> 的實際位置（realpath）必須在 /sys/devices 之下；
+  type 必須是 Battery、scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold。
+  所有屬性檔都在電池目錄的描述子底下以 O_NOFOLLOW｜O_NONBLOCK 開啟，必須是一般檔案。
+- 寫入順序：上限不高於目前的起點時，先把起點改成指定的值（沒有指定時為上限 − 5），再寫上限；
+  否則先寫上限，再寫指定的起點。已經相同的值不再寫；驅動沒有起點檔卻指定了 --start 時拒絕。
+  門檻檔以 O_WRONLY｜O_NOFOLLOW｜O_NONBLOCK 開啟（不建立、不截斷），只寫十進位數字，
+  之後讀回確認（最多 3 次、間隔 0.3 秒）；不符時結束碼 3，並回報實際的上限與起點。
+  只寫 charge_control_start_threshold 與 charge_control_end_threshold，不碰其他屬性。
+- 保留：只有寫入確認成功後才處理。`--persist on` 把這次的電池、上限與起點寫成
+  /var/lib/system-device-monitor/charge-limit.json（原始碼安裝為 charge-limit-local.json）：
+  /var 與 /var/lib 必須已存在且受信任（不建立），自己的目錄以 0755 建立（不受 umask 影響），
+  檔案先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW、0644）並 fsync，再整檔取代；既有的同名項目
+  不是一般檔案時拒絕。之後執行 systemctl enable 啟用單元。`--persist off` 刪除狀態檔
+  （目錄空了一併刪除），單元已啟用時執行 systemctl disable。沒有指定時不改變。
+  看板一律明確指定 on 或 off；之後的自動寫入（智慧充電）一律 off，只保留使用者自己設定的值。
+- restore 與 status 讀狀態檔時，必須是 root 擁有、群組與其他人不可寫、4 KB 以內的一般檔案
+  （O_NOFOLLOW），JSON 的鍵與值的格式完全相符（與參數相同的規則），否則視為無效。
+- 只以參數清單執行 /usr/bin/systemctl（不經過 shell），環境變數只有固定的 PATH 與 LANG；
+  restore 不執行任何外部程式。
+- 標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗或沒有套用、4 沒有權限）；
+  系統日誌只記錄動作名稱與結果（例如 set ok、set not-applied），不記錄電池名稱、數值或使用者。
+
+## 重新套用的單元（system-device-monitor-charge-limit.service）
+
+- Type=oneshot，ExecStart＝小程式 restore --from-unit；ConditionPathExists＝狀態檔，沒有保留時不執行。
+- [Install] WantedBy=multi-user.target sleep.target，並排在 multi-user.target 與 suspend、hibernate、
+  hybrid-sleep、suspend-then-hibernate 之後：開機與每次從睡眠喚醒後各執行一次。
+  套件與原始碼安裝都不啟用它，只有 `--persist on` 會啟用。
+- 以 root 執行（sysfs 的門檻檔屬於 root、權限 0644，靠一般的擁有者權限寫入），但
+  CapabilityBoundingSet= 與 AmbientCapabilities= 都是空的，沒有任何能力，也無法再取得。
+- 強化設定：NoNewPrivileges、PrivateNetwork、IPAddressDeny=any、PrivateDevices、PrivateTmp、
+  PrivateIPC、ProtectSystem=strict、ProtectHome、ProtectKernelTunables／Modules／Logs、
+  ProtectControlGroups、ProtectClock、ProtectHostname、ProtectProc=invisible、ProcSubset=pid、
+  RestrictAddressFamilies=AF_UNIX、RestrictNamespaces、SystemCallFilter=@system-service
+  減去 @privileged 與 @resources、SystemCallArchitectures=native、MemoryDenyWriteExecute、
+  MemoryMax=64M、TasksMax=4、LockPersonality、RestrictRealtime、RestrictSUIDSGID、UMask=0077。
+- 整個檔案系統唯讀，只有 ReadWritePaths=/sys/devices 可寫（ProtectKernelTunables 讓 /sys 唯讀，
+  可寫的路徑依 systemd 的規則巢狀在裡面；/sys/class/power_supply 底下只是指向 /sys/devices 的
+  符號連結）。systemd-analyze security 的曝險分數為 0.7（以 root 執行是主要的扣分）。
+
 ## 原始碼安裝（install.py --system-components）
 
 - 以一般使用者執行。原始碼資料夾、.git、實際的 git 目錄與共用 git 目錄，以及它們的每一層
@@ -132,16 +202,19 @@
 - install_system.py（root 端）再確認暫存目錄與每一層上層、manifest 的雜湊、內容與每個檔案的
   雜湊（暫存檔一律 O_NOFOLLOW｜O_NONBLOCK 開啟），全部通過後才開始寫入；目的地與權限寫死在
   程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
-  remove 只刪除它安裝的檔案、drop-in 與 sockets.target.wants 的符號連結。
+  remove 只刪除它安裝的檔案、drop-in、sockets.target.wants 與充電上限單元在
+  multi-user.target.wants／sleep.target.wants 的符號連結，以及原始碼版保留的充電上限
+  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
   Python 與它的參數；只在你自己執行這個指令時出現。
 
 ## 套件的安裝前後腳本
 
 - postinst 只重新載入 systemd；socket 原本已啟用時才重新啟動它。從不自動啟用。
-- prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結。
-- postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄）；
-  套件不建立任何其他狀態目錄，也從不遞迴刪除目錄。
+- prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
+  也停用充電上限的單元（刪除它的 wants 連結），保留的值留到 purge。
+- postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），以及
+  /var/lib/system-device-monitor/charge-limit.json（目錄空了才刪目錄）；從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。
 
 ## RAPL 旁路
@@ -170,13 +243,20 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 
 ## 永遠不做的事
 
-- 不安裝 setuid 程式、polkit 規則或開機自動啟用的服務；不在安裝時啟用任何東西。
+- 不安裝 setuid 程式或 polkit 規則；不在安裝時啟用任何東西（充電上限的單元只在你開啟保留時啟用）。
 - 不在開啟程式時要求授權，也不記住或傳遞密碼。
 - 不經過 shell 執行任何命令；不從使用者可寫的位置以 root 載入程式碼（原始碼安裝的暫存檔先驗證雜湊）。
-- 取樣服務不連網路、不寫檔、不執行外部程式；小程式不寫入上表以外的位置。
+- 取樣服務不連網路、不寫檔、不執行外部程式；小程式不寫入上表以外的位置，充電上限小程式在 sysfs
+  只寫電池的兩個充電門檻。
 - 不讀取或回傳 RAPL 以外的硬體資訊；不把 CPU 功耗寫進日誌或歷史檔。
 
 ## 已知限制
+
+- 充電上限只以合成的 /sys 目錄驗證，尚未在真正的筆電上測試；重新套用的單元在 CI 中只確認能在
+  真正的 systemd 下啟動（執行器沒有電池），/sys/devices 是否可寫依 systemd 文件的巢狀規則，
+  還沒有在筆電上實測。
+- 有些驅動只接受固定的值或會四捨五入，看板只能從讀回的值得知並說明；TLP、asusd 或 UPower 的
+  充電門檻也可能在開機、喚醒或插拔電源時改回它們的值，看板只提醒、不阻止。
 
 - 從登入自動啟動的看板可能不在 logind 的工作階段裡；polkit 124 會改用該使用者目前的
   圖形工作階段判斷是否「作用中」。若仍顯示「未授權」，請從應用程式選單重新開啟看板後再切換。

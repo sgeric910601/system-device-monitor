@@ -68,6 +68,13 @@ UPower 只逐一讀取剩餘時間、充滿時間等需要的屬性，不讀序�
 不寫入歷史檔、日誌或 --dump。APU 校正只在 XDG 狀態目錄記錄是否已確認
 （cpu-calibration.json：格式、倍率與是否確認），不含任何讀值。詳情見 [SECURITY.md](SECURITY.md)。
 
+充電上限：看板以一般權限讀取電池的充電門檻與保留的狀態檔；寫入由管理員小程式進行，系統日誌只記錄
+動作名稱與結果（例如「set ok」），不記錄電池名稱或數值。開啟「開機與喚醒後保留」時，
+/var/lib/system-device-monitor/charge-limit.json（所有人可讀）只記錄電池名稱（例如 BAT0）、上限與起點。
+偵測會同時設定充電門檻的程式時，只讀 /etc/tlp.conf 與 /etc/tlp.d 的充電門檻設定、以 systemctl
+查詢 tlp.service 是否作用中、比對 /proc 中有沒有名為 asusd 的程序（只看程序名稱），以及 UPower 的
+兩個充電門檻屬性；結果只顯示在視窗中，不寫入檔案或日誌。
+
 「我的照片」只存在本機 XDG 資料目錄（~/.local/share/system-device-monitor/companion-photo.png，
 權限 0600），不上傳，也不屬於發布內容。選照片時會依拍攝方向轉正、裁成正方形、縮成 512 × 512，
 再重新編碼成只含畫面資料的 PNG：拍攝時間、地點、相機型號、色彩描述檔等照片資訊一律不保留。

@@ -159,7 +159,7 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
   只安裝已提交（git HEAD）的版本；相關檔案有未提交的修改時會拒絕，授權前會先顯示要安裝的提交。
   原始碼資料夾、.git 與上層目錄必須只有你（或 root）能寫入。已安裝 .deb 時不需要也不能安裝。
   檔案安裝到 /usr/local/libexec/system-device-monitor、/usr/local/share/polkit-1/actions
-  與 /etc/systemd/system（名稱含 -local-）。
+  與 /etc/systemd/system（名稱含 -local-）。同一個指令也會安裝充電上限的元件（見「充電上限」）。
 
 開啟與關閉：
 - 「設定 → 管理員功能」顯示元件狀態：已安裝（.deb）、已安裝（原始碼）或未安裝；
@@ -182,13 +182,15 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 單元名稱換成 system-device-monitor-local-cpu-power.socket。
 
 移除管理員元件：
-- 原始碼：`/usr/bin/python3 -B install.py --system-components remove`（會先停用服務）。
+- 原始碼：`/usr/bin/python3 -B install.py --system-components remove`（會先停用服務，
+  並刪除原始碼版保留的充電上限）。
 - .deb：sudo apt remove system-device-monitor 會停用服務並移除所有元件；
-  sudo apt purge system-device-monitor 另外清除 drop-in。
+  sudo apt purge system-device-monitor 另外清除 drop-in 與保留的充電上限
+  （/var/lib/system-device-monitor/charge-limit.json）。
 
 ## 充電夥伴
 
-「電源」頁的瓦數旁（筆電在電量標題旁，之後的充電上限也會放在這一欄）有一隻充電夥伴：
+「電源」頁的瓦數旁（筆電在電量標題旁，充電上限滑桿在同一欄的標題下方）有一隻充電夥伴：
 - 表情：筆電充電中躺在發光的充電墊上（綠色）、充飽或到達上限很開心、電量低於低電量門檻
   （10% 以下為紅色）或接電時供電不足會擔心，其他時候打瞌睡（頭上飄 Z）。
   桌機在不斷電系統改用電池時擔心、負載高（不斷電系統負載 70% 以上，沒有不斷電系統時
@@ -294,7 +296,7 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 數字格式：系統監控頁的容量與速率以 1000 進位（例如「494 GB」「1.2 MB/s」），
 記憶體以 1024 進位但寫成 GB（例如「5.5 GB」）；總覽頁與頂端列沿用原本的 KiB／MiB。
 
-## 筆電電池（唯讀）
+## 筆電電池
 
 有內建電池的電腦（筆電）會自動改用電池版面；桌機維持上面的整機耗電版面。
 **這部分目前只以合成資料驗證，尚未在真正的筆電上測試**，遇到問題請依下一節附上 --dump 輸出。
@@ -328,13 +330,52 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 - 詳細資訊（18 項，讀不到的項目不顯示）：電池電壓、電流、功率、系統耗電、系統預估、溫度、
   健康度與容量推算（滿充 ÷ 設計容量）、循環次數、電池狀況、剩餘／滿充／設計容量（Wh 與 mAh）、
   電源模式、變壓器（協商與額定瓦數）、充電上限、變壓器電壓與電流（USB-C PD 的協商值）。
-  有充電上限時上限顯示在時間卡片。
-- 充電上限（charge_control_end_threshold 等）目前只讀取顯示，調整功能會在之後的版本加入。
+  有充電上限時上限顯示在時間卡片；電池可以調整充電上限時（滑桿顯示）不重複列出「充電上限」欄位。
+- 充電上限可以在電源頁調整，見下一節「充電上限」。
 - 插拔電源時立即重新讀取，並在 1、3、6 秒後再讀一次（插拔通知可能比電池資料早到）。
 
 筆電的歷史紀錄每分鐘一筆：電量、整機耗電（只有用電池時有值，接電時留空）、是否接電、是否充電中。
 頂端列「耗電」在筆電上顯示電量（例如「82%」）與依電量畫的電池圖示（見上方「頂端列」），
 選單第一行例如「電池：82%・還能用 3 小時 25 分」。
+
+## 充電上限
+
+電池支援充電上限時（/sys/class/power_supply/<電池>/charge_control_end_threshold，例如 ThinkPad、
+ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上限」滑桿。
+**這部分目前只以合成資料驗證，尚未在真正的筆電上測試。**
+
+- 滑桿每一格是一個上限：80%、85%、90%、95% 與 100%（不限制）。拖動時右邊顯示選到的值，
+  放開滑桿或停 0.6 秒才寫入（連續調整只寫最後一次），鍵盤的方向鍵也可以調整。
+- 寫入需要管理員授權（polkit 視窗）；授權後約 5 分鐘內，同一個看板再次調整不必重新輸入。
+  開啟程式時只讀取目前的上限，不會要求密碼。
+- 狀態列：「套用中…」→「已套用」；沒有套用時顯示「未套用：原因」（取消授權、逾時、
+  讀回的值不同等），滑桿回到實際的值。寫入後會再讀回確認（最多 3 次、間隔 0.3 秒）。
+- 有「起點」（charge_control_start_threshold，例如 ThinkPad）的電池：上限要降到目前的起點
+  以下時，會先把起點改成上限 − 5，再寫上限；起點原本就比較低時不動它。
+- 有些機型只接受固定幾個值（例如部分 ASUS 只接受 60、80、100）：讀回的值不同時顯示
+  「這顆電池不接受 85%，目前是 80%；可以改選 80%」，並把不接受的值從滑桿移除（這次執行有效）。
+- 「開機與喚醒後保留」：有些韌體在開機或從睡眠喚醒時會把門檻改回預設值。開啟後，你設定的上限
+  記在 /var/lib/system-device-monitor/charge-limit.json（原始碼安裝為 charge-limit-local.json，
+  只有電池名稱、上限與起點），並啟用 system-device-monitor-charge-limit.service，開機與每次喚醒後
+  重新套用；關閉時刪除這個檔案並停用服務。只保留你自己設定的值；開關一樣需要管理員授權。
+- 與其他程式衝突：TLP（設定了 START_CHARGE_THRESH／STOP_CHARGE_THRESH）、asusd（asusctl）
+  與系統的「保護電池健康」（UPower 1.90.5 以後的充電門檻）也會設定充電門檻，並在開機、喚醒或
+  插拔電源時套回自己的值。偵測到時滑桿下方顯示提醒與處理方式；仍然可以調整，但值可能被改回去。
+  請只用一個工具管理充電門檻。
+- 需要管理員元件：.deb 已包含；原始碼安裝執行 install.py --system-components install
+  （與 CPU 功耗取樣相同的指令；之前安裝過的請重新執行一次以加入充電上限元件）。
+  缺少元件時滑桿停用，並顯示「開啟「設定 → 管理員功能」」連結；那裡也列出充電上限元件的狀態。
+
+不經由看板操作時也可以直接執行（.deb 的路徑；原始碼安裝換成
+/usr/local/libexec/system-device-monitor/sdm-charge-limit，單元名稱含 -local-）：
+
+    pkexec /usr/libexec/system-device-monitor/sdm-charge-limit set BAT0 80
+    pkexec /usr/libexec/system-device-monitor/sdm-charge-limit set BAT0 80 --persist on
+    pkexec /usr/libexec/system-device-monitor/sdm-charge-limit status
+    systemctl status system-device-monitor-charge-limit.service
+
+上限只接受 50–100 的整數（100＝不限制），--start 的起點是 0–99 且小於上限；
+沒有 --persist 時不改變保留的狀態。結束碼：0 成功、2 參數錯誤、3 失敗或沒有套用、4 沒有權限。
 
 ## 通知
 
@@ -395,6 +436,8 @@ laptop-limit（已達上限）與 desktop（桌機）。示範模式：
   截圖不含這台電腦的資料。
 - 設定視窗可以操作，變更只在這次執行套用，不寫入任何設定檔；「電源模式」只在記憶體中切換，
   不會改到這台電腦的電源模式。不送出任何通知。換程式圖示顏色只改視窗圖示，不寫入圖示主題。
+- 筆電示範的充電上限滑桿使用示範值（上限 80%）：拖動與「開機與喚醒後保留」只在記憶體中改變，
+  狀態列顯示「示範模式不會寫入」，不會執行 pkexec 或任何管理員元件，也不偵測衝突的程式。
 - 夥伴與桌面寵物使用示範資料；不讀自己的照片（「我的照片」改畫內建的貓咪大頭照），
   也不讀寫桌面寵物的位置，截圖不會出現自己的照片。
 - 搭配 --smoke-test --capture 時必須指定 --output-dir，截圖與 smoke.json 只寫到那裡。
@@ -514,6 +557,12 @@ system-device-monitor.png。
   緊急通知（不斷電系統改用電池與電量低），其他提醒仍會留在通知清單中。
 - 開啟 CPU 功耗取樣時顯示「未授權」：取消了授權或密碼不正確；從遠端或非作用中的工作階段
   一律不允許。從登入自動啟動的看板若一直顯示未授權，請從應用程式選單重新開啟看板再試。
+- 充電上限顯示「未套用」：取消授權或密碼錯誤時重新拖動一次；顯示電池不接受某個值時改選建議的值；
+  其他原因可用 pkexec …/sdm-charge-limit status 查看目前的門檻，系統日誌（journalctl -t sdm-charge-limit）
+  只記錄動作與結果。
+- 開機或喚醒後上限又變回去：開啟「開機與喚醒後保留」；仍然變回去時檢查滑桿下方是否有 TLP、asusd
+  或「保護電池健康」的提醒，並用 systemctl status system-device-monitor-charge-limit.service 查看
+  最後一次重新套用的結果。
 - 開啟了但拆解沒有 CPU：這台電腦沒有 RAPL（/sys/class/powercap/intel-rapl:0），
   或服務回報讀取失敗；可用 systemctl status system-device-monitor-cpu-power.service 查看。
 
