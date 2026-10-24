@@ -32,7 +32,7 @@ ALLOWED_MODE_BITS = 0o755        # 不允許 setuid／setgid／sticky 與群組�
 MODE_PATTERN = re.compile(r"0?[0-7]{3}")
 DEPENDS = ("python3 (>= 3.10)", "python3-gi", "python3-gi-cairo", "gir1.2-gtk-3.0",
            "gir1.2-gudev-1.0", "gir1.2-ayatanaappindicator3-0.1", "gir1.2-notify-0.7",
-           "librsvg2-common", "util-linux")
+           "librsvg2-common", "util-linux", "openssl")      # openssl：驗證更新的 Ed25519 簽章
 
 
 class Entry(NamedTuple):

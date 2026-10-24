@@ -232,6 +232,16 @@
       "source": "assets/app/mint-512.png",
       "target": "/usr/share/icons/hicolor/512x512/apps/system-device-monitor.png",
       "mode": "0644"
+    },
+    {
+      "source": "helper/sdm-update",
+      "target": "/usr/libexec/system-device-monitor/sdm-update",
+      "mode": "0755"
+    },
+    {
+      "source": "helper/policy/tw.local.system-device-monitor.update.policy",
+      "target": "/usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy",
+      "mode": "0644"
     }
   ],
   "maintainer": {
@@ -268,9 +278,11 @@
     "helper/policy/tw.local.system-device-monitor.policy",
     "helper/policy/tw.local.system-device-monitor.unattended.charge-limit.policy",
     "helper/policy/tw.local.system-device-monitor.unattended.local.charge-limit.policy",
+    "helper/policy/tw.local.system-device-monitor.update.policy",
     "helper/sdm-charge-limit",
     "helper/sdm-cpu-power",
     "helper/sdm-cpu-power-service",
+    "helper/sdm-update",
     "helper/systemd/system-device-monitor-charge-limit.service",
     "helper/systemd/system-device-monitor-cpu-power.service",
     "helper/systemd/system-device-monitor-cpu-power.socket",
@@ -471,6 +483,7 @@
     "tests/fixtures/session_bus.py",
     "tests/fixtures/signing.py",
     "tests/fixtures/sysfs.py",
+    "tests/fixtures/update_listing.py",
     "tests/png_samples.py",
     "tests/test_admin_text.py",
     "tests/test_alert_messages.py",
@@ -593,6 +606,9 @@
     "tests/test_tray_text.py",
     "tests/test_udisks.py",
     "tests/test_ui_state.py",
+    "tests/test_update_helper.py",
+    "tests/test_update_helper_install.py",
+    "tests/test_update_helper_package.py",
     "tests/test_update_logic.py",
     "tests/test_update_signature.py",
     "tests/test_upower.py",

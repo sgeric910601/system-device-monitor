@@ -157,6 +157,53 @@ jobs:
           test "$(systemctl show -p Result --value system-device-monitor-charge-limit.service)" = "success"
           test "$(systemctl show -p ExecMainStatus --value system-device-monitor-charge-limit.service)" = "0"
           # 保留的值留著：移除套件時 prerm 必須刪除它
+      - name: Update helper
+        run: |
+          set -eu
+          update=/usr/libexec/system-device-monitor/sdm-update
+          test "$(stat -c '%U %a' "$update")" = "root 755"
+          test "$(stat -c '%U %a' /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy)" = "root 644"
+          pkaction --verbose --action-id tw.local.system-device-monitor.update | tee /tmp/pkaction-update.txt
+          grep -Eq 'implicit any: *no$' /tmp/pkaction-update.txt
+          grep -Eq 'implicit inactive: *no$' /tmp/pkaction-update.txt
+          grep -Eq 'implicit active: *auth_admin$' /tmp/pkaction-update.txt
+          expect() {
+            want=$1; shift
+            set +e; "$@"; got=$?; set -e
+            if [ "$got" != "$want" ]; then echo "expected exit $want, got $got: $*"; exit 1; fi
+          }
+          # 以 sudo 模擬 pkexec；小程式只信任內建的公鑰，所以這裡只測試會被拒絕的輸入
+          fails() {
+            want=$1; shift
+            set +e; out=$(sudo env PKEXEC_UID="$(id -u)" "$update" install "$@"); got=$?; set -e
+            echo "$out"
+            if [ "$got" != 3 ]; then echo "expected exit 3, got $got: $*"; exit 1; fi
+            case "$out" in *"\"reason\":\"$want\""*) ;; *) echo "expected reason $want"; exit 1 ;; esac
+          }
+          name=system-device-monitor_9.9.9_all.deb
+          work=$(mktemp -d)
+          mkdir "$work/link" "$work/big" "$work/root"
+          cp dist/*.deb "$work/$name"
+          sha256sum "$work/$name" | sed "s|  .*|  $name|" > "$work/SHA256SUMS"
+          printf 'AAAA\n' > "$work/SHA256SUMS.sig"
+          sums="$work/SHA256SUMS"; sig="$work/SHA256SUMS.sig"
+          expect 0 "$update" --protocol
+          expect 2 sudo "$update"
+          expect 2 sudo "$update" install
+          expect 2 sudo env PKEXEC_UID="$(id -u)" "$update" install "$work/other.deb" "$sums" "$sig"
+          expect 2 sudo env PKEXEC_UID="$(id -u)" "$update" install "$work/$name" "$sig" "$sums"
+          expect 4 "$update" install "$work/$name" "$sums" "$sig"
+          expect 4 sudo "$update" install "$work/$name" "$sums" "$sig"
+          unsigned=$(/usr/bin/python3 -B -c 'from sdm.constants import Update; print("signature" if Update.PUBLIC_KEYS else "no-keys")')
+          fails "$unsigned" "$work/$name" "$sums" "$sig"
+          ln -s "$work/$name" "$work/link/$name"
+          fails input "$work/link/$name" "$sums" "$sig"
+          truncate -s 31M "$work/big/$name"
+          fails input "$work/big/$name" "$sums" "$sig"
+          sudo install -m 644 "$work/$name" "$work/root/$name"
+          fails input "$work/root/$name" "$sums" "$sig"
+          sudo sh -c 'test ! -e /var/cache/system-device-monitor/staging || test -z "$(ls -A /var/cache/system-device-monitor/staging)"'
+          test "$(dpkg-query -W -f='${Version}' system-device-monitor)" = "$(cat VERSION)"
       - name: Remove and purge
         run: |
           set -eu
@@ -176,6 +223,8 @@ jobs:
           test "$(systemctl is-active system-device-monitor-cpu-power.socket || true)" != "active"
           sudo apt-get purge -y system-device-monitor
           test ! -e /var/lib/system-device-monitor
+          test ! -e /var/cache/system-device-monitor
+          test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy
           test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy
           test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy
           test ! -e /usr/libexec/system-device-monitor

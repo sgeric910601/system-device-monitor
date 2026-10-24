@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!-- 系統與裝置監看：只有本機作用中的使用者，輸入管理員密碼後才能安裝已簽章的更新（只有 .deb 安裝）。
+     pkexec 只在執行下方 exec.path 指定的小程式時使用這個動作；每次都要重新授權，絕不記住授權。 -->
+<policyconfig>
+  <vendor>System Device Monitor</vendor>
+  <vendor_url>https://github.com/sgeric910601/system-device-monitor</vendor_url>
+
+  <action id="tw.local.system-device-monitor.update">
+    <description>Install a signed update of System Device Monitor</description>
+    <description xml:lang="zh_TW">安裝系統與裝置監看已簽章的更新（套件）</description>
+    <message>Authentication is required to install an update of System Device Monitor</message>
+    <message xml:lang="zh_TW">安裝系統與裝置監看的更新需要管理員授權</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/system-device-monitor/sdm-update</annotate>
+  </action>
+</policyconfig>

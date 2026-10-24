@@ -40,7 +40,12 @@ SYSTEM = [
     {"source": "helper/systemd/" + LIMIT_UNIT, "target": UNITS + LIMIT_UNIT, "mode": "0644"},
 ] + [{"source": f"assets/app/mint-{size}.png",
       "target": f"/usr/share/icons/hicolor/{size}x{size}/apps/system-device-monitor.png",
-      "mode": "0644"} for size in (128, 512)]      # 預設的程式圖示（薄荷綠）
+      "mode": "0644"} for size in (128, 512)] + [  # 預設的程式圖示（薄荷綠）
+    {"source": "helper/sdm-update", "target": LIBEXEC + "sdm-update", "mode": "0755"},
+    {"source": "helper/policy/tw.local.system-device-monitor.update.policy",
+     "target": "/usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy",
+     "mode": "0644"},
+]
 MAINTAINER = {name: "packaging/debian/" + name for name in ("postinst", "prerm", "postrm")}
 ALLOWED_SYSTEMCTL = {"daemon-reload", "is-enabled", "stop", "restart", "disable"}
 
@@ -75,7 +80,8 @@ class Manifest(unittest.TestCase):
                           "charge-limit.json"):
                 self.assertNotIn(local, names)
             self.assertEqual(sorted(path.name for path in (stage/LIBEXEC.strip("/")).iterdir()),
-                             ["sdm-charge-limit", "sdm-cpu-power", "sdm-cpu-power-service"])
+                             ["sdm-charge-limit", "sdm-cpu-power", "sdm-cpu-power-service",
+                              "sdm-update"])
 
 
 class ScriptText(unittest.TestCase):
@@ -265,6 +271,17 @@ class ScriptRuns(unittest.TestCase):
         self.assertFalse((self.dropin/"owner.conf").exists())
         self.assertTrue(other.exists())
         self.assertTrue((self.state/"cache/file").exists())     # 套件從未建立，不屬於它
+
+    def test_postrm_purge_removes_only_empty_update_staging(self):
+        staging = self.root/"var/cache/system-device-monitor/staging"
+        staging.mkdir(parents=True)
+        self.run_script("postrm", "purge")
+        self.assertFalse((self.root/"var/cache/system-device-monitor").exists())
+        (staging/"0123456789abcdef").mkdir(parents=True)
+        self.run_script("postrm", "purge")
+        self.assertTrue((staging/"0123456789abcdef").exists())
+        self.run_script("postrm", "remove")
+        self.assertTrue(staging.exists())
 
     def test_postrm_remove_keeps_state(self):
         self.populate()

@@ -128,7 +128,8 @@ class Policies(unittest.TestCase):
             self.assertIn(words, text)
 
     def test_no_polkit_rules_are_shipped(self):
-        self.assertEqual(sorted(path.suffix for path in POLICIES.iterdir()), [".policy"] * 4)
+        # 只有 polkit 動作（.policy），沒有任何規則檔；動作的清單由 test_polkit_policy 確認
+        self.assertEqual({path.suffix for path in POLICIES.iterdir()}, {".policy"})
 
 
 if __name__ == "__main__":

@@ -186,6 +186,9 @@ class Update:
     API_DEADLINE = 30                           # 整個 API 或小檔案請求的上限（秒）
     DOWNLOAD_DEADLINE = 300                     # 下載 .deb 的上限（秒）
     MAX_REDIRECTS = 5
+    HELPER = "/usr/libexec/system-device-monitor/sdm-update"   # 只隨 .deb 安裝（原始碼安裝沒有）
+    ACTION = "tw.local.system-device-monitor.update"            # polkit 動作（每次都要管理員密碼）
+    PROTOCOL = 1
 
 
 class Supply:

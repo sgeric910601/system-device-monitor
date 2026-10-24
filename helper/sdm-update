@@ -1,0 +1,791 @@
+#!/usr/bin/python3 -IB
+"""系統與裝置監看：安裝已簽章更新的管理員小程式（由 pkexec 執行，只隨 .deb 安裝）。
+
+用法：sdm-update install <.deb> <SHA256SUMS> <SHA256SUMS.sig>；sdm-update --protocol（不需要權限）。
+install 依序：參數（三個已正規化的絕對路徑，檔名固定，否則結束碼 2）→ 權限（root、PKEXEC_UID 是
+login.defs 範圍內存在的一般帳號，否則結束碼 4）→ 位置（sys.argv[0] 一字不差、自己與每一層目錄屬於
+root 且群組與其他人不可寫）→ 輸入檔（O_NOFOLLOW｜O_NONBLOCK 開啟，fstat 是呼叫者擁有、不是空的一般
+檔案，.deb ≤ 30 MB、SHA256SUMS ≤ 64 KB、.sig ≤ 1 KB）→ 套件是以 .deb 安裝的（dpkg-query）→ 內建公鑰
+PUBLIC_KEYS（與 Update.PUBLIC_KEYS 相同，絕不從環境變數或參數讀取）不是空的 → 經由描述子複製到
+/var/cache/system-device-monitor/staging/<亂數>/（root 0700、O_EXCL），之後只用 root 的複本 →
+openssl 驗證 SHA256SUMS 的 Ed25519 簽章（任何一把公鑰通過即可）→ .deb 的 SHA-256 與 SHA256SUMS 中
+完全相同檔名的雜湊一致 → dpkg-deb -f（Package、Architecture all、Version 與檔名相同且比已安裝的新）
+→ dpkg-deb -c（只有允許位置的一般檔案與目錄、root/root、沒有特殊權限位元或群組／其他人可寫）→
+等 dpkg 前端鎖（fcntl，最多 120 秒）→ apt-get install --no-remove（noninteractive，逾時 300 秒）→
+確認已安裝的版本 → 刪除暫存複本。
+固定的 PATH，只以參數清單執行固定路徑的程式，從不經過 shell；標準輸出只有一行 JSON（失敗時附
+REASONS 中固定的英文原因代號）；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）；系統日誌只記錄
+動作名稱與結果。只使用標準函式庫。
+"""
+import base64
+import binascii
+import fcntl
+import hashlib
+import json
+import os
+import pwd
+import re
+import secrets
+import signal
+import stat
+import subprocess
+import sys
+import syslog
+import time
+from typing import Callable, NamedTuple, Optional
+
+PROTOCOL = 1
+VERSION = "1.0"
+EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
+COMMAND = "install"
+PROTOCOL_FLAG = "--protocol"
+HELPER_NAME = "sdm-update"
+HELPER_DIR = "/usr/libexec/system-device-monitor"
+HELPER_PATH = HELPER_DIR + "/" + HELPER_NAME
+PACKAGE = "system-device-monitor"
+# 維護者發布金鑰的 Ed25519 公鑰（base64 的 32 位元組原始公鑰），與 Update.PUBLIC_KEYS 相同
+PUBLIC_KEYS = ()
+SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+KEY_BYTES, SIGNATURE_BYTES, PEM_LINE = 32, 64, 64
+DEB_PATTERN = re.compile(r"system-device-monitor_([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}"
+                         r"(?:~beta\.[0-9]{1,9})?)_all\.deb", re.ASCII)
+CHECKSUMS_NAME = "SHA256SUMS"
+SIGNATURE_NAME = "SHA256SUMS.sig"
+DEB_MAX_BYTES = 30 * 1024 * 1024
+CHECKSUMS_MAX_BYTES = 64 * 1024
+SIGNATURE_MAX_BYTES = 1024
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
+APT_ENV = dict(SAFE_ENV, DEBIAN_FRONTEND="noninteractive", APT_LISTCHANGES_FRONTEND="none",
+               NEEDRESTART_MODE="l")
+OPENSSL = "/usr/bin/openssl"
+DPKG = "/usr/bin/dpkg"
+DPKG_DEB = "/usr/bin/dpkg-deb"
+DPKG_QUERY = "/usr/bin/dpkg-query"
+APT_GET = "/usr/bin/apt-get"
+DPKG_LOCK = "var/lib/dpkg/lock-frontend"                    # 相對於根目錄
+STAGING = ("var/cache", "system-device-monitor", "staging")  # 同上；後兩層不存在時建立
+LOCK_TIMEOUT_S = 120
+LOCK_POLL_S = 1
+APT_TIMEOUT_S = 300
+COMMAND_TIMEOUT_S = 60
+PREPARE_TIMEOUT_S = 240         # 從開始到檢查完套件內容的上限；之後是鎖與 apt-get 各自的逾時
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_ENTRIES = 20000
+CHUNK_BYTES = 1024 * 1024
+UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
+MAX_UID = 4294967294
+NOBODY = 65534
+LOGIN_DEFS = "/etc/login.defs"
+LOGIN_DEFS_MAX_BYTES = 65536
+DEFAULT_UID_RANGE = (1000, 60000)       # login.defs 讀不到時的一般帳號範圍
+INSTALLED = "install ok installed"
+INSTALLED_VERSION = re.compile(r"[0-9][A-Za-z0-9.+~:-]{0,63}", re.ASCII)
+HEX_DIGEST = re.compile(r"[0-9a-fA-F]{64}", re.ASCII)
+FIELD = re.compile(r"(Package|Architecture|Version): (\S+)", re.ASCII)
+RUN_NAME = re.compile(r"[0-9a-f]{16}", re.ASCII)
+LISTING_LINE = re.compile(r"([-d])(r[-w][-x][-r]-[-x][-r]-[-x]) root/root +[0-9]+ "
+                          r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} \./(.*)", re.ASCII)
+SEGMENT = re.compile(r"[A-Za-z0-9._+@-]+", re.ASCII)
+FILE_RULES = tuple(re.compile(rule, re.ASCII) for rule in (
+    r"usr/bin/system-device-monitor",
+    r"usr/share/applications/system-device-monitor[A-Za-z0-9._-]*\.desktop",
+    r"usr/share/polkit-1/actions/tw\.local\.system-device-monitor[A-Za-z0-9._-]*\.policy",
+    r"usr/lib/systemd/system/system-device-monitor[A-Za-z0-9._@-]*",
+    r"usr/share/icons/hicolor/[A-Za-z0-9@.]+/apps/system-device-monitor\.png"))
+TREES = ("usr/share/system-device-monitor", "usr/share/doc/system-device-monitor",
+         "usr/libexec/system-device-monitor")
+PARENTS = frozenset(("", "usr", "usr/bin", "usr/lib", "usr/lib/systemd", "usr/lib/systemd/system",
+                     "usr/libexec", "usr/share", "usr/share/applications", "usr/share/doc",
+                     "usr/share/icons", "usr/share/icons/hicolor", "usr/share/polkit-1",
+                     "usr/share/polkit-1/actions"))
+ICON_DIRECTORY = re.compile(r"usr/share/icons/hicolor/[A-Za-z0-9@.]+(?:/apps)?", re.ASCII)
+DIRECTORY_MODE = 0o755
+PRIVATE_DIRECTORY = 0o700
+PRIVATE_FILE = 0o600
+UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+INPUT_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
+LOG_IDENT = "sdm-update"
+REASONS = ("location", "input", "not-deb", "no-keys", "staging", "signature", "checksum",
+           "package", "not-newer", "contents", "busy", "apt", "timeout", "system")
+
+
+class Usage(Exception):
+    """參數不符合固定的用法。"""
+
+
+class NotPermitted(Exception):
+    """不是由 pkexec 以 root 執行，或呼叫者不是一般使用者。"""
+
+
+class Failed(Exception):
+    """無法安全地完成；reason 是 REASONS 中固定的英文代號。"""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason if reason in REASONS else "system"
+
+
+class Result(NamedTuple):
+    code: int
+    output: bytes
+
+
+class Request(NamedTuple):
+    command: str
+    deb: str = ""
+    sums: str = ""
+    signature: str = ""
+
+    @property
+    def name(self):
+        return os.path.basename(self.deb)
+
+    @property
+    def version(self):
+        return DEB_PATTERN.fullmatch(self.name).group(1)
+
+
+class Context(NamedTuple):
+    """執行環境；測試以假根目錄、假的擁有者、假的外部程式與注入的公鑰代替。"""
+    root: str
+    owner: int
+    run: Callable
+    euid: int
+    user_exists: Callable
+    helper_path: str                    # 實際執行的路徑（sys.argv[0]），不正規化
+    uid_range: tuple = DEFAULT_UID_RANGE
+    keys: tuple = PUBLIC_KEYS
+    clock: Callable = time.monotonic
+    sleep: Callable = time.sleep
+    lock_free: Optional[Callable] = None    # 預設為 lock_free()
+    alarm: Optional[Callable] = None        # 預設不設時限（只有正式執行才設）
+
+
+def log(message):
+    syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_INFO, message)
+
+
+def run_command(argv, env=SAFE_ENV, timeout=COMMAND_TIMEOUT_S, capture=False):
+    """只以參數清單執行（不經過 shell）；無法執行、逾時或輸出太多時結束碼為 -1。"""
+    try:
+        completed = subprocess.run(argv, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=env, timeout=timeout,
+                                   check=False, cwd="/")
+    except (OSError, subprocess.SubprocessError):
+        return Result(-1, b"")
+    output = completed.stdout or b""
+    return Result(-1, b"") if len(output) > MAX_OUTPUT_BYTES else Result(completed.returncode,
+                                                                          output)
+
+
+def user_exists(uid):
+    try:
+        pwd.getpwuid(uid)
+    except KeyError:
+        return False
+    return True
+
+
+def parse_login_defs(text):
+    """（UID_MIN、UID_MAX）；缺少或不合理的值改用預設。"""
+    values = {}
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0] in ("UID_MIN", "UID_MAX") \
+                and UID_PATTERN.fullmatch(words[1]):
+            values[words[0]] = int(words[1])
+    low = values.get("UID_MIN", DEFAULT_UID_RANGE[0])
+    high = values.get("UID_MAX", DEFAULT_UID_RANGE[1])
+    return (low, high) if 0 < low <= high <= MAX_UID else DEFAULT_UID_RANGE
+
+
+def login_uid_range(path=LOGIN_DEFS):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return parse_login_defs(handle.read(LOGIN_DEFS_MAX_BYTES))
+    except OSError:
+        return DEFAULT_UID_RANGE
+
+
+def timed_out(*_):
+    raise Failed("timeout")
+
+
+def set_alarm(seconds):
+    signal.signal(signal.SIGALRM, timed_out)
+    signal.alarm(seconds)
+
+
+def no_alarm(_seconds):
+    return None
+
+
+def production_context():
+    return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
+                   user_exists=user_exists, helper_path=sys.argv[0],
+                   uid_range=login_uid_range(), keys=PUBLIC_KEYS, alarm=set_alarm)
+
+
+# ── 參數與權限 ──────────────────────────────────────────────
+
+def clean_path(path):
+    """已正規化的絕對路徑（不接受 //、.、..、結尾斜線或控制字元）。"""
+    return path.startswith("/") and not path.startswith("//") and path.isprintable() \
+        and os.path.normpath(path) == path and len(path) < 4096
+
+
+def parse_args(argv):
+    if argv == [PROTOCOL_FLAG]:
+        return Request(PROTOCOL_FLAG)
+    if len(argv) != 4 or argv[0] != COMMAND or not all(clean_path(path) for path in argv[1:]):
+        raise Usage()
+    request = Request(COMMAND, *argv[1:])
+    if not DEB_PATTERN.fullmatch(request.name) \
+            or os.path.basename(request.sums) != CHECKSUMS_NAME \
+            or os.path.basename(request.signature) != SIGNATURE_NAME:
+        raise Usage()
+    return request
+
+
+def caller_uid(env, context):
+    """pkexec 設定的 PKEXEC_UID：十進位、在一般帳號的範圍內、不是 root 或 nobody，而且帳號存在。"""
+    if context.euid != 0:
+        raise NotPermitted()
+    text = env.get("PKEXEC_UID", "")
+    if not UID_PATTERN.fullmatch(text):
+        raise NotPermitted()
+    uid = int(text)
+    low, high = context.uid_range
+    if uid in (0, NOBODY) or not low <= uid <= high or not context.user_exists(uid):
+        raise NotPermitted()
+    return uid
+
+
+# ── 受信任的目錄 ──────────────────────────────────────────
+
+def check_directory(fd, owner, reason):
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed(reason)
+
+
+def open_directory(context, relative, reason):
+    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；回傳描述子。"""
+    fd = os.open(context.root, DIRECTORY_FLAGS)
+    try:
+        check_directory(fd, context.owner, reason)
+        for part in [part for part in relative.split("/") if part]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            check_directory(fd, context.owner, reason)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def check_location(context):
+    """執行路徑一字不差，自己與每一層目錄都屬於 root 且群組與其他人不可寫。"""
+    if context.helper_path != HELPER_PATH:
+        raise Failed("location")
+    try:
+        fd = open_directory(context, HELPER_DIR, "location")
+        try:
+            info = os.stat(HELPER_NAME, dir_fd=fd, follow_symlinks=False)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise Failed("location") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+            or info.st_mode & UNSAFE_BITS:
+        raise Failed("location")
+
+
+# ── 輸入檔 ────────────────────────────────────────────────
+
+def open_input(path, uid, limit):
+    """呼叫者擁有、不是空的、不超過上限的一般檔案；回傳描述子。"""
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != uid:
+            raise Failed("input")
+        fd = os.open(path, INPUT_FLAGS)
+    except OSError:
+        raise Failed("input") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or not 0 < info.st_size <= limit:
+            raise Failed("input")
+        os.set_blocking(fd, True)       # O_NONBLOCK 只用來安全地開啟；確認是一般檔案後正常讀取
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_inputs(request, uid):
+    """（.deb、SHA256SUMS、.sig）的描述子。"""
+    opened = []
+    try:
+        for path, limit in ((request.deb, DEB_MAX_BYTES), (request.sums, CHECKSUMS_MAX_BYTES),
+                            (request.signature, SIGNATURE_MAX_BYTES)):
+            opened.append(open_input(path, uid, limit))
+    except BaseException:
+        for fd in opened:
+            os.close(fd)
+        raise
+    return opened
+
+
+def installed_version(context):
+    """以 .deb 安裝的版本；沒有安裝、只剩設定檔或查不到時拋出 Failed("not-deb")。"""
+    result = context.run([DPKG_QUERY, "-W", "-f=${Status}\\n${Version}\\n", PACKAGE], SAFE_ENV,
+                         COMMAND_TIMEOUT_S, True)
+    lines = result.output.decode("ascii", "replace").split("\n")
+    if result.code != 0 or len(lines) < 2 or lines[0] != INSTALLED \
+            or not INSTALLED_VERSION.fullmatch(lines[1]):
+        raise Failed("not-deb")
+    return lines[1]
+
+
+# ── 暫存目錄 ──────────────────────────────────────────────
+
+class Stage:
+    """root 擁有的私人暫存目錄：描述子與路徑（給外部程式的參數）。"""
+
+    def __init__(self, fd, path):
+        self.fd, self.path = fd, path
+
+    def path_of(self, name):
+        return self.path + "/" + name
+
+    def write(self, name, data):
+        fd = os.open(name, CREATE_FLAGS, PRIVATE_FILE, dir_fd=self.fd)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def copy(self, source, name, limit):
+        """經由已開啟的描述子複製；超過上限時停止。"""
+        fd = os.open(name, CREATE_FLAGS, PRIVATE_FILE, dir_fd=self.fd)
+        total = 0
+        with os.fdopen(fd, "wb") as handle:
+            while True:
+                chunk = os.read(source, CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise Failed("input")
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if total == 0:
+            raise Failed("input")
+
+    def read(self, name, limit):
+        fd = os.open(name, READ_FLAGS, dir_fd=self.fd)
+        with os.fdopen(fd, "rb") as handle:
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise Failed("input")
+        return data
+
+    def sha256(self, name):
+        digest = hashlib.sha256()
+        fd = os.open(name, READ_FLAGS, dir_fd=self.fd)
+        with os.fdopen(fd, "rb") as handle:
+            for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def remove(self, name):
+        try:
+            os.unlink(name, dir_fd=self.fd)
+        except FileNotFoundError:
+            pass
+
+
+def make_directory(parent, name, mode):
+    try:
+        os.mkdir(name, mode, dir_fd=parent)
+    except FileExistsError:
+        return False
+    return True
+
+
+def open_child(parent, name, owner, mode):
+    """開啟（不存在時以 mode 建立，不受 umask 影響）受信任的子目錄。"""
+    created = make_directory(parent, name, mode)
+    fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    try:
+        if created:
+            os.fchmod(fd, mode)
+        check_directory(fd, owner, "staging")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_staging(context):
+    """/var/cache 必須受信任；system-device-monitor（0755）與 staging（0700，群組與其他人沒有任何權限）。"""
+    try:
+        parent = open_directory(context, STAGING[0], "staging")
+        try:
+            app = open_child(parent, STAGING[1], context.owner, DIRECTORY_MODE)
+        finally:
+            os.close(parent)
+        try:
+            staging = open_child(app, STAGING[2], context.owner, PRIVATE_DIRECTORY)
+        finally:
+            os.close(app)
+    except OSError:
+        raise Failed("staging") from None
+    if os.fstat(staging).st_mode & 0o077:
+        os.close(staging)
+        raise Failed("staging")
+    return staging
+
+
+def remove_files(fd):
+    """刪除目錄裡的檔案與符號連結（不遞迴、不跟隨連結）。"""
+    for name in os.listdir(fd):
+        if not stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+            os.unlink(name, dir_fd=fd)
+
+
+def clean_stale(staging):
+    """之前中斷留下的執行目錄（16 位十六進位的名稱）；其他項目一律不碰。"""
+    for name in os.listdir(staging):
+        if not RUN_NAME.fullmatch(name) or \
+                not stat.S_ISDIR(os.stat(name, dir_fd=staging, follow_symlinks=False).st_mode):
+            continue
+        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=staging)
+        try:
+            remove_files(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.rmdir(name, dir_fd=staging)
+        except OSError:
+            pass
+
+
+class Workspace:
+    """這次執行的暫存目錄（staging/<亂數>，0700）；結束時刪除裡面的檔案與目錄本身。"""
+
+    def __init__(self, context):
+        self.context = context
+        self.staging = self.stage = None
+        self.name = secrets.token_hex(8)
+
+    def __enter__(self):
+        self.staging = open_staging(self.context)
+        try:
+            clean_stale(self.staging)
+            os.mkdir(self.name, PRIVATE_DIRECTORY, dir_fd=self.staging)
+            fd = os.open(self.name, DIRECTORY_FLAGS, dir_fd=self.staging)
+            os.fchmod(fd, PRIVATE_DIRECTORY)
+        except OSError:
+            os.close(self.staging)
+            raise Failed("staging") from None
+        self.stage = Stage(fd, os.path.join(self.context.root, *STAGING, self.name))
+        return self.stage
+
+    def __exit__(self, *_):
+        try:
+            remove_files(self.stage.fd)
+        finally:
+            os.close(self.stage.fd)
+            try:
+                os.rmdir(self.name, dir_fd=self.staging)
+            except OSError:
+                pass
+            os.close(self.staging)
+        return False
+
+
+# ── 簽章與 SHA256SUMS（與 sdm/services/update_verify.py、sdm/core/update_logic.py 相同）──
+
+def strict_base64(text):
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return None
+
+
+def decode_key(text):
+    if not isinstance(text, str) or not text.isascii():
+        return None
+    raw = strict_base64(text)
+    return raw if raw is not None and len(raw) == KEY_BYTES else None
+
+
+def decode_signature(data):
+    """SHA256SUMS.sig 的內容 → 64 位元組簽章；不是剛好一行 base64 時回傳 None。"""
+    if not isinstance(data, bytes):
+        return None
+    for ending in (b"\r\n", b"\n"):
+        if data.endswith(ending):
+            data = data[:-len(ending)]
+            break
+    if not data or not data.isascii() or b"\n" in data or b"\r" in data:
+        return None
+    raw = strict_base64(data)
+    return raw if raw is not None and len(raw) == SIGNATURE_BYTES else None
+
+
+def public_key_pem(raw):
+    body = base64.b64encode(SPKI_PREFIX + raw)
+    lines = [body[start:start + PEM_LINE] for start in range(0, len(body), PEM_LINE)]
+    return b"-----BEGIN PUBLIC KEY-----\n" + b"\n".join(lines) + b"\n-----END PUBLIC KEY-----\n"
+
+
+def usable_keys(keys):
+    return [raw for raw in (decode_key(key) for key in keys) if raw is not None]
+
+
+def verify_signature(run, sums_path, signature_data, raw_keys, stage):
+    """SHA256SUMS 是否由 raw_keys 中任何一把簽出；公鑰與簽章暫存在 stage，用完即刪。"""
+    signature = decode_signature(signature_data)
+    if signature is None or not raw_keys:
+        return False
+    names = ["signature.bin"]
+    try:
+        stage.write(names[0], signature)
+        for index, raw in enumerate(raw_keys):
+            names.append(f"key-{index}.pem")
+            stage.write(names[-1], public_key_pem(raw))
+            argv = [OPENSSL, "pkeyutl", "-verify", "-pubin", "-inkey", stage.path_of(names[-1]),
+                    "-rawin", "-in", sums_path, "-sigfile", stage.path_of(names[0])]
+            if run(argv, SAFE_ENV, COMMAND_TIMEOUT_S, False).code == 0:
+                return True
+        return False
+    finally:
+        for name in names:
+            stage.remove(name)
+
+
+def checksum(text, name):
+    """SHA256SUMS 中 name（完全相同的檔名）的雜湊；找不到或互相矛盾時回傳 None。"""
+    found = set()
+    for line in text.splitlines():
+        parts = [part for part in line.split(" ") if part]
+        if len(parts) != 2 or not HEX_DIGEST.fullmatch(parts[0]):
+            continue
+        listed = parts[1][1:] if parts[1].startswith("*") else parts[1]
+        if listed == name:
+            found.add(parts[0].lower())
+    return found.pop() if len(found) == 1 else None
+
+
+def verify_release(context, stage, request, keys):
+    signature = stage.read(SIGNATURE_NAME, SIGNATURE_MAX_BYTES)
+    if not verify_signature(context.run, stage.path_of(CHECKSUMS_NAME), signature, keys, stage):
+        raise Failed("signature")
+    try:
+        text = stage.read(CHECKSUMS_NAME, CHECKSUMS_MAX_BYTES).decode("utf-8")
+    except UnicodeDecodeError:
+        raise Failed("checksum") from None
+    expected = checksum(text, request.name)
+    if expected is None or stage.sha256(request.name) != expected:
+        raise Failed("checksum")
+
+
+# ── 套件內容 ──────────────────────────────────────────────
+
+def parse_fields(data):
+    """dpkg-deb -f 的「欄位: 值」→ 字典；格式不對或重複時回傳 None。"""
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    fields = {}
+    for line in text.split("\n"):
+        if not line:
+            continue
+        match = FIELD.fullmatch(line)
+        if match is None or match.group(1) in fields:
+            return None
+        fields[match.group(1)] = match.group(2)
+    return fields
+
+
+def listing_entries(data):
+    """dpkg-deb -c → [（種類、路徑）]；任何一行不是一般檔案或目錄、擁有者不是 root/root、
+    有特殊權限位元或群組／其他人可寫時回傳 None。"""
+    try:
+        lines = data.decode("ascii").split("\n")
+    except UnicodeDecodeError:
+        return None
+    if lines and lines[-1] == "":
+        lines.pop()
+    if not lines or len(lines) > MAX_ENTRIES:
+        return None
+    entries = []
+    for line in lines:
+        match = LISTING_LINE.fullmatch(line)
+        if match is None:
+            return None
+        entries.append((match.group(1), match.group(3)))
+    return entries
+
+
+def path_allowed(kind, path):
+    directory = kind == "d"
+    if directory and path == "":
+        return True
+    if directory != path.endswith("/"):
+        return False
+    path = path.rstrip("/") if directory else path
+    if not all(SEGMENT.fullmatch(part) and part not in (".", "..") for part in path.split("/")):
+        return False
+    for tree in TREES:
+        if path.startswith(tree + "/") or (directory and path == tree):
+            return True
+    if directory:
+        return path in PARENTS or ICON_DIRECTORY.fullmatch(path) is not None
+    return any(rule.fullmatch(path) for rule in FILE_RULES)
+
+
+def contents_allowed(data):
+    entries = listing_entries(data)
+    return entries is not None and any(kind == "-" for kind, _ in entries) \
+        and all(path_allowed(kind, path) for kind, path in entries)
+
+
+def check_package(context, stage, request, installed):
+    deb = stage.path_of(request.name)
+    result = context.run([DPKG_DEB, "-f", deb, "Package", "Architecture", "Version"], SAFE_ENV,
+                         COMMAND_TIMEOUT_S, True)
+    fields = parse_fields(result.output) if result.code == 0 else None
+    if fields != {"Package": PACKAGE, "Architecture": "all", "Version": request.version}:
+        raise Failed("package")
+    newer = context.run([DPKG, "--compare-versions", request.version, "gt", installed], SAFE_ENV,
+                        COMMAND_TIMEOUT_S, False)
+    if newer.code != 0:
+        raise Failed("not-newer")
+    listing = context.run([DPKG_DEB, "-c", deb], SAFE_ENV, COMMAND_TIMEOUT_S, True)
+    if listing.code != 0 or not contents_allowed(listing.output):
+        raise Failed("contents")
+
+
+# ── dpkg 鎖與 apt-get ─────────────────────────────────────
+
+def lock_free(path):
+    """沒有人持有 dpkg 的前端鎖（fcntl 記錄鎖）時為 True；只測試，不保留鎖。"""
+    try:
+        fd = os.open(path, LOCK_FLAGS)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def wait_for_lock(context):
+    check = context.lock_free or lock_free
+    path = os.path.join(context.root, DPKG_LOCK)
+    deadline = context.clock() + LOCK_TIMEOUT_S
+    while not check(path):
+        if context.clock() >= deadline:
+            raise Failed("busy")
+        context.sleep(LOCK_POLL_S)
+
+
+def apt_install(context, stage, request):
+    argv = [APT_GET, "install", "-y", "-q", "--no-install-recommends", "--no-remove",
+            "-o", f"DPkg::Lock::Timeout={LOCK_TIMEOUT_S}", stage.path_of(request.name)]
+    if context.run(argv, APT_ENV, APT_TIMEOUT_S, False).code != 0:
+        raise Failed("apt")
+    try:
+        version = installed_version(context)
+    except Failed:
+        raise Failed("apt") from None
+    if version != request.version:
+        raise Failed("apt")
+
+
+# ── 動作 ───────────────────────────────────────────────────
+
+def install(context, uid, request):
+    inputs = open_inputs(request, uid)
+    try:
+        installed = installed_version(context)
+        keys = usable_keys(context.keys)
+        if not keys:
+            raise Failed("no-keys")
+        with Workspace(context) as stage:
+            for fd, name, limit in zip(inputs, (request.name, CHECKSUMS_NAME, SIGNATURE_NAME),
+                                       (DEB_MAX_BYTES, CHECKSUMS_MAX_BYTES, SIGNATURE_MAX_BYTES)):
+                stage.copy(fd, name, limit)
+            verify_release(context, stage, request, keys)
+            check_package(context, stage, request, installed)
+            (context.alarm or no_alarm)(0)
+            wait_for_lock(context)
+            apt_install(context, stage, request)
+    finally:
+        for fd in inputs:
+            os.close(fd)
+    return {"ok": True, "action": COMMAND, "version": request.version}
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def main(argv, env, context=None, emit=emit_json, report=log):
+    try:
+        request = parse_args(argv)
+    except Usage:
+        emit({"ok": False, "error": "usage"})
+        return EXIT_USAGE
+    if request.command == PROTOCOL_FLAG:
+        emit({"protocol": PROTOCOL, "version": VERSION})
+        return EXIT_OK
+    context = context or production_context()
+    alarm = context.alarm or no_alarm
+    try:
+        alarm(PREPARE_TIMEOUT_S)
+        uid = caller_uid(env, context)
+        check_location(context)
+        result = install(context, uid, request)
+    except NotPermitted:
+        report(COMMAND + " not-permitted")
+        emit({"ok": False, "error": "not-permitted"})
+        return EXIT_NOT_PERMITTED
+    except (Failed, OSError) as error:
+        report(COMMAND + " failed")
+        emit({"ok": False, "error": "failed", "reason": getattr(error, "reason", "system")})
+        return EXIT_FAILED
+    finally:
+        alarm(0)
+    report(COMMAND + " ok")
+    emit(result)
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    ENVIRONMENT = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(SAFE_ENV)
+    os.umask(0o077)
+    os.chdir("/")
+    sys.exit(main(sys.argv[1:], ENVIRONMENT))

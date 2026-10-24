@@ -1,13 +1,15 @@
-"""polkit 動作定義：每種安裝方式一個動作，只允許作用中的使用者以管理員密碼授權。"""
+"""polkit 動作定義：每種安裝方式一個 CPU 功耗動作，加上只有 .deb 才有的更新動作；
+都只允許作用中的使用者以管理員密碼授權（每次都要，不記住）。"""
 import unittest
 import xml.etree.ElementTree as ElementTree
 
-from sdm.constants import ChargeLimit, CpuPower
+from sdm.constants import ChargeLimit, CpuPower, Update
 from tests.fixtures.helpers import HELPERS
 
 POLICIES = HELPERS/"policy"
 DEB_POLICY = POLICIES/"tw.local.system-device-monitor.policy"
 LOCAL_POLICY = POLICIES/"tw.local.system-device-monitor.local.policy"
+UPDATE_POLICY = POLICIES/"tw.local.system-device-monitor.update.policy"
 DEFAULTS = {"allow_any": "no", "allow_inactive": "no", "allow_active": "auth_admin"}
 LANG = "{http://www.w3.org/XML/1998/namespace}lang"
 EXEC_PATH = "org.freedesktop.policykit.exec.path"
@@ -41,12 +43,21 @@ class Policies(unittest.TestCase):
     def test_local_policy(self):
         self.check(LOCAL_POLICY, CpuPower.ACTION_LOCAL, CpuPower.LOCAL_HELPER)
 
+    def test_update_policy(self):
+        self.check(UPDATE_POLICY, Update.ACTION, Update.HELPER)
+
     def test_file_names_match_the_action_ids(self):
         limits = (ChargeLimit.ACTION_DEB + ".policy", ChargeLimit.ACTION_LOCAL + ".policy")
         self.assertEqual(sorted(path.name for path in POLICIES.iterdir()),
-                         sorted((DEB_POLICY.name, LOCAL_POLICY.name) + limits))
+                         sorted((DEB_POLICY.name, LOCAL_POLICY.name, UPDATE_POLICY.name) + limits))
         self.assertTrue(CpuPower.ACTION_DEB.startswith(DEB_POLICY.stem))
         self.assertTrue(CpuPower.ACTION_LOCAL.startswith(LOCAL_POLICY.stem))
+        self.assertEqual(Update.ACTION, UPDATE_POLICY.stem)
+
+    def test_update_is_never_installed_from_a_source_checkout(self):
+        from sdm.services import system_components
+        for name in system_components.STAGED:
+            self.assertNotIn("update", name)
 
     def test_policies_differ_only_in_names_and_paths(self):
         text = DEB_POLICY.read_text(encoding="utf-8")
@@ -66,7 +77,7 @@ class ReservedPrefix(unittest.TestCase):
     PREFIX = "tw.local.system-device-monitor.unattended."
 
     def test_password_actions_avoid_the_unattended_prefix(self):
-        for path in (DEB_POLICY, LOCAL_POLICY):
+        for path in (DEB_POLICY, LOCAL_POLICY, UPDATE_POLICY):
             for action in actions(path):
                 self.assertFalse(action.get("id").startswith(self.PREFIX))
 

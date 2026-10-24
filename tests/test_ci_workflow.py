@@ -38,13 +38,24 @@ class Workflow(unittest.TestCase):
             self.assertIn(words, WORKFLOW)
         self.assertNotIn('"nobody"', WORKFLOW)
 
+    def test_update_helper_is_checked_with_rejected_inputs(self):
+        self.assertIn("pkaction --verbose --action-id tw.local.system-device-monitor.update",
+                      WORKFLOW)
+        self.assertIn("tw.local.system-device-monitor.update.policy)\" = \"root 644\"", WORKFLOW)
+        for command in ('expect 0 "$update" --protocol', 'expect 2 sudo "$update" install',
+                        'fails "$unsigned"', 'fails input "$work/link/$name"',
+                        'fails input "$work/big/$name"', 'fails input "$work/root/$name"',
+                        'expect 4 sudo "$update" install', "truncate -s 31M"):
+            self.assertIn(command, WORKFLOW)
+        self.assertNotIn("apt-get install -y \"$work", WORKFLOW)
+
     def test_remove_and_purge_leave_nothing_behind(self):
         self.assertIn("sudo apt-get remove -y system-device-monitor", WORKFLOW)
         self.assertIn("sudo apt-get purge -y system-device-monitor", WORKFLOW)
         for path in ("/etc/systemd/system/system-device-monitor-cpu-power.socket.d",
                      "/etc/systemd/system/sockets.target.wants/system-device-monitor-cpu-power.socket",
                      "/usr/lib/systemd/system/system-device-monitor-cpu-power.service",
-                     "/var/lib/system-device-monitor",
+                     "/var/lib/system-device-monitor", "/var/cache/system-device-monitor",
                      "/usr/share/polkit-1/actions/tw.local.system-device-monitor.policy"):
             self.assertIn(f"test ! -e {path}", WORKFLOW)
 

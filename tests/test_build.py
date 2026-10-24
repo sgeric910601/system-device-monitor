@@ -200,7 +200,7 @@ class ControlText(unittest.TestCase):
             depends,
             "Depends: python3 (>= 3.10), python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, "
             "gir1.2-gudev-1.0, gir1.2-ayatanaappindicator3-0.1, gir1.2-notify-0.7, "
-            "librsvg2-common, util-linux")
+            "librsvg2-common, util-linux, openssl")
         self.assertIn("Package: system-device-monitor\nVersion: 1.2.3\n", text)
         self.assertTrue(text.endswith(" GPU, network and currently connected peripherals. No telemetry.\n"))
 
