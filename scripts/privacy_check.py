@@ -2,7 +2,7 @@
 """Check public file lists and private-data patterns without printing values."""
 import argparse
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -10,6 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from sdm.core.png_chunks import PngError, extra_chunks
+from sdm.paths import VERSION
 PATTERNS = {
     "personal home path": re.compile(rb"/(?:home|Users)/[A-Za-z0-9_.-]+"),
     "private mount path": re.compile(rb"/mnt/[A-Za-z0-9_.-]+/"),
@@ -20,19 +21,27 @@ EMAIL = re.compile(rb"[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BLOCKED = {"settings.json", "preferences.json", "device-aliases.json", "config.json", "credentials.json",
            "dependency-status", "smoke.json"}
 BLOCKED_SUFFIXES = {".png", ".jpg", ".jpeg", ".log", ".key", ".pem", ".p12", ".pfx", ".bak", ".pyc"}
-# 公開的 PNG 只能放在 assets/ 底下並列在清單中；解包的產物另外允許安裝到圖示主題的程式圖示
+# 公開的 PNG 只能放在 assets/ 底下並列在清單中；解包的產物只允許清單中的檔案出現在已知的位置
 ASSETS = "assets"
-APP_ICON = re.compile(r"usr/share/icons/hicolor/[0-9]+x[0-9]+/apps/system-device-monitor\.png")
+PACKAGE_APP = "usr/share/system-device-monitor/"
 
 def png_listed(name, names):
     """原始碼樹：assets/ 底下、列在公開清單中的 PNG。"""
     return name.startswith(ASSETS + "/") and name.endswith(".png") and name in names
 
-def tree_png_allowed(name):
-    """解包的發行產物：任何一層 assets/ 資料夾裡的 PNG，或安裝到圖示主題的程式圖示。"""
+def tree_png_allowed(name, manifest):
+    """解包的發行產物：.deb 的執行期 assets/、清單中 system 條目的程式圖示，
+    或來源壓縮包（system-device-monitor-版本/）裡的 assets/；都必須是清單列出的檔案。"""
     if not name.endswith(".png"):
         return False
-    return ASSETS in PurePosixPath(name).parts[:-1] or bool(APP_ICON.fullmatch(name))
+    source_root = f"system-device-monitor-{VERSION}/"
+    icons = {item.get("target", "").lstrip("/") for item in manifest.get("system", [])
+             if isinstance(item, dict) and str(item.get("source", "")).endswith(".png")}
+    for prefix, listed in ((PACKAGE_APP, manifest.get("runtime", [])),
+                           (source_root, manifest.get("source", []))):
+        if name.startswith(prefix) and png_listed(name[len(prefix):], set(listed)):
+            return True
+    return name in icons
 
 def png_findings(path):
     """允許的 PNG 不套用文字規則（壓縮後的位元組沒有意義），改為只允許畫面本身需要的區塊。"""
@@ -88,7 +97,8 @@ def main():
     if args.tree:
         base = args.tree.resolve()
         files = [p for p in base.rglob("*") if p.is_file() or p.is_symlink()]
-        allowed = {p for p in files if tree_png_allowed(p.relative_to(base).as_posix())}
+        manifest = json.loads((ROOT/"package-files.json").read_text())
+        allowed = {p for p in files if tree_png_allowed(p.relative_to(base).as_posix(), manifest)}
     else:
         base = ROOT
         manifest = json.loads((ROOT/"package-files.json").read_text())

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import zlib
 
+from sdm.paths import VERSION
 from tests.png_samples import EXIF, SIGNATURE, TEXT, TIME, chunk, png_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,18 +72,24 @@ class Allowlist(unittest.TestCase):
         self.assertFalse(privacy.png_listed("icons/cpu.png", names))
         self.assertFalse(privacy.png_listed("assets/notes.txt", {"assets/notes.txt"}))
 
-    def test_unpacked_artifacts_allow_assets_and_the_app_icon(self):
+    def test_unpacked_artifacts_allow_only_listed_files_at_known_places(self):
+        manifest = {"runtime": ["assets/app/mint-128.png"], "source": ["assets/app/mint-128.png"],
+                    "system": [{"source": "assets/app/mint-128.png",
+                                "target": "/usr/share/icons/hicolor/128x128/apps/"
+                                          "system-device-monitor.png"}]}
         for name in ("usr/share/system-device-monitor/assets/app/mint-128.png",
-                     "system-device-monitor-1.0/assets/companion/pet-cat.png",
                      "usr/share/icons/hicolor/128x128/apps/system-device-monitor.png",
-                     "usr/share/icons/hicolor/512x512/apps/system-device-monitor.png"):
+                     f"system-device-monitor-{VERSION}/assets/app/mint-128.png"):
             with self.subTest(name=name):
-                self.assertTrue(privacy.tree_png_allowed(name))
-        for name in ("usr/share/doc/system-device-monitor/shot.png", "assets.png",
-                     "usr/share/icons/hicolor/128x128/apps/other.png", "home/screenshot.png",
-                     "assets/notes.txt"):
+                self.assertTrue(privacy.tree_png_allowed(name, manifest))
+        for name in ("usr/share/system-device-monitor/assets/app/other.png",
+                     "usr/share/system-device-monitor/sdm/assets/app/mint-128.png",
+                     "home/user/assets/app/mint-128.png", "assets/app/mint-128.png",
+                     "usr/share/icons/hicolor/512x512/apps/system-device-monitor.png",
+                     "system-device-monitor-0.0.1/assets/app/mint-128.png",
+                     "usr/share/doc/system-device-monitor/shot.png"):
             with self.subTest(name=name):
-                self.assertFalse(privacy.tree_png_allowed(name))
+                self.assertFalse(privacy.tree_png_allowed(name, manifest))
 
 
 if __name__ == "__main__":
