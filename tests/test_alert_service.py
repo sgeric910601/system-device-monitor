@@ -395,6 +395,34 @@ class Wiring(unittest.TestCase):
             app.received(kind, future)
         self.assertEqual(calls, [("power", snapshot), ("devices", devices(40))])
 
+    def clicked(self, window=None, closing=False):
+        app = ui_app.Monitor.__new__(ui_app.Monitor)
+        app.window, app.closing, calls = window, closing, []
+
+        def activate():
+            calls.append("activate")
+            app.window = "window"
+        app.activate = activate
+        app.open_page = lambda widget, page: calls.append(("open", page))
+        app.notification_clicked("devices")
+        return calls
+
+    def test_click_without_a_window_activates_first(self):
+        self.assertEqual(self.clicked(), ["activate", ("open", "devices")])
+
+    def test_click_with_a_window_only_opens_the_page(self):
+        self.assertEqual(self.clicked(window="window"), [("open", "devices")])
+
+    def test_click_while_closing_does_nothing(self):
+        self.assertEqual(self.clicked(closing=True), [])
+
+    def test_notifier_clicks_go_through_the_app(self):
+        app = self.build()
+        calls = []
+        app.notification_clicked = calls.append
+        app.notifier.open_page("power")
+        self.assertEqual(calls, ["power"])
+
     def test_stop_cancels_alert_timers(self):
         app = self.build()
         stopped = []

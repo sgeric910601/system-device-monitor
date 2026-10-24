@@ -31,7 +31,7 @@ class AlertMixin:
     def build_alerts(self):
         """一般執行才建立通知；test-notification 動作一律註冊（沒有通知時只記錄）。"""
         if not (self.smoke or self.preview):
-            self.notifier = Notifier(lambda page: self.open_page(None, page),
+            self.notifier = Notifier(lambda page: self.notification_clicked(page),
                                      connection=self.get_dbus_connection)
             self.alerts = AlertService(self.notifier.send, self.schedule, self.remove_source,
                                        defer=GLib.idle_add)
@@ -39,6 +39,15 @@ class AlertMixin:
         action = Gio.SimpleAction.new(Alerts.TEST_ACTION, None)
         action.connect("activate", lambda *_: self.remote_test_notification())
         self.add_action(action)
+
+    def notification_clicked(self, page):
+        """點通知：還沒有視窗時先啟動看板（建立視窗），再開啟相關的頁面；結束中不做任何事。"""
+        if self.closing:
+            return
+        if self.window is None:
+            self.activate()
+        if self.window is not None:
+            self.open_page(None, page)
 
     def remote_test_notification(self):
         now = self.remote_clock()
