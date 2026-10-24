@@ -110,6 +110,41 @@ class CpuPower:
     CALIBRATION_FILE = "cpu-calibration.json"   # XDG 狀態目錄
 
 
+class ChargeLimit:
+    """充電上限寫入：管理員小程式、polkit 動作、開機與喚醒後重新套用的單元與狀態檔，以及滑桿。
+
+    helper/sdm-charge-limit 以 root 執行、不載入本套件，所以各自保留同樣的值；
+    tests/test_charge_limit_helper 確認兩邊一致。
+    """
+    PROTOCOL = 1
+    EXIT_CODES = (0, 2, 3, 4)   # 成功、參數錯誤、執行失敗或沒有套用、沒有權限
+    DEB_HELPER = CpuPower.DEB_HELPER_DIR + "/sdm-charge-limit"
+    LOCAL_HELPER = CpuPower.LOCAL_HELPER_DIR + "/sdm-charge-limit"
+    # polkit 動作：保留給之後可選擇免密碼的前綴（預設仍要管理員密碼，授權後短時間內免重輸）
+    ACTION_DEB = "tw.local.system-device-monitor.unattended.charge-limit"
+    ACTION_LOCAL = "tw.local.system-device-monitor.unattended.local.charge-limit"
+    DEB_UNIT = "system-device-monitor-charge-limit.service"
+    LOCAL_UNIT = "system-device-monitor-local-charge-limit.service"
+    STATE_DIR = "/var/lib/system-device-monitor"
+    DEB_STATE = STATE_DIR + "/charge-limit.json"        # 「開機與喚醒後保留」的值（root 擁有）
+    LOCAL_STATE = STATE_DIR + "/charge-limit-local.json"
+    STATE_FORMAT = 1
+    STATE_MAX_BYTES = 4096
+    SUPPLY_PATTERN = r"[A-Za-z0-9_]{1,32}"     # 電池名稱：BAT0、BATT、CMB0…
+    MIN_LIMIT = 50              # 小程式接受的上限範圍（含）
+    MAX_LIMIT = 100             # 100＝不限制
+    OPTIONS = (80, 85, 90, 95, 100)     # 滑桿的預設級距
+    START_GAP = 5               # 必須先降低起點、又沒有指定起點時：起點＝上限 − 5
+    READBACK_ATTEMPTS = 3       # 寫入後讀回確認的次數與間隔（秒）
+    READBACK_INTERVAL = 0.3
+    DEBOUNCE = 0.6              # 停止拖動 0.6 秒（或放開滑桿）才寫入
+    AUTOMATIC_WAIT = 10.0       # 自動寫入（智慧充電）等待使用者調整完成的上限（秒）
+    AUTOMATIC_POLL = 0.1
+    PKEXEC_TIMEOUT = 120        # 等待授權與小程式完成的上限（秒）
+    PROTOCOL_TIMEOUT = 5
+    CONFLICT_TIMEOUT = 3        # 偵測衝突程式時 systemctl is-active 的逾時（秒）
+
+
 class Supply:
     """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
     TYPE_BATTERY = "Battery"
