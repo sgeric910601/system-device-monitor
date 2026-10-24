@@ -17,12 +17,12 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from sdm.constants import Companion
-from sdm.core.companion import APPEARANCES, PHOTO, TITLES, CompanionState
+from sdm.core.companion import APPEARANCES, PHOTO, CompanionState
 from sdm.core.pet_geometry import Rect
 from sdm.core.pet_motion import BlinkTimer, eye_circles, gaze, gaze_moved
 from sdm.core.sprite_motion import MotionPlan, Ticker, motion_plan
 from sdm.ui.companion_draw import EyeScene, Scene, draw_figure, photo_rect
-from sdm.ui.pet_menu import NO_PHOTO, action, radio_items
+from sdm.ui.pet_menu import Action, Radios, Separator, build, look_options
 from sdm.ui.sprite import Images, surface_from_pixbuf
 
 MILLISECONDS = 1000
@@ -170,14 +170,13 @@ class CompanionView(Gtk.DrawingArea):
         return True
 
 
+def appearance_entries(current, has_photo, select, open_settings):
+    """右鍵選單的內容：所有外觀（目前的打勾）、夥伴設定。"""
+    return (Radios(look_options(has_photo), lambda name: name == current, select,
+                   lambda name: has_photo or name != PHOTO),
+            Separator(), Action(SETTINGS, open_settings))
+
+
 def appearance_menu(current, has_photo, select, open_settings):
-    """右鍵選單：所有外觀（目前的打勾）、夥伴設定。"""
-    menu = Gtk.Menu()
-    looks = tuple((name, TITLES[name] if has_photo or name != PHOTO else NO_PHOTO)
-                  for name in APPEARANCES)
-    radio_items(menu, looks, lambda name: name == current, select,
-                enabled=lambda name: has_photo or name != PHOTO)
-    menu.append(Gtk.SeparatorMenuItem())
-    menu.append(action(SETTINGS, open_settings))
-    menu.show_all()
-    return menu
+    """收起後自動銷毀的右鍵選單。"""
+    return build(appearance_entries(current, has_photo, select, open_settings))

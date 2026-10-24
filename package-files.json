@@ -494,6 +494,7 @@
     "tests/test_packaging.py",
     "tests/test_peripheral_alerts.py",
     "tests/test_pet_geometry.py",
+    "tests/test_pet_menu.py",
     "tests/test_pet_messages.py",
     "tests/test_pet_motion.py",
     "tests/test_pet_state.py",
