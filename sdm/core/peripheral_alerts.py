@@ -83,7 +83,11 @@ def peripheral_readings(payload):
 
 
 def present_keys(payload):
-    """目前連線中所有設備的鍵；清單不完整（有錯誤訊息）時回傳 None。"""
+    """目前連線中所有設備的鍵；清單不完整（有錯誤訊息）時回傳 None。
+
+    回傳 None 時不移除任何設備（避免服務短暫失敗就重複通知）。代價是：某個來源一直失敗時
+    （例如沒有藍牙，清單一直帶著「藍牙服務暫時無法取得」），斷線的設備永遠不會被移除，
+    重新連上時不會再通知，要等電量回到門檻＋2% 以上才重新啟用。"""
     if payload.get("errors"):
         return None
     return frozenset(peripheral_key(device["id"]) for device in payload.get("devices", []))
