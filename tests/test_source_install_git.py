@@ -104,6 +104,15 @@ class RealGit(unittest.TestCase):
         self.assertEqual(self.run_install(), 0)
         self.assertEqual(self.staged[0][SUBST], raw)
 
+    def test_repository_with_several_worktrees(self):
+        self.commit()
+        self.git("worktree", "add", "--no-checkout", "-q", str(self.base/"second"), "HEAD")
+        self.assertEqual(self.run_install(), 0)
+        self.git("config", "--local", "extensions.worktreeConfig", "true")
+        self.git("config", "--worktree", "filter.x.smudge", self.evil_filter())
+        self.assertEqual(self.run_install(), 1)
+        self.assertFalse(self.marker.exists())
+
     def test_working_tree_edits_are_refused(self):
         self.commit()
         with (self.repo/"helper/sdm-cpu-power").open("ab") as handle:

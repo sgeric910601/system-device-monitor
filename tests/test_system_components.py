@@ -40,8 +40,9 @@ def tree_listing(names=None, algorithm="sha1", modes=None):
 
 class FakeGit:
     def __init__(self, common=b".git", git_dir=GIT_DIR, config=SAFE_CONFIG, listing=None,
-                 algorithm="sha1", blobs=None):
+                 algorithm="sha1", blobs=None, worktree_config=None):
         self.calls, self.common, self.git_dir, self.config = [], common, git_dir, config
+        self.worktree_config = worktree_config
         self.algorithm = algorithm
         self.listing = tree_listing(algorithm=algorithm) if listing is None else listing
         self.blobs = blobs or {blob_id((ROOT/name).read_bytes(), algorithm): (ROOT/name).read_bytes()
@@ -55,6 +56,10 @@ class FakeGit:
             return {"--absolute-git-dir": self.git_dir.encode(), "--git-common-dir": self.common,
                     "--show-object-format": self.algorithm.encode()}[wanted] + b"\n"
         if command == "config":
+            if wanted == "--worktree":
+                if self.worktree_config is None:
+                    raise components.ComponentError("multiple working trees")
+                return self.worktree_config
             return self.config
         if command == "cat-file":
             return self.blobs[argv[-1]]
@@ -173,7 +178,6 @@ class Run(unittest.TestCase):
             prefix + ["rev-parse", "--absolute-git-dir"],
             prefix + ["rev-parse", "--git-common-dir"],
             prefix + ["config", "--local", "--list", "-z"],
-            prefix + ["config", "--worktree", "--list", "-z"],
             prefix + ["rev-parse", "--show-object-format"],
             prefix + ["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *components.STAGED],
             *[prefix + ["cat-file", "blob", listing[name]] for name in components.STAGED],
@@ -193,6 +197,21 @@ class Run(unittest.TestCase):
                 self.assertNotIn("ls-tree", commands)
                 self.assertNotIn("cat-file", commands)
         self.assertEqual(self.seen, [])
+
+    def test_worktree_config_is_checked_only_when_enabled(self):
+        enabled = SAFE_CONFIG + b"extensions.worktreeconfig\ntrue\0"
+        git = FakeGit(config=enabled, worktree_config=SAFE_CONFIG)
+        self.assertEqual(self.run_action(git=git), 0)
+        self.assertIn("--worktree", [argv[argv.index("-C") + 3] for argv in git.calls
+                                     if argv[argv.index("-C") + 2] == "config"])
+        git = FakeGit(config=enabled, worktree_config=b"filter.x.clean\ncat\0")
+        self.assertEqual(self.run_action(git=git), 1)
+        self.assertIn("git 設定", self.messages[-1])
+        git = FakeGit(config=enabled + b"extensions.worktreeconfig\nfalse\0")
+        self.assertEqual(self.run_action(git=git), 0)
+        for value in (b"false", b"no", b"0"):
+            git = FakeGit(config=SAFE_CONFIG + b"extensions.worktreeconfig\n" + value + b"\0")
+            self.assertEqual(self.run_action(git=git), 0)
 
     def test_sha256_repositories_are_supported(self):
         self.assertEqual(self.run_action(git=FakeGit(algorithm="sha256")), 0)

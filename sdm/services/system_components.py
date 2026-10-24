@@ -43,6 +43,7 @@ BLOB_MODES = ("100644", "100755")
 OBJECT_FORMATS = {"sha1": 40, "sha256": 64}
 FORBIDDEN_CONFIG = ("include.", "includeif.", "filter.")
 FORBIDDEN_CONFIG_KEYS = ("core.attributesfile",)
+TRUE_VALUES = ("true", "yes", "on", "1", "")    # git 的布林真值（只寫鍵名也算真）
 HEX = re.compile(r"[0-9a-f]+")
 ACTIONS = ("install", "remove")
 GIT = "/usr/bin/git"
@@ -126,13 +127,26 @@ def package_installed():
         words[2] not in ("not-installed", "config-files")
 
 
+def config_entries(root, git, scope):
+    """（小寫的鍵、值）；指定檔案範圍時 git 不展開 include，也不含 -c 傳入的設定。"""
+    entries = []
+    for item in git(git_command(root, "config", scope, "--list", "-z")).split(b"\0"):
+        key, _, value = item.decode("utf-8", "replace").partition("\n")
+        if key.strip():
+            entries.append((key.strip().lower(), value.strip().lower()))
+    return entries
+
+
 def check_local_config(root, git):
-    """本地（與 worktree）的 git 設定不得含會執行指令或改變內容的鍵；指定檔案時不展開 include。"""
-    for scope in ("--local", "--worktree"):
-        for item in git(git_command(root, "config", scope, "--list", "-z")).split(b"\0"):
-            key = item.split(b"\n", 1)[0].decode("utf-8", "replace").strip().lower()
-            if key.startswith(FORBIDDEN_CONFIG) or key in FORBIDDEN_CONFIG_KEYS:
-                raise ComponentError(UNSAFE_CONFIG)
+    """本地的 git 設定（啟用 extensions.worktreeConfig 時再加上 config.worktree）不得含會執行
+    指令或改變內容的鍵。沒有啟用時 git 不讀 config.worktree，--worktree 在多個工作樹時也會失敗。"""
+    entries = config_entries(root, git, "--local")
+    switch = [value for key, value in entries if key == "extensions.worktreeconfig"]
+    if switch and switch[-1] in TRUE_VALUES:
+        entries += config_entries(root, git, "--worktree")
+    for key, _ in entries:
+        if key.startswith(FORBIDDEN_CONFIG) or key in FORBIDDEN_CONFIG_KEYS:
+            raise ComponentError(UNSAFE_CONFIG)
 
 
 def object_format(root, git):
