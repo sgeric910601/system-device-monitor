@@ -61,6 +61,16 @@ class Sayings(unittest.TestCase):
         self.assertEqual(mood(PetStatus(percent=30, state=DISCHARGING, low_threshold=30)),
                          "肚子有點餓，記得幫我充電")
 
+    def test_unknown_percent_is_left_out(self):
+        battery = PetStatus(percent=None, state=DISCHARGING, minutes_to_empty=60)
+        self.assertEqual(thought(battery), "還能用 1 小時")
+        self.assertEqual(mood(battery), "陪你一起努力")
+        self.assertEqual(sayings(PetStatus(percent=None, state=CHARGING)), ["充電中，好溫暖～"])
+        draining = PetStatus(percent=None, state=PLUGGED_IDLE, draining_on_ac=True)
+        self.assertEqual(mood(draining), "陪你一起努力")
+        for status in (battery, draining, PetStatus(percent=None, state=FULL)):
+            self.assertNotIn("%", thought(status) + "".join(sayings(status)))
+
     def test_purrs_match_the_reference(self):
         self.assertEqual(PURRS, ("呼嚕呼嚕～", "好舒服喔", "再摸一下嘛", "喵～"))
 

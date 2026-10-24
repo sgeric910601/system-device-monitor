@@ -3,7 +3,7 @@
 - 想像框（滑鼠移過去）：目前的電量與狀態，有排程時加一行排程說明；桌機是整機耗電與供電來源。
 - 對話框（點一下，每點一次換一句）：心情在第一句，之後是今天的用電、電池健康度與整機耗電；
   沒有資料的那句不出現。桌機改說不斷電系統的電量與負載。
-「整台 Mac」改成「整台電腦」，其餘文字與參考專案相同。
+「整台 Mac」改成「整台電腦」，其餘文字與參考專案相同。電量讀不到時不說百分比（不會說成 0%）。
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -17,8 +17,8 @@ PURRS = ("呼嚕呼嚕～", "好舒服喔", "再摸一下嘛", "喵～")
 
 @dataclass(frozen=True)
 class PetStatus:
-    """筆電：只放數值，方便測試。"""
-    percent: int
+    """筆電：只放數值，方便測試。percent 讀不到時為 None。"""
+    percent: Optional[int]
     state: str
     draining_on_ac: bool = False        # 接著電源但供電不足，電池仍在放電
     minutes_to_empty: Optional[int] = None
@@ -77,7 +77,7 @@ def state_text(s):
 
 
 def thought(s):
-    lines = [f"{s.percent}%・{state_text(s)}"]
+    lines = [state_text(s) if s.percent is None else f"{s.percent}%・{state_text(s)}"]
     if s.plan_title is not None:
         lines.append(s.plan_title + ("" if s.plan_detail is None else "：" + s.plan_detail))
     return "\n".join(lines)
@@ -89,6 +89,8 @@ def mood(s):
     if s.plan_waiting and s.plan_detail is not None:
         return "我先睡一下，" + s.plan_detail
     if s.state == DISCHARGING or (s.state == PLUGGED_IDLE and s.draining_on_ac):
+        if s.percent is None:
+            return "陪你一起努力"
         if s.percent <= Companion.CRITICAL_PERCENT:
             return "快沒電了！拜託快接上電源"
         if s.percent <= s.low_threshold:

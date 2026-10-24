@@ -56,6 +56,13 @@ class Text(unittest.TestCase):
         self.assertEqual(lines[2], "電池健康度 91%，充過 120 次")
         self.assertEqual(lines[3], "現在整台電腦用了 15.0 W")
 
+    def test_unknown_battery_level_shows_no_percentage(self):
+        power = laptop(capacity=None)
+        self.assertIsNone(power.percent)
+        self.assertNotIn("0%", thought_for(power, 20))
+        self.assertFalse(thought_for(power, 20)[0].isdigit())
+        self.assertNotIn("0%", " ".join(sayings_for(power, 20, None)))
+
     def test_laptop_without_today_skips_that_line(self):
         lines = sayings_for(laptop(), 20, DailyRecap())
         self.assertNotIn("今天", " ".join(lines))

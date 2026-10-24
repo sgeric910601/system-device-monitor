@@ -32,7 +32,7 @@ def _laptop_status(power, low_threshold, recap):
     e, battery = power.estimates, power.battery
     today = recap is not None and recap.start_percent is not None
     return PetStatus(
-        percent=power.percent if power.percent is not None else 0, state=power.state,
+        percent=power.percent, state=power.state,
         draining_on_ac=e.draining_on_ac, minutes_to_empty=e.headline_to_empty,
         minutes_to_full=e.headline_to_full,
         limit=battery.limit if e.to_limit is not None else None, low_threshold=low_threshold,
