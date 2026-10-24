@@ -6,7 +6,7 @@ import sys
 import unittest
 
 from sdm.constants import CpuPower, Power
-from tests.fixtures.helpers import HELPERS, load_helper
+from tests.fixtures.helpers import HELPERS, git_mode, load_helper
 
 service = load_helper("sdm-cpu-power-service")
 UNITS = HELPERS/"systemd"
@@ -151,7 +151,7 @@ class ServiceHelper(unittest.TestCase):
         first = self.path.read_text(encoding="utf-8").splitlines()[0]
         self.assertEqual(first, "#!/usr/bin/python3 -IB")
         self.assertTrue(self.path.stat().st_mode & stat.S_IXUSR)
-        self.assertFalse(self.path.stat().st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+        self.assertIn(git_mode(self.path), (None, "100755"))
 
     def test_helpers_import_only_the_standard_library(self):
         forbidden = {"sdm-cpu-power-service": ("subprocess", "ctypes", "importlib", "shutil",

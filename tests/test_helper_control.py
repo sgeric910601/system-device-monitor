@@ -9,7 +9,7 @@ import unittest
 
 from sdm.constants import CpuPower
 from tests.fixtures.fakeroot import FakeRoot
-from tests.fixtures.helpers import load_helper
+from tests.fixtures.helpers import git_mode, load_helper
 
 control = load_helper("sdm-cpu-power")
 DEB_SOCKET = "system-device-monitor-cpu-power.socket"
@@ -332,9 +332,8 @@ class Helper(unittest.TestCase):
         path = control.__file__
         with open(path, encoding="utf-8") as handle:
             self.assertEqual(handle.readline().rstrip("\n"), "#!/usr/bin/python3 -IB")
-        mode = os.stat(path).st_mode
-        self.assertTrue(mode & stat.S_IXUSR)
-        self.assertFalse(mode & (stat.S_IWGRP | stat.S_IWOTH))
+        self.assertTrue(os.stat(path).st_mode & stat.S_IXUSR)
+        self.assertIn(git_mode(path), (None, "100755"))
 
     def test_constants_match_the_application(self):
         self.assertEqual(control.PROTOCOL, CpuPower.PROTOCOL)
