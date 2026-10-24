@@ -5,6 +5,7 @@ import unittest
 from sdm.constants import CpuPower
 from sdm.services.privileged import (AdminState, Layout, SOCKET_ABSENT, SOCKET_MINE,
                                      SOCKET_OTHER)
+from sdm.services.charge_control import LAYOUTS as LIMIT_LAYOUTS, ChargeState
 from sdm.ui import admin_text as text
 
 DEB = Layout("deb", CpuPower.DEB_HELPER, CpuPower.DEB_SOCKET)
@@ -75,6 +76,47 @@ class Sampling(unittest.TestCase):
             for mark in (",", ";", ":", "(", ")"):
                 self.assertNotIn(mark, value)
 
+
+
+class ChargeComponent(unittest.TestCase):
+    installed = ChargeState(supply="BAT0", layout=LIMIT_LAYOUTS[1], protocol=True)
+
+    def test_component_lines(self):
+        cases = (
+            (None, ""),
+            (self.installed, "充電上限元件：已安裝（原始碼）"),
+            (ChargeState(supply="BAT0", layout=LIMIT_LAYOUTS[0], protocol=True),
+             "充電上限元件：已安裝（.deb）"),
+            (ChargeState(supply="BAT0"), "充電上限元件：未安裝"),
+            (ChargeState(supply="BAT0", layout=LIMIT_LAYOUTS[1]), "充電上限元件：已安裝（原始碼）・確認版本中…"),
+            (ChargeState(supply="BAT0", layout=LIMIT_LAYOUTS[1], protocol=False),
+             "充電上限元件：已安裝（原始碼）・需要重新安裝"),
+            (ChargeState(layout=LIMIT_LAYOUTS[0], protocol=True),
+             "充電上限元件：已安裝（.deb）・這台電腦沒有可調整充電上限的電池"),
+            (ChargeState(supply="BAT0", demo=True), "充電上限元件：示範模式，不會寫入"),
+        )
+        for state, expected in cases:
+            with self.subTest(state=state):
+                self.assertEqual(text.charge_line(state), expected)
+
+    def test_missing_charge_component_shows_the_install_command(self):
+        command = text.install_command(AdminState(), CHECKOUT)
+        self.assertEqual(text.install_command(AdminState(LOCAL, True), CHECKOUT,
+                                              ChargeState(supply="BAT0")), command)
+        self.assertEqual(text.install_command(AdminState(LOCAL, True), CHECKOUT,
+                                              ChargeState(layout=LIMIT_LAYOUTS[1],
+                                                          protocol=False)), command)
+        self.assertIsNone(text.install_command(AdminState(LOCAL, True), CHECKOUT, self.installed))
+        self.assertIsNone(text.install_command(AdminState(LOCAL, True), CHECKOUT,
+                                               ChargeState(supply="BAT0", demo=True)))
+        self.assertIsNone(text.install_command(AdminState(LOCAL, True), PACKAGE,
+                                               ChargeState(supply="BAT0")))
+        self.assertIn("終端機", text.component_note(AdminState(LOCAL, True), CHECKOUT,
+                                                  ChargeState(supply="BAT0")))
+
+    def test_notes_mention_both_components(self):
+        self.assertIn("充電上限", text.SOURCE_NOTE)
+        self.assertIn("CPU 功耗取樣", text.SOURCE_NOTE)
 
 if __name__ == "__main__":
     unittest.main()

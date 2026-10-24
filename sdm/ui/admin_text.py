@@ -1,4 +1,4 @@
-"""設定 → 管理員功能的文字（不載入 GTK）：元件狀態、安裝指令、取樣狀態與說明。"""
+"""設定 → 管理員功能的文字（不載入 GTK）：元件狀態（含充電上限）、安裝指令、取樣狀態與說明。"""
 from pathlib import Path
 
 from sdm.services import system_components
@@ -16,7 +16,11 @@ SIDE_CHANNEL = ("RAPL 能量計數器可能被用來推測同一台電腦上其�
                 "四捨五入到 0.1 W，只有你的帳號能連線（你的帳號執行的任何程式都讀得到）；"
                 "不需要時請關閉。")
 STARTUP_OFF = "CPU 取樣服務沒有為你開啟，已關閉此選項；需要時請重新開啟並授權。"
-SOURCE_NOTE = "在終端機執行下列指令安裝（會要求管理員密碼，只安裝已提交的版本）："
+SOURCE_NOTE = ("在終端機執行下列指令安裝 CPU 功耗取樣與充電上限的管理員元件"
+               "（會要求管理員密碼，只安裝已提交的版本）：")
+CHARGE_PREFIX = "充電上限元件："
+CHARGE_DEMO = "示範模式，不會寫入"
+NO_BATTERY = "這台電腦沒有可調整充電上限的電池"
 SOURCE_INSTALLED = ("要移除時在終端機執行 install.py --system-components remove"
                     "（會要求管理員密碼）。")
 PACKAGE_MISSING = "管理員元件隨 .deb 套件安裝；找不到或版本不符時，請重新安裝套件。"
@@ -34,19 +38,39 @@ def component_title(state):
     return title + "・" + (CHECKING if state.protocol is None else REINSTALL)
 
 
-def install_command(state, root):
-    """原始碼資料夾還沒安裝（或版本不符）時可以直接貼上的指令；其他情況為 None。"""
+def charge_missing(charge):
+    """充電上限的小程式沒有安裝或版本不符（示範模式不算）。"""
+    return charge is not None and not charge.demo and \
+        (charge.layout is None or charge.protocol is False)
+
+
+def install_command(state, root, charge=None):
+    """原始碼資料夾還沒安裝、版本不符或缺少充電上限元件時可以直接貼上的指令；其他情況為 None。"""
     if packaged(root) or state.kind == KIND_DEB:
         return None
-    if state.layout is None or state.protocol is False:
+    if state.layout is None or state.protocol is False or charge_missing(charge):
         return system_components.install_command(root)
     return None
 
 
-def component_note(state, root):
+def component_note(state, root, charge=None):
     if packaged(root) or state.kind == KIND_DEB:
         return PACKAGE_INSTALLED if state.ready else PACKAGE_MISSING
-    return SOURCE_INSTALLED if state.ready else SOURCE_NOTE
+    return SOURCE_INSTALLED if state.ready and not charge_missing(charge) else SOURCE_NOTE
+
+
+def charge_line(charge):
+    """充電上限元件的狀態；charge 為 sdm.services.charge_control.ChargeState。"""
+    if charge is None:
+        return ""
+    if charge.demo:
+        return CHARGE_PREFIX + CHARGE_DEMO
+    if charge.layout is None:
+        return CHARGE_PREFIX + TITLES[None]
+    text = CHARGE_PREFIX + TITLES[charge.layout.kind]
+    if charge.protocol is not True:
+        return text + "・" + (CHECKING if charge.protocol is None else "需要重新安裝")
+    return text if charge.supply is not None else text + "・" + NO_BATTERY
 
 
 def sampling_status(state, preference):

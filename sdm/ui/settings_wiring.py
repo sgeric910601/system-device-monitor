@@ -97,7 +97,8 @@ class SettingsMixin:
                 peripheral_settings=self.peripheral_settings,
                 notice=self.notice_text, send_test=self.send_test_notification,
                 probe=self.probe_notifications, notifications_enabled=self.notifier is not None,
-                admin=self.admin, companion=self.companion_context())
+                admin=self.admin, companion=self.companion_context(),
+                charge_limit=self.charge_control)
             self.settings_window = SettingsWindow(self, self.store, context)
         if self.admin is not None:
             self.admin.update_socket()

@@ -1,7 +1,7 @@
 """「電源」頁：桌機顯示整機耗電、電力流向、耗電拆解、耗電歷史與詳細資訊；
 有系統電池（筆電）時改顯示筆電版面（laptop_power.LaptopPowerView，第一次收到筆電快照才建立）。
 充電夥伴（set_companion）放在桌機的瓦數旁；筆電放在電量標題旁（充電上限那一欄的左邊），
-切換版面時跟著移過去。
+切換版面時跟著移過去。充電上限滑桿（set_charge_limit）只在筆電版面，放在電量標題下方。
 
 自成一個 Gtk.Box，對外只有 update(power) 與 history_changed()，之後換外殼可直接重用。
 頁面沒有顯示時只記下最新資料，顯示時才更新文字與重算圖表；文字沒變就不重設。
@@ -52,6 +52,8 @@ def ellipsized(text, css=None):
 
 
 class PowerPage(Gtk.Box):
+    charge_limit = None         # 充電上限滑桿（sdm.ui.charge_limit_view.ChargeLimitView）
+
     def __init__(self, points_for, clock=time.time, recap_for=lambda now: DailyRecap(),
                  unplugged_for=lambda now: None, hidden_fields=lambda: (),
                  hidden_flow=lambda: (), names=None, switch_profile=lambda name: None):
@@ -111,6 +113,18 @@ class PowerPage(Gtk.Box):
         target.pack_start(self.companion, False, False, 0)
         self.companion.show()
 
+    def set_charge_limit(self, widget):
+        """充電上限滑桿：筆電版面建立後放進它的 limit_slot（電量標題下方）。"""
+        self.charge_limit = widget
+        self.place_charge_limit()
+
+    def place_charge_limit(self):
+        widget = self.charge_limit
+        if widget is None or self.laptop is None or widget.get_parent() is not None:
+            return
+        self.laptop.limit_slot.pack_start(widget, False, False, 0)
+        self.laptop.limit_shown = widget.get_visible
+
     def build_cards(self):
         self.flow = PowerFlow()
         self.rows = Gtk.Grid(column_spacing=SPACING, row_spacing=6)
@@ -154,6 +168,7 @@ class PowerPage(Gtk.Box):
             self.laptop.set_visible(laptop)
             self.desktop.set_visible(not laptop)
         self.place_companion()
+        self.place_charge_limit()
 
     def set_profiles(self, state):
         """電源模式服務的狀態（sdm.services.power_profiles.ProfileState）。"""

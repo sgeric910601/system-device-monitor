@@ -185,6 +185,11 @@ class DetailsView:
 
 
 class LaptopPowerView(Gtk.Box):
+    @staticmethod
+    def limit_shown():
+        """電量標題下方有沒有顯示充電上限滑桿（電源頁放入滑桿時換成它的 get_visible）。"""
+        return False
+
     def __init__(self, points_for, clock):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=SPACING)
         self.points_for, self.clock = points_for, clock
@@ -207,7 +212,7 @@ class LaptopPowerView(Gtk.Box):
         self.pack_start(self.details.container, False, False, 0)
 
     def build_header(self):
-        """左邊是充電夥伴，右邊一欄是電量標題；充電上限（之後加入）放在 limit_slot，標題下方。"""
+        """左邊是充電夥伴，右邊一欄是電量標題；充電上限滑桿放在 limit_slot，標題下方。"""
         header_box = box(spacing=2)
         self.value = label("—", "power-value")
         self.state = label("正在讀取電池…", "power-state")
@@ -233,7 +238,7 @@ class LaptopPowerView(Gtk.Box):
         self.time.set_card(time_card(power, now, unplugged_at))
         self.flow.set_model(flow_model(power))
         self.recap.set_text(recap_text(recap))
-        self.details.set_rows(detail_rows(power, hidden))
+        self.details.set_rows(detail_rows(power, hidden, self.limit_shown()))
 
     def refresh_chart(self):
         now = self.clock()

@@ -1,7 +1,7 @@
 """設定 → 管理員功能：管理員元件的安裝狀態，以及選用的 CPU 功耗取樣。
 
-- 管理員元件：已安裝（.deb）／已安裝（原始碼）／未安裝；原始碼資料夾還沒安裝時顯示
-  可以直接複製到終端機的安裝指令（按「複製」才寫入剪貼簿）。
+- 管理員元件：已安裝（.deb）／已安裝（原始碼）／未安裝，以及充電上限元件的狀態；原始碼資料夾
+  還沒安裝（或缺少充電上限元件）時顯示可以直接複製到終端機的安裝指令（按「複製」才寫入剪貼簿）。
 - CPU 功耗取樣：開關（元件可用而且沒有在等待授權時才能切換）、目前狀態、用途、
   旁路攻擊的說明與上次的錯誤。開關只寫入設定，實際的授權流程在 sdm.ui.cpu_power_wiring。
 文字在 sdm.ui.admin_text（不載入 GTK）。
@@ -31,7 +31,12 @@ def copy_text(value):
     Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(value, -1)
 
 
-def command_row(controls, admin):
+def charge_state(context):
+    control = getattr(context, "charge_limit", None)
+    return None if control is None else control.state
+
+
+def command_row(controls, admin, context=None):
     """完整顯示（會換行、可選取）的指令與「複製」按鈕。"""
     command = wrapped("", "monospace")
     command.set_selectable(True)
@@ -48,7 +53,7 @@ def command_row(controls, admin):
     row.show_all()
 
     def sync():
-        value = text.install_command(admin.state, admin.root) or ""
+        value = text.install_command(admin.state, admin.root, charge_state(context)) or ""
         if command.get_text() != value:
             command.set_text(value)
         hidden_unless(row, bool(value))
@@ -56,10 +61,13 @@ def command_row(controls, admin):
     return row
 
 
-def components_card(controls, admin):
+def components_card(controls, admin, context=None):
     title = controls.note(lambda: text.component_title(admin.state), {ADMIN}, css="section")
-    note = controls.note(lambda: text.component_note(admin.state, admin.root), {ADMIN})
-    return card("管理員元件", title, note, command_row(controls, admin))
+    charge = controls.note(lambda: text.charge_line(charge_state(context)), {ADMIN})
+    hidden_unless(charge, charge_state(context) is not None)
+    note = controls.note(lambda: text.component_note(admin.state, admin.root,
+                                                     charge_state(context)), {ADMIN})
+    return card("管理員元件", title, charge, note, command_row(controls, admin, context))
 
 
 def error_label(controls, admin):
@@ -89,6 +97,6 @@ def build(controls, context):
     if admin is None:
         page.pack_start(card("管理員功能", label(UNAVAILABLE, "muted")), False, False, 0)
         return page
-    page.pack_start(components_card(controls, admin), False, False, 0)
+    page.pack_start(components_card(controls, admin, context), False, False, 0)
     page.pack_start(sampling_card(controls, admin), False, False, 0)
     return page

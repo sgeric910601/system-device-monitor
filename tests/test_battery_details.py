@@ -99,6 +99,14 @@ class Values(unittest.TestCase):
         no_file = laptop_from(sysfs.no_thresholds)
         self.assertNotIn("charge_limit", [row[0] for row in detail_rows(no_file)])
 
+    def test_charge_limit_slider_replaces_the_field(self):
+        power = laptop_from(sysfs.thinkpad, profile="balanced", charge_control_end_threshold=100)
+        rows = [row[0] for row in detail_rows(power, (), limit_shown=True)]
+        self.assertNotIn("charge_limit", rows)
+        self.assertEqual(rows[-1], "low_power")
+        self.assertEqual([row[0] for row in detail_rows(power, (), limit_shown=False)],
+                         [row[0] for row in detail_rows(power)])
+
     def test_condition_prefers_the_health_attribute(self):
         power = laptop_from(sysfs.thinkpad, health="Overheat")
         self.assertIn(("condition", "電池狀況", "過熱"), detail_rows(power))

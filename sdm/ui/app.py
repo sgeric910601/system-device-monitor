@@ -28,6 +28,7 @@ from sdm.services.ui_state import PageMemory
 from sdm.ui.alert_wiring import AlertMixin
 from sdm.ui.app_names import AppNames
 from sdm.ui.appearance_wiring import AppearanceMixin
+from sdm.ui.charge_limit_wiring import ChargeLimitMixin
 from sdm.ui.companion_wiring import CompanionMixin
 from sdm.ui.cpu_power_wiring import CpuPowerMixin
 from sdm.ui.main_window import PAGES, MainWindow
@@ -60,7 +61,8 @@ class RunResult(NamedTuple):
 
 
 class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
-              AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin, Gtk.Application):
+              AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin, ChargeLimitMixin,
+              Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -142,6 +144,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.sync_pet()
         self.start_profiles()
         self.start_admin()          # 只尋找元件、確認版本，不要求授權
+        self.start_charge_limit()   # 同上：只讀取充電上限與確認小程式，不要求授權
         GLib.idle_add(self.ask_first_run)
         self.create_scheduler()
         self.apply_modules()        # 頁面、取樣層與頂端列；各層立即取樣一次
@@ -241,6 +244,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.app_names = AppNames()
         self.build_power()
         self.build_companion()
+        self.build_charge_limit()
         overview = OverviewPage(self.series, self.clickable)
         self.overview = overview
         self.graphs = overview.graphs
@@ -320,6 +324,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.pages_stale = False
         fast, slow = self.data["system"], self.data["slow"]
         self.power_page.update(self.current_power())
+        self.observe_charge_limit()
         self.overview.render(fast, slow)
         self.render_monitor_pages(fast, slow)
         self.devices_page.render(self.data["devices"])
@@ -344,6 +349,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
                                  ("indicators", self.hide_indicators),
                                  ("profiles", self.stop_profiles),
                                  ("cpu_power", self.stop_cpu_power),
+                                 ("charge_limit", self.stop_charge_limit),
                                  ("workers", lambda: self.pool.shutdown(wait=False,
                                                                        cancel_futures=True)),
                                  ("stream", self.stop_stream)):

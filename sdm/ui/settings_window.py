@@ -50,6 +50,7 @@ class SettingsContext:
     probe: Callable[[], None] = nothing             # 重新確認通知服務（非同步）
     notifications_enabled: bool = False             # 模擬測試與示範模式為 False
     admin: object = None                # 管理員元件（sdm.services.privileged.AdminComponents）
+    charge_limit: object = None         # 充電上限（sdm.services.charge_control.ChargeControl）
     companion: object = None            # 夥伴、桌面寵物與圖示（settings.companion.CompanionContext）
 
 

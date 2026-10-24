@@ -3,8 +3,8 @@
 - 欄位代號同時是設定 hidden_detail_fields 使用的名稱（小寫英文與底線）。
 - 讀不到的欄位不顯示；使用者在「設定 → 顯示項目」隱藏的欄位也不顯示。
 - 參考專案的「低耗電模式」在 Linux 改為「電源模式」（省電／平衡／效能），代號仍是 low_power。
-- 有充電上限時上限已顯示在時間卡片，詳細資訊不重複列出，並把電源模式移到最後，
-  讓變壓器、變壓器電壓、變壓器電流排在一起（參考 DetailField.available）。
+- 有充電上限時上限已顯示在時間卡片（或電源頁有充電上限滑桿時），詳細資訊不重複列出，
+  並把電源模式移到最後，讓變壓器、變壓器電壓、變壓器電流排在一起（參考 DetailField.available）。
 - Linux 沒有設計循環次數，循環次數只顯示數字；健康度與容量推算都來自滿充 ÷ 設計容量。
 """
 from sdm.core.battery import CHARGING, DISCHARGING, round_half_up
@@ -135,10 +135,11 @@ def supply_values(power):
         adapter_current=adapter(battery, negotiated(milliamps(battery.adapter_a))))
 
 
-def detail_rows(power, hidden=()):
-    """（代號、名稱、值）；依參考專案的順序，略過隱藏與讀不到的欄位。"""
+def detail_rows(power, hidden=(), limit_shown=False):
+    """（代號、名稱、值）；依參考專案的順序，略過隱藏與讀不到的欄位。
+    limit_shown：電源頁顯示了充電上限滑桿。"""
     values = {**battery_values(power), **supply_values(power)}
-    fields = available_fields(power.battery.limit is not None)
+    fields = available_fields(power.battery.limit is not None or limit_shown)
     hidden = set(hidden)
     return tuple((field_id, title, values[field_id]) for field_id, title in fields
                  if field_id not in hidden and values[field_id] is not None)
