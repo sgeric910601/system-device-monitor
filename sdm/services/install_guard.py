@@ -4,6 +4,8 @@
   上層目錄，都必須屬於 root 或使用者、其他人不可寫；群組可寫只允許 root 擁有且有黏著位元的
   目錄（/tmp），或使用者私人群組（與帳號同名、沒有其他成員、也不是任何其他帳號的主要群組，
   Ubuntu 預設 umask 002 的情況）。否則別的帳號可能改掉 git 取出的內容。
+  有 POSIX ACL（system.posix_acl_access，目錄另有 system.posix_acl_default）的項目，群組位元其實是
+  ACL 的遮罩，可能讓其他帳號寫入，所以不套用私人群組的放寬；無法確認時同樣不放寬。
 - git 目錄與共用 git 目錄裡的每一項（HEAD、config、packed-refs、refs、info、objects 等，
   hooks 除外：git 指令一律以 core.hooksPath=/dev/null 執行）都必須是同樣規則下的目錄或一般檔案；
   objects/info/alternates、http-alternates、info/grafts 與 replace refs 會改變取出的內容，一律拒絕。
@@ -15,6 +17,7 @@
   能存取的目錄、上層目錄都安全，讀一次、比對 SHA-256，再執行剛才比對過的同一份位元組；
   root 從不以路徑讓 Python 開啟使用者可寫的腳本。
 """
+import errno
 import grp
 import os
 from pathlib import PurePosixPath
@@ -37,6 +40,8 @@ HEAD_TEXT = {"install": "將以管理員權限安裝這個提交的元件：{}",
 HEAD_MAX_CHARS = 120
 TMP = "/tmp"
 OTHERS = 0o077
+ACL_ATTRIBUTES = ("system.posix_acl_access", "system.posix_acl_default")
+NO_XATTRS = (errno.ENOTSUP, errno.EOPNOTSUPP)       # 檔案系統不支援延伸屬性＝沒有 ACL
 
 BOOTSTRAP = """import hashlib, json, os, stat, sys
 LIMIT = 1 << 20
@@ -94,31 +99,52 @@ class ComponentError(Exception):
     """無法安全地準備安裝；訊息是給使用者看的說明。"""
 
 
-def writable_by_others(info, private_gid):
-    """除了擁有者（與 root 擁有、有黏著位元的情況）以外，還有誰能寫入。"""
+def system_listxattr(path):
+    return os.listxattr(path, follow_symlinks=False)
+
+
+def has_acl(path, listxattr):
+    """有存取或預設 ACL 時為 True；不支援延伸屬性為 False；無法確認（沒有路徑、沒有查詢函式或
+    其他錯誤）時視為有。"""
+    if path is None or listxattr is None:
+        return True
+    try:
+        names = listxattr(path)
+    except OSError as error:
+        return error.errno not in NO_XATTRS
+    return any(name in ACL_ATTRIBUTES for name in names)
+
+
+def writable_by_others(info, private_gid, path=None, listxattr=None):
+    """除了擁有者（與 root 擁有、有黏著位元的情況）以外，還有誰能寫入。
+    群組可寫只在群組是使用者私人群組而且沒有 ACL 時才不算。"""
     sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
     if info.st_mode & stat.S_IWOTH:
         return not sticky_root
     if info.st_mode & stat.S_IWGRP:
-        return not (sticky_root or (private_gid is not None and info.st_gid == private_gid))
+        if sticky_root:
+            return False
+        private = private_gid is not None and info.st_gid == private_gid
+        return not private or has_acl(path, listxattr)
     return False
 
 
-def safe_entry(info, uid, private_gid=None, allow_file=False):
+def safe_entry(info, uid, private_gid=None, allow_file=False, path=None, listxattr=None):
     kind_ok = stat.S_ISDIR(info.st_mode) or (allow_file and stat.S_ISREG(info.st_mode))
-    return kind_ok and info.st_uid in (0, uid) and not writable_by_others(info, private_gid)
+    return kind_ok and info.st_uid in (0, uid) and \
+        not writable_by_others(info, private_gid, path, listxattr)
 
 
-def safe_chain(path, uid, lstat, private_gid=None, allow_file=False):
+def safe_chain(path, uid, lstat, private_gid=None, allow_file=False, listxattr=None):
     """path 本身與每一層上層目錄都安全（不跟隨符號連結：符號連結一律不算目錄）。"""
     pure = PurePosixPath(path)
     if not pure.is_absolute() or os.path.normpath(str(pure)) != str(path):
         return False
     try:
-        if not all(safe_entry(lstat(str(parent)), uid, private_gid)
-                   for parent in reversed(pure.parents)):
+        if not all(safe_entry(lstat(str(parent)), uid, private_gid, path=str(parent),
+                              listxattr=listxattr) for parent in reversed(pure.parents)):
             return False
-        return safe_entry(lstat(str(pure)), uid, private_gid, allow_file)
+        return safe_entry(lstat(str(pure)), uid, private_gid, allow_file, str(pure), listxattr)
     except OSError:
         return False
 
@@ -143,7 +169,7 @@ def read_bytes(path):
         return handle.read()
 
 
-def scan_git_dir(top, uid, private_gid, lstat, listdir, read=read_bytes):
+def scan_git_dir(top, uid, private_gid, lstat, listdir, read=read_bytes, listxattr=None):
     """top 底下每一項（hooks 除外）都必須是使用者或 root 擁有、別人不能寫的目錄或一般檔案，
     而且沒有 alternates、grafts 或 replace refs。不安全時拋出 ComponentError。"""
     pending = [""]
@@ -157,12 +183,13 @@ def scan_git_dir(top, uid, private_gid, lstat, listdir, read=read_bytes):
             child = relative + "/" + name if relative else name
             if child in SKIPPED:
                 continue
+            path = top + "/" + child
             try:
-                info = lstat(top + "/" + child)
+                info = lstat(path)
             except OSError:
                 raise ComponentError(UNSAFE_GIT_DATA) from None
             if child in REDIRECTIONS or child.startswith(REPLACE_REFS) \
-                    or not safe_entry(info, uid, private_gid, allow_file=True):
+                    or not safe_entry(info, uid, private_gid, True, path, listxattr):
                 raise ComponentError(UNSAFE_GIT_DATA)
             if stat.S_ISDIR(info.st_mode):
                 pending.append(child)
@@ -216,23 +243,23 @@ def check_stage(stage, uid, lstat):
 
 
 def check_repository(root, git_base, git, uid, lstat, private_gid, listdir=os.listdir,
-                     read=read_bytes):
+                     read=read_bytes, listxattr=system_listxattr):
     """原始碼資料夾、.git、git 目錄與共用 git 目錄（以及上層）只有使用者或 root 能寫，
     git 目錄裡的每一項也一樣。"""
     root = str(root)
-    if not safe_chain(root, uid, lstat, private_gid) or \
-            not safe_chain(root + "/.git", uid, lstat, private_gid, allow_file=True):
+    if not safe_chain(root, uid, lstat, private_gid, listxattr=listxattr) or \
+            not safe_chain(root + "/.git", uid, lstat, private_gid, True, listxattr):
         raise ComponentError(UNSAFE_REPOSITORY)
     git_dir = git(git_base + ["rev-parse", "--absolute-git-dir"]).decode("utf-8", "replace")
     common = git(git_base + ["rev-parse", "--git-common-dir"]).decode("utf-8", "replace")
     common = os.path.normpath(os.path.join(root, common.strip()))
     git_dir = git_dir.strip()
     for path in (git_dir, common):
-        if not safe_chain(path, uid, lstat, private_gid):
+        if not safe_chain(path, uid, lstat, private_gid, listxattr=listxattr):
             raise ComponentError(UNSAFE_REPOSITORY)
     tops = [common] + ([] if git_dir == common or git_dir.startswith(common + "/") else [git_dir])
     for top in tops:
-        scan_git_dir(top, uid, private_gid, lstat, listdir, read)
+        scan_git_dir(top, uid, private_gid, lstat, listdir, read, listxattr)
 
 
 def head_text(action, raw):

@@ -2,6 +2,7 @@
 
 帳號與群組資料庫、檔案系統都以假的代替；不需要真正的 git 目錄。
 """
+import errno
 import stat
 from types import SimpleNamespace
 import unittest
@@ -64,11 +65,18 @@ def node(kind="dir", uid=ME, mode=None, gid=GID):
 class FakeGitDir:
     """路徑 → 假的 stat；目錄的內容由路徑推導；packed-refs 的內容另外指定。"""
 
-    def __init__(self, entries, packed=b""):
+    def __init__(self, entries, packed=b"", acls=None):
         self.entries = {TOP: node()}
         for relative, value in entries.items():
             self.entries[TOP + "/" + relative] = value
         self.packed = packed
+        self.acls = {TOP + "/" + name: value for name, value in (acls or {}).items()}
+
+    def listxattr(self, path):
+        value = self.acls.get(path, [])
+        if isinstance(value, BaseException):
+            raise value
+        return value
 
     def lstat(self, path):
         try:
@@ -93,12 +101,14 @@ CLEAN = {"HEAD": node("file"), "config": node("file"), "refs": node(), "refs/hea
 
 
 class GitData(unittest.TestCase):
-    def scan(self, changes=None, packed=b"", private_gid=GID, remove=()):
+    def scan(self, changes=None, packed=b"", private_gid=GID, remove=(), acls=None,
+             check_acls=True):
         entries = dict(CLEAN, **(changes or {}))
         for name in remove:
             entries.pop(name)
-        tree = FakeGitDir(entries, packed)
-        guard.scan_git_dir(TOP, ME, private_gid, tree.lstat, tree.listdir, tree.read)
+        tree = FakeGitDir(entries, packed, acls)
+        guard.scan_git_dir(TOP, ME, private_gid, tree.lstat, tree.listdir, tree.read,
+                           tree.listxattr if check_acls else None)
 
     def refused(self, *args, **options):
         with self.assertRaises(guard.ComponentError):
@@ -124,6 +134,37 @@ class GitData(unittest.TestCase):
         self.refused({"config": node("file", mode=0o664, gid=4242)})
         self.refused({"config": node("file", mode=0o664)}, private_gid=None)
 
+    def test_acls_disable_the_private_group_relaxation(self):
+        writable = {"config": node("file", mode=0o664), "objects": node(mode=0o775)}
+        self.scan(writable)
+        self.refused(writable, acls={"config": ["system.posix_acl_access"]})
+        self.refused(writable, acls={"objects": ["user.note", "system.posix_acl_default"]})
+        self.scan(writable, acls={"config": ["user.note", "security.selinux"]})
+
+    def test_acls_on_entries_that_need_no_relaxation_do_not_matter(self):
+        self.scan(acls={"config": ["system.posix_acl_access"],
+                        "objects": ["system.posix_acl_default"]})
+
+    def test_unsupported_xattrs_mean_no_acl_but_other_errors_refuse(self):
+        writable = {"config": node("file", mode=0o664)}
+        for code in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            self.scan(writable, acls={"config": OSError(code, "unsupported")})
+        self.refused(writable, acls={"config": OSError(errno.EACCES, "denied")})
+
+    def test_without_an_acl_check_there_is_no_relaxation(self):
+        self.refused({"config": node("file", mode=0o664)}, check_acls=False)
+
+    def test_acl_on_a_group_writable_parent_is_refused(self):
+        entries = {"/": node(uid=0), "/src": node(uid=0), "/src/app": node(mode=0o775)}
+
+        def lstat(path):
+            return entries[path]
+        self.assertTrue(guard.safe_chain("/src/app", ME, lstat, GID, listxattr=lambda p: []))
+        self.assertFalse(guard.safe_chain(
+            "/src/app", ME, lstat, GID,
+            listxattr=lambda p: ["system.posix_acl_access"] if p == "/src/app" else []))
+        self.assertFalse(guard.safe_chain("/src/app", ME, lstat, GID))
+
     def test_links_and_special_files_are_refused(self):
         self.refused({"refs/heads/main": node("link", mode=0o777)})
         self.refused({"info/fifo": node("fifo")})
@@ -146,7 +187,7 @@ class GitData(unittest.TestCase):
                 raise PermissionError(path)
             return tree.listdir(path)
         with self.assertRaises(guard.ComponentError):
-            guard.scan_git_dir(TOP, ME, GID, tree.lstat, broken, tree.read)
+            guard.scan_git_dir(TOP, ME, GID, tree.lstat, broken, tree.read, tree.listxattr)
 
 
 if __name__ == "__main__":

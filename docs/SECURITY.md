@@ -96,6 +96,9 @@
   上層目錄，都必須屬於你或 root、其他人不可寫；群組可寫只接受 root 擁有且有黏著位元的目錄
   （/tmp），或你的使用者私人群組（與帳號同名、沒有其他成員、也不是任何其他帳號的主要群組，
   Ubuntu 預設 umask 002 建立的資料夾就是這樣）。否則別的帳號可能改掉 git 取出的內容。
+  有 POSIX ACL 的項目（system.posix_acl_access，或目錄的 system.posix_acl_default）不套用這個
+  放寬：有 ACL 時群組位元其實是 ACL 的遮罩，例如 `u:別人:rwx` 也會顯示成群組可寫；
+  檔案系統不支援延伸屬性時視為沒有 ACL，其他無法確認的情況一律不放寬。
 - git 目錄與共用 git 目錄裡的每一項（HEAD、config、packed-refs、refs、info、objects 等；
   hooks 不使用所以略過）都必須是同樣規則下的目錄或一般檔案，不接受符號連結或特殊檔案；
   objects/info/alternates、http-alternates、info/grafts 與 replace refs（refs/replace/ 或
@@ -168,6 +171,10 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - 授權或小程式超過 2 分鐘沒有完成時，看板不再等待並嘗試結束 pkexec；已經以 root 執行的小程式
   一般使用者無法結束，會在 systemctl 的逾時內自行結束。
 - 只讀第一個處理器插槽（intel-rapl:0）；多插槽伺服器的其他插槽不列入。
+- 使用者私人群組的判斷依賴帳號與群組資料庫能完整列出：使用 sssd 等網域帳號而且
+  enumerate=false 時，getpwall() 看不到其他網域帳號；群組成員也可能只記錄在 gshadow
+  （或可用 newgrp 加入有密碼的群組），不會出現在 getgrgid() 的成員清單。這類環境請讓原始碼資料夾
+  與 .git 群組不可寫（例如 chmod -R g-w），就不需要放寬。
 - 原始碼安裝時，已經取得你帳號權限的攻擊者本來就能改你的原始碼資料夾或 install.py 本身
   （與 sudo make install 相同）；暫存後才被替換的檔案會因雜湊不符而被拒絕。只在你信任的原始碼
   資料夾、以沒有被入侵的帳號執行 install.py --system-components。

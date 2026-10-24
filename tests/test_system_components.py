@@ -97,6 +97,10 @@ class FakeTree:
     def read(path):
         return b""
 
+    @staticmethod
+    def listxattr(path):
+        return []
+
 
 class Run(unittest.TestCase):
     def setUp(self):
@@ -127,7 +131,7 @@ class Run(unittest.TestCase):
                               make_stage=self.make_stage, deb_installed=lambda: deb,
                               say=self.messages.append, lstat=self.tree, uid=os.getuid(),
                               private_gid=private_gid, listdir=self.tree.listdir,
-                              read=self.tree.read)
+                              read=self.tree.read, listxattr=self.tree.listxattr)
 
     def test_stages_a_private_copy_and_runs_pkexec(self):
         self.assertEqual(self.run_action(), 0)
@@ -286,7 +290,8 @@ class Run(unittest.TestCase):
         result = components.run("install", CHECKOUT, git=FakeGit(), call=broken,
                                 make_stage=self.make_stage, deb_installed=lambda: False,
                                 say=self.messages.append, lstat=tree, private_gid=None,
-                                listdir=tree.listdir, read=tree.read)
+                                listdir=tree.listdir, read=tree.read,
+                                listxattr=tree.listxattr)
         self.assertEqual(result, 1)
         self.assertFalse(self.stages[0].exists())
 
@@ -301,7 +306,8 @@ class Run(unittest.TestCase):
         tree = FakeTree()
         components.run("install", CHECKOUT, git=FakeGit(), call=call, make_stage=self.make_stage,
                        deb_installed=lambda: False, say=self.messages.append, lstat=tree,
-                       private_gid=None, listdir=tree.listdir, read=tree.read)
+                       private_gid=None, listdir=tree.listdir, read=tree.read,
+                                listxattr=tree.listxattr)
         self.assertTrue(observed)
         self.assertTrue(all(mode & 0o077 == 0 for mode in observed))
 
