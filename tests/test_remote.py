@@ -27,9 +27,11 @@ class FakeConnection:
 
 
 class FakeApplication:
-    def __init__(self, remote=True, actions=(Alerts.TEST_ACTION,), error=None):
+    def __init__(self, remote=True, actions=(Alerts.TEST_ACTION,), error=None,
+                 connection=True):
         self.remote, self.actions, self.error = remote, actions, error
-        self.activated, self.connection = [], FakeConnection()
+        self.activated = []
+        self.connection = FakeConnection() if connection else None
 
     def register(self, cancellable):
         if self.error is not None:
@@ -71,6 +73,12 @@ class Requests(unittest.TestCase):
         application = FakeApplication(actions=())
         code, message = self.request(application)
         self.assertEqual((code, message.strip()), (1, remote.TOO_OLD))
+        self.assertEqual(application.activated, [])
+
+    def test_lost_connection_after_registering(self):
+        application = FakeApplication(connection=False)
+        code, message = self.request(application)
+        self.assertEqual((code, message.strip()), (2, remote.NO_BUS))
         self.assertEqual(application.activated, [])
 
     def test_no_session_bus(self):

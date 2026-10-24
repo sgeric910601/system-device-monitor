@@ -358,6 +358,19 @@ class Wiring(unittest.TestCase):
         app.lookup_action(Alerts.TEST_ACTION).activate(None)
         self.assertEqual([alert.kind for alert in app.notifier.sent], [messages.TEST])
 
+    def test_remote_test_requests_are_limited_to_one_per_ten_seconds(self):
+        app = self.build()
+        clock = Clock(100.0)
+        app.remote_clock = clock
+        action = app.lookup_action(Alerts.TEST_ACTION)
+        action.activate(None)
+        with self.assertLogs("sdm.ui.alert_wiring", level="INFO"):
+            action.activate(None)
+        clock.now += Alerts.REMOTE_TEST_SECONDS
+        action.activate(None)
+        self.assertEqual(len(app.notifier.sent), 2)
+        self.assertEqual(Alerts.REMOTE_TEST_SECONDS, 10)
+
     def test_test_action_exists_in_smoke_tests_but_sends_nothing(self):
         with patch.object(alert_wiring, "Notifier", side_effect=AssertionError("created")):
             app = ui_app.Monitor(smoke=True)

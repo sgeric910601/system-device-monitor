@@ -3,11 +3,13 @@
 
 - 模擬測試（--smoke-test）與示範模式（--preview）完全不建立通知物件，也不評估提醒；
   「傳送測試通知」與 test-notification 動作只記錄一行。
+- test-notification 動作（其他程序觸發）每 10 秒最多處理一次，避免被反覆呼叫時一直跳通知。
 - 收集結果由 GLib.idle_add 交回主執行緒後才評估，所有通知呼叫都在主執行緒。
 - 設定視窗開著（或已建立）時，不斷電系統出現或消失、設備清單與通知服務狀態改變都會通知它。
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
 import logging
+import time
 
 from gi.repository import Gio, GLib
 
@@ -23,6 +25,8 @@ class AlertMixin:
     notifier = None
     alerts = None
     ups_seen = None         # 上一次通知設定視窗時是否有不斷電系統
+    remote_clock = time.monotonic
+    remote_test_at = None   # 上一次處理 test-notification 動作的時間
 
     def build_alerts(self):
         """一般執行才建立通知；test-notification 動作一律註冊（沒有通知時只記錄）。"""
@@ -33,8 +37,17 @@ class AlertMixin:
                                        defer=GLib.idle_add)
             self.notifier.subscribe(lambda _status: self.notice_changed())
         action = Gio.SimpleAction.new(Alerts.TEST_ACTION, None)
-        action.connect("activate", lambda *_: self.send_test_notification())
+        action.connect("activate", lambda *_: self.remote_test_notification())
         self.add_action(action)
+
+    def remote_test_notification(self):
+        now = self.remote_clock()
+        last = self.remote_test_at
+        if last is not None and 0 <= now - last < Alerts.REMOTE_TEST_SECONDS:
+            LOG.info("Ignoring a repeated test notification request")
+            return False
+        self.remote_test_at = now
+        return self.send_test_notification()
 
     def send_test_notification(self):
         if self.alerts is None:

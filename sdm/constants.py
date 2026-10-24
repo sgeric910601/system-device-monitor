@@ -258,6 +258,7 @@ class Alerts:
     APP_NAME = "系統與裝置監看"
     DESKTOP_ENTRY = "system-device-monitor"
     TEST_ACTION = "test-notification"   # 正在執行的看板提供的動作（--test-notification 使用）
+    REMOTE_TEST_SECONDS = 10    # 從其他程序要求的測試通知每 10 秒最多一則
     BUS_NAME = "org.freedesktop.Notifications"
     PROBE_TIMEOUT_MS = 1500     # 確認通知服務是否存在的 D-Bus 呼叫逾時
 

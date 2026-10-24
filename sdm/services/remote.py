@@ -1,8 +1,10 @@
-"""--test-notification：請正在執行的看板送出一則測試通知，這個程序自己不送任何通知。
+"""--test-notification：請正在執行的看板送出一則測試通知，這個程序自己不送任何通知、不載入 GTK。
 
-以 Gio.Application 的遠端動作觸發看板的「test-notification」：用同一個應用程式代號、
-IS_LAUNCHER 旗標註冊，絕不成為主要實例（看板沒有執行時註冊會失敗），也不載入 GTK。
-結束碼：0 已送出要求；1 看板沒有執行或版本太舊；2 連不到工作階段匯流排。
+以 Gio.Application 的遠端動作觸發看板的「test-notification」：用同一個應用程式代號與
+IS_LAUNCHER 旗標註冊，不會成為主要實例；看板沒有執行時註冊失敗（名稱沒有擁有者）。
+看板每 10 秒最多處理一次這個要求，通知能不能顯示取決於桌面的通知服務。
+結束碼：0 要求已交給工作階段匯流排；1 看板沒有執行或版本太舊（沒有這個動作）；
+2 連不到工作階段匯流排（註冊失敗的原因不是看板沒有執行，或註冊後沒有連線）。
 """
 import sys
 
@@ -35,9 +37,13 @@ def request_test_notification(make_application=default_application, stderr=sys.s
     if not application.get_is_remote():
         print(NOT_RUNNING, file=stderr)
         return 1
+    connection = application.get_dbus_connection()
+    if connection is None:
+        print(NO_BUS, file=stderr)
+        return 2
     if not application.has_action(Alerts.TEST_ACTION):
         print(TOO_OLD, file=stderr)
         return 1
     application.activate_action(Alerts.TEST_ACTION, None)
-    application.get_dbus_connection().flush_sync(None)   # 結束前確定要求已送出
+    connection.flush_sync(None)         # 結束前確定要求已送出
     return 0
