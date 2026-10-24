@@ -5,6 +5,7 @@ import unittest
 from sdm.constants import ChargeLimit
 from sdm.core.charge_limit import (DEFAULT_OPTIONS, CommitDebouncer, index_of, limit_at,
                                    nearest, normalized, options_from, refine_options)
+from tests.fixtures.fake_timers import FakeTimers
 
 
 class Options(unittest.TestCase):
@@ -71,35 +72,6 @@ class Refusal(unittest.TestCase):
     def test_unusable_reading_keeps_a_valid_list(self):
         self.assertEqual(refine_options((80, 100), 80, None), DEFAULT_OPTIONS)
         self.assertEqual(refine_options(DEFAULT_OPTIONS, 90, 0), (80, 85, 95, 100))
-
-
-class FakeTimers:
-    """假的計時器：advance() 依時間順序觸發到期的回呼。"""
-
-    def __init__(self):
-        self.now, self.pending, self.next_id = 0.0, {}, 1
-
-    def schedule(self, seconds, callback):
-        source = self.next_id
-        self.next_id += 1
-        self.pending[source] = (self.now + seconds, callback)
-        return source
-
-    def cancel(self, source):
-        self.pending.pop(source, None)
-
-    def advance(self, seconds):
-        end = self.now + seconds
-        while True:
-            due = sorted((when, source) for source, (when, _) in self.pending.items()
-                         if when <= end)
-            if not due:
-                break
-            when, source = due[0]
-            self.now = when
-            _, callback = self.pending.pop(source)
-            callback()
-        self.now = end
 
 
 class Debouncer(unittest.TestCase):
