@@ -30,6 +30,7 @@ from sdm.ui import theme
 from sdm.ui.companion import CompanionView, remove_source
 from sdm.ui.companion_draw import draw_figure
 from sdm.ui.pet_bubble import PetBubble
+from sdm.services.pet_state import PositionKeeper
 from sdm.ui.pet_menu import pet_menu
 
 TITLE = "桌面寵物"
@@ -122,6 +123,7 @@ class DesktopPet:
         self.press, self.click_source, self.speech_source, self.save_source = (None,) * 4
         self.size = pet_size(host.preferences().desktop_pet_scale)
         self.window = self.build_window()
+        self.keeper = PositionKeeper(host.position if self.x11 else None)
 
     def build_window(self):
         window = Gtk.Window(title=TITLE)
@@ -201,6 +203,7 @@ class DesktopPet:
             return
         x, y = resized_origin(self.rect(), size)
         self.size = size
+        self.keeper.user_moved()
         self.view.set_size(size)
         self.window.resize(size, size)
         default = default_position(self.workarea(), size)
@@ -231,15 +234,12 @@ class DesktopPet:
         return False
 
     def settle(self):
-        """移動停下來之後：確保至少一角在螢幕上，再記住位置。"""
+        """移動停下來之後：確保至少一角在螢幕上；使用者拖曳或改大小過才記住位置。"""
         self.save_source = None
         rect = self.rect()
-        default = default_position(self.workarea(), self.size)
-        x, y = keep_on_screen(rect, self.monitors(), default)
-        if (round(x), round(y)) != (rect.x, rect.y):
-            self.window.move(round(x), round(y))
-        if self.x11:
-            self.host.position.save(round(x), round(y))
+        x, y = self.keeper.settle(rect, self.monitors(), default_position(self.workarea(), self.size))
+        if (x, y) != (rect.x, rect.y):
+            self.window.move(x, y)
         return False
 
     def destroy(self):
@@ -327,6 +327,7 @@ class DesktopPet:
             if is_drag(self.press, (event.x_root, event.y_root)):
                 self.press = None
                 self.cancel_click()
+                self.keeper.user_moved()
                 window.begin_move_drag(LEFT_BUTTON, round(event.x_root), round(event.y_root),
                                        event.time)
             return True

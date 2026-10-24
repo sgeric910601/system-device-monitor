@@ -4,7 +4,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from sdm.services.pet_state import PetPosition
+from sdm.core.pet_geometry import Rect
+from sdm.services.pet_state import PetPosition, PositionKeeper
+
+SCREEN = (Rect(0, 0, 1920, 1080),)
 
 
 class Position(unittest.TestCase):
@@ -45,6 +48,39 @@ class Position(unittest.TestCase):
         self.path.parent.write_text("a file where the folder should be")
         with self.assertLogs("sdm.services.pet_state", "WARNING"):
             self.assertFalse(PetPosition(self.path).save(1, 2))
+
+
+class Keeper(unittest.TestCase):
+    """只在使用者拖曳（或改大小）之後才記住位置；視窗第一次擺好、螢幕改變時不寫檔。"""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name)/"pet.json"
+        self.keeper = PositionKeeper(PetPosition(self.path))
+
+    def test_first_placement_is_not_saved(self):
+        self.assertEqual(self.keeper.settle(Rect(100, 200, 176, 176), SCREEN, (0, 0)), (100, 200))
+        self.assertFalse(self.path.exists())
+
+    def test_position_after_a_drag_is_saved_once(self):
+        self.keeper.user_moved()
+        self.keeper.settle(Rect(300, 400, 176, 176), SCREEN, (0, 0))
+        self.assertEqual(PetPosition(self.path).load(), (300, 400))
+        self.path.unlink()
+        self.keeper.settle(Rect(310, 400, 176, 176), SCREEN, (0, 0))
+        self.assertFalse(self.path.exists())
+
+    def test_clamped_position_is_what_gets_saved(self):
+        self.keeper.user_moved()
+        self.assertEqual(self.keeper.settle(Rect(1900, 1060, 176, 176), SCREEN, (0, 0)),
+                         (1872, 1032))
+        self.assertEqual(PetPosition(self.path).load(), (1872, 1032))
+
+    def test_without_a_store_nothing_is_saved(self):
+        keeper = PositionKeeper(None)
+        keeper.user_moved()
+        self.assertEqual(keeper.settle(Rect(5, 6, 176, 176), SCREEN, (0, 0)), (5, 6))
 
 
 if __name__ == "__main__":
