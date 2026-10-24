@@ -175,6 +175,9 @@ class Update:
     MAX_NUMBER_DIGITS = 9                       # 版本號每一段最多 9 位數
     NOTES_MAX_CHARS = 600                       # 設定視窗顯示的更新內容摘要
     NOTES_MAX_LINES = 12
+    OPENSSL = "/usr/bin/openssl"                # 驗證簽章（Ed25519）
+    SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+    COMMAND_TIMEOUT = 30                        # openssl、dpkg-deb 等單次執行的上限（秒）
 
 
 class Supply:
