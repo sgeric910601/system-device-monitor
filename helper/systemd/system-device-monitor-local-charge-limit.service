@@ -12,6 +12,9 @@ ConditionPathExists=/var/lib/system-device-monitor/charge-limit-local.json
 
 [Service]
 Type=oneshot
+# 重新套用通常不到 1 秒；卡住時由 systemd 在 30 秒後結束，不會拖住開機或喚醒
+TimeoutStartSec=30s
+TimeoutStopSec=10s
 ExecStart=/usr/local/libexec/system-device-monitor/sdm-charge-limit restore --from-unit
 CapabilityBoundingSet=
 AmbientCapabilities=

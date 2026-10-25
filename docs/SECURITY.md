@@ -150,6 +150,7 @@
 ## 重新套用的單元（system-device-monitor-charge-limit.service）
 
 - Type=oneshot，ExecStart＝小程式 restore --from-unit；ConditionPathExists＝狀態檔，沒有保留時不執行。
+  TimeoutStartSec=30s、TimeoutStopSec=10s：卡住時由 systemd 結束，不會拖住開機或喚醒。
 - [Install] WantedBy=multi-user.target sleep.target，並排在 multi-user.target 與 suspend、hibernate、
   hybrid-sleep、suspend-then-hibernate 之後：開機與每次從睡眠喚醒後各執行一次。
   套件與原始碼安裝都不啟用它，只有 `--persist on` 會啟用。

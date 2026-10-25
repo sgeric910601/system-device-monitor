@@ -22,7 +22,8 @@ HARDENING = {
     "RestrictSUIDSGID": "yes", "UMask": "0077",
 }
 SYSCALLS = ["@system-service", "~@privileged @resources"]
-SERVICE_KEYS = set(HARDENING) | {"Type", "ExecStart", "SystemCallFilter"}
+TIMEOUTS = {"TimeoutStartSec": "30s", "TimeoutStopSec": "10s"}
+SERVICE_KEYS = set(HARDENING) | set(TIMEOUTS) | {"Type", "ExecStart", "SystemCallFilter"}
 SLEEP_TARGETS = ("suspend.target", "hibernate.target", "hybrid-sleep.target",
                  "suspend-then-hibernate.target")
 LANG = "{http://www.w3.org/XML/1998/namespace}lang"
@@ -37,6 +38,9 @@ class RestoreUnits(unittest.TestCase):
             with self.subTest(unit=name, key=key):
                 self.assertEqual(single(entries, "Service", key), value)
         self.assertEqual(entries[("Service", "SystemCallFilter")], SYSCALLS)
+        for key, value in TIMEOUTS.items():
+            with self.subTest(unit=name, key=key):
+                self.assertEqual(single(entries, "Service", key), value)
         keys = {key for section, key in entries if section == "Service"}
         self.assertEqual(sorted(keys - SERVICE_KEYS), [])
         self.assertEqual(single(entries, "Service", "Type"), "oneshot")
