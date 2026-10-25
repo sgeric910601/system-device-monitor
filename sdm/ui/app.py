@@ -40,6 +40,7 @@ from sdm.ui.power_wiring import POWER_REFRESH, PowerMixin
 from sdm.ui.schedule_wiring import ScheduleMixin
 from sdm.ui.settings_wiring import SettingsMixin
 from sdm.ui.tray_wiring import TrayMixin
+from sdm.ui.update_wiring import UpdateMixin, restart
 from sdm.ui.smoke import SmokeMixin
 
 PAGE_TITLES = dict(PAGES)
@@ -62,7 +63,7 @@ class RunResult(NamedTuple):
 
 class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
               AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin, ChargeLimitMixin,
-              Gtk.Application):
+              UpdateMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -145,6 +146,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.start_profiles()
         self.start_admin()          # 只尋找元件、確認版本，不要求授權
         self.start_charge_limit()   # 同上：只讀取充電上限與確認小程式，不要求授權
+        self.start_updates()        # 模擬測試不建立、示範模式只用假狀態（都不連網路）
         GLib.idle_add(self.ask_first_run)
         self.create_scheduler()
         self.apply_modules()        # 頁面、取樣層與頂端列；各層立即取樣一次
@@ -350,6 +352,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
                                  ("profiles", self.stop_profiles),
                                  ("cpu_power", self.stop_cpu_power),
                                  ("charge_limit", self.stop_charge_limit),
+                                 ("updates", self.stop_updates),
                                  ("workers", lambda: self.pool.shutdown(wait=False,
                                                                        cancel_futures=True)),
                                  ("stream", self.stop_stream)):
@@ -393,4 +396,6 @@ def run(options):
     app = Monitor(options.background, options.smoke_test, options.output_dir, options.capture,
                   getattr(options, "preview", None))
     result = app.run([sys.argv[0]])
+    if app.restart_argv:            # 安裝更新後：以新版本取代這個程序
+        restart(app.restart_argv)
     return RunResult(1 if app.smoke_failed else result, app.smoke_report)

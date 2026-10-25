@@ -46,7 +46,7 @@ class PreviewRun(unittest.TestCase):
                                                "settings:notifications",
                                                "settings:peripherals", "settings:companion",
                                                "settings:pet", "settings:appearance",
-                                               "settings:admin",
+                                               "settings:admin", "settings:update",
                                                "settings:about"])
             written = sorted(str(path.relative_to(base)) for directory in directories.values()
                              for path in directory.rglob("*"))

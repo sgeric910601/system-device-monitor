@@ -7,9 +7,9 @@ from sdm.ui.settings import admin
 
 
 class Registration(unittest.TestCase):
-    def test_section_sits_before_about(self):
+    def test_section_sits_before_update_and_about(self):
         keys = [key for key, _, _ in settings_window.SECTIONS]
-        self.assertEqual(keys[-2:], ["admin", "about"])
+        self.assertEqual(keys[-3:], ["admin", "update", "about"])
         titles = {key: title for key, title, _ in settings_window.SECTIONS}
         self.assertEqual(titles["admin"], "管理員功能")
         self.assertIs(dict((key, module) for key, _, module in settings_window.SECTIONS)["admin"],

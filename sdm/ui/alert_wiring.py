@@ -19,6 +19,7 @@ from sdm.services.notifier import Notifier
 
 LOG = logging.getLogger(__name__)
 DISABLED_TEXT = "模擬測試與示範模式不會送出通知。"
+SETTINGS_PREFIX = "settings:"
 
 
 class AlertMixin:
@@ -41,12 +42,17 @@ class AlertMixin:
         self.add_action(action)
 
     def notification_clicked(self, page):
-        """點通知：還沒有視窗時先啟動看板（建立視窗），再開啟相關的頁面；結束中不做任何事。"""
+        """點通知：還沒有視窗時先啟動看板（建立視窗），再開啟相關的頁面（「settings:分類」開啟
+        設定視窗的該分類）；結束中不做任何事。"""
         if self.closing:
             return
         if self.window is None:
             self.activate()
-        if self.window is not None:
+        if self.window is None:
+            return
+        if page.startswith(SETTINGS_PREFIX):
+            self.open_settings(page[len(SETTINGS_PREFIX):])
+        else:
             self.open_page(None, page)
 
     def remote_test_notification(self):
