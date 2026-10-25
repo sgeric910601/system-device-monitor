@@ -12,7 +12,7 @@ Ubuntu 24.04，使用系統 Python。此專案沒有 pip 執行期依賴。
 
 dist/system-device-monitor_0.2.0_all.deb 為純 Python／SVG／PNG，
 Architecture: all。建置不需要 sudo；版本由 VERSION 讀取。
-相依套件含 gir1.2-notify-0.7（桌面通知函式庫），供之後的通知功能使用；
+相依套件含 gir1.2-notify-0.7（桌面通知函式庫）與 openssl（驗證一鍵更新的 Ed25519 簽章）；
 install-dependencies.sh 與 CI 也會安裝它。
 
 套件安裝：
@@ -23,8 +23,10 @@ install-dependencies.sh 與 CI 也會安裝它。
 - /usr/share/icons/hicolor/128x128 與 512x512 的 apps/system-device-monitor.png：預設的薄荷綠程式圖示
   （圖示主題的快取由 dpkg 觸發器更新）。
 - /usr/share/doc/system-device-monitor：文件與授權。
-- /usr/libexec/system-device-monitor：管理員小程式 sdm-cpu-power 與 sdm-cpu-power-service（0755）。
-- /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy：polkit 動作（0644）。
+- /usr/libexec/system-device-monitor：管理員小程式 sdm-cpu-power、sdm-cpu-power-service 與
+  一鍵更新的 sdm-update（0755）。
+- /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy 與 .update.policy：
+  CPU 功耗取樣與一鍵更新的 polkit 動作（0644）。
 - /usr/lib/systemd/system/system-device-monitor-cpu-power.socket 與 .service：
   CPU 功耗取樣的 socket 與服務（0644）。安裝後預設不啟用。
 
@@ -108,6 +110,11 @@ systemd 交來的 socket 與 OpenFile= 描述子，以文字代替 /proc/self/st
 並以假時鐘測試全部連線共用的 1 秒視窗與連線速率限制。單元檔測試確認每個強化設定、
 .deb 與原始碼安裝版只差名稱與路徑；polkit 測試確認 exec.path 與預設授權；
 安裝前後腳本以 DPKG_ROOT 指向暫存目錄實際執行。
+更新小程式 sdm-update 同樣以假根目錄測試：輸入檔的權限與大小、經由描述子的複本、
+dpkg-query／dpkg-deb／apt-get 以假的回應代替（dpkg-deb -c 的輸出另以真的 dpkg-deb 與本專案實際打包的
+內容確認），簽章以暫存目錄裡由 /usr/bin/openssl 產生的一次性金鑰經由測試注入（小程式執行時只用內建
+的公鑰），dpkg 前端鎖以另一個程序持有的真 fcntl 鎖測試。GitHub 用戶端以假的 HTTPS 處理器測試
+白名單、轉址與大小上限，更新排程以假時鐘測試；測試與模擬測試都不連網路。
 
 單元檔可以在解包後的 .deb 上驗證（只讀，不需要 root）：把主機的 target 單元複製到解包目錄的
 usr/lib/systemd/system 後執行
@@ -117,7 +124,8 @@ usr/lib/systemd/system 後執行
 
 CI 安裝 .deb 後另外檢查權限、pkaction 的預設授權、以 sudo 執行小程式的錯誤參數、
 開啟後服務確實以臨時帳號 sdm-cpu-power 執行、所有能力欄位都是 0，以及移除與清除後
-沒有留下任何單元或 drop-in。
+沒有留下任何單元或 drop-in。更新小程式只信任內建公鑰，所以 CI 只以會被拒絕的輸入測試
+（沒有簽章、檔名不對、符號連結、超過大小、不是自己的檔案）。
 
 GUI smoke test 需要桌面或 Xvfb、system bus 與 session bus。
 CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。
@@ -132,20 +140,41 @@ CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。
 
 ## 發布
 
-先更新 VERSION 與 CHANGELOG.md，執行測試及隱私檢查，
+### 發布簽章金鑰（只做一次）
+
+一鍵更新只安裝以維護者私鑰簽過的版本（Ed25519，與 macOS 版相同的格式）。在自己的電腦上、
+任何 git 工作樹以外產生金鑰（腳本會拒絕專案資料夾與 git 工作樹，資料夾 0700、私鑰 0600）：
+
+    /usr/bin/python3 -B scripts/release_keys.py generate --out-dir "$HOME/release-keys/system-device-monitor"
+
+把印出的 base64 公鑰同時加進 sdm/constants.py 的 Update.PUBLIC_KEYS 與 helper/sdm-update 的
+PUBLIC_KEYS（兩個 tuple 必須相同，測試會檢查），提交後才發布。把整個金鑰資料夾離線備份
+（例如加密的隨身碟）；私鑰不放進專案、雲端同步資料夾或 CI。換金鑰時新舊公鑰並存一個版本，
+見 SECURITY.md 的「一鍵更新與發布簽章」。
+
+### 每次發布
+
+先更新 VERSION 與 CHANGELOG.md（Beta 的 VERSION 寫成 0.3.0~beta.1，tag 為 v0.3.0-beta.1，
+GitHub 上標成 pre-release；正式版的 tag 為 v0.3.0），執行測試及隱私檢查，
 只提交 package-files.json 中的來源檔案。
 
     make test
     make privacy
     make deb
 
-提交後產生與該提交一致的來源壓縮包和檢查碼：
+提交後產生與該提交一致的來源壓縮包、檢查碼與簽章（私鑰的位置也可以用環境變數
+SDM_RELEASE_SIGNING_KEY 指定，必須在專案資料夾以外）：
 
-    make release-assets
+    make release-assets SIGNING_KEY="$HOME/release-keys/system-device-monitor/sdm-release-ed25519.pem"
+
+release_assets.py 以 --signing-key 的私鑰簽 dist/SHA256SUMS 的原始位元組，寫成一行 base64 的
+dist/SHA256SUMS.sig；簽完先確認這把私鑰的公鑰在 Update.PUBLIC_KEYS 裡，並以程式端相同的驗證
+確認簽章，任何一步不通過就不留下 .sig。完整發布沒有指定私鑰時拒絕。
 
 在 push 之前掃描完整 Git 歷史，並解包檢查原始碼壓縮檔和 .deb。
 不要只依賴 .gitignore；已經被追蹤的敏感檔不會自動被忽略。
-dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git。
+把 dist/ 的 .deb、.tar.gz、SHA256SUMS 與 SHA256SUMS.sig 一起上傳到 GitHub Release（四個都要；
+少了 .sig 時看板只會通知新版本，不能一鍵更新），不提交到 Git。
 來源壓縮包由 Git HEAD 產生，不能包含尚未提交的變更。
 
 ## 架構
@@ -177,6 +206,12 @@ dist/ 的 .deb、.tar.gz 和 SHA256SUMS 放在 GitHub Release，不提交到 Git
   pet、pet_bubble、pet_menu 為桌面寵物的視窗、對話框與右鍵選單；pet_text 為夥伴表情與寵物文字；
   companion_wiring、appearance_wiring 為夥伴、桌面寵物與程式圖示顏色的接線；
   settings/companion、settings/pet、settings/appearance 為對應的設定分類。
+  update_wiring、update_text、settings/update 為一鍵更新的接線、文字與設定分類。
+- 一鍵更新：sdm/core/update_logic（版本、Beta 排序、Debian 版本、Release 解析、主機白名單、
+  SHA256SUMS）、sdm/data/github（只用 HTTPS 的 GitHub 用戶端）、sdm/services/update_verify
+  （Ed25519 簽章驗證）、update_install（下載與驗證）、updater（排程、通知與安裝）、
+  update_demo（示範模式的假狀態）；helper/sdm-update 為 root 端（只隨 .deb 安裝），
+  scripts/release_keys.py 與 release_assets.py 為發布端。
 - 管理員元件：helper/sdm-cpu-power（pkexec 執行的開關小程式）、helper/sdm-cpu-power-service
   （socket 啟動的 RAPL 取樣服務）、helper/policy（polkit 動作）、helper/systemd（單元檔，
   .deb 與原始碼安裝各一組）、packaging/debian（安裝前後腳本）、scripts/install_system.py

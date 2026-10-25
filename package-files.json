@@ -618,6 +618,7 @@
     "tests/test_tray_text.py",
     "tests/test_udisks.py",
     "tests/test_ui_state.py",
+    "tests/test_update_docs.py",
     "tests/test_update_helper.py",
     "tests/test_update_helper_install.py",
     "tests/test_update_helper_package.py",

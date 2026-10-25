@@ -1,9 +1,10 @@
-# 安全說明：管理員元件
+# 安全說明：管理員元件與一鍵更新
 
-看板本身一律以一般使用者執行，不需要也不接受 sudo。需要管理員權限的只有兩個選用功能：
-「CPU 功耗取樣」（Linux 的 RAPL 能量計數器 /sys/class/powercap/intel-rapl:0/energy_uj 只有 root 能讀），
-以及筆電的「充電上限」（/sys/class/power_supply/<電池>/charge_control_*_threshold 只有 root 能寫）。
-這份文件說明為了這些功能安裝了什麼、每個元件能做什麼，以及刻意不做的事。
+看板本身一律以一般使用者執行，不需要也不接受 sudo。需要管理員權限的功能有三個：選用的
+「CPU 功耗取樣」（Linux 的 RAPL 能量計數器 /sys/class/powercap/intel-rapl:0/energy_uj 只有 root 能讀）、
+筆電的「充電上限」（/sys/class/power_supply/<電池>/charge_control_*_threshold 只有 root 能寫），
+以及 .deb 安裝的一鍵更新（以 apt-get 安裝已簽章的新版本）。這份文件說明為了這些功能安裝了什麼、
+每個元件能做什麼，以及刻意不做的事。
 
 ## 要保護的東西與威脅
 
@@ -26,6 +27,9 @@
 | polkit 動作（充電上限） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.unattended.local.charge-limit.policy | root 0644 |
 | 重新套用充電上限的單元 | /usr/lib/systemd/system/system-device-monitor-charge-limit.service | /etc/systemd/system/system-device-monitor-local-charge-limit.service | root 0644 |
 | 保留的充電上限（開啟保留時才建立） | /var/lib/system-device-monitor/charge-limit.json | /var/lib/system-device-monitor/charge-limit-local.json | root 0644（目錄 0755） |
+| 更新小程式 sdm-update | /usr/libexec/system-device-monitor/ | （不提供） | root 0755 |
+| polkit 動作（更新） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy | （不提供） | root 0644 |
+| 更新的暫存目錄（安裝更新時才建立，用完清空） | /var/cache/system-device-monitor/staging | （不提供） | root 0700 |
 
 兩種安裝方式擇一：已安裝 .deb 時原始碼安裝會拒絕；.deb 安裝時若發現原始碼安裝的元件會提示移除。
 不安裝任何 polkit 規則（/etc/polkit-1/rules.d）或 setuid 程式，安裝時也不啟用任何服務；
@@ -40,11 +44,13 @@
   tw.local.system-device-monitor.unattended.local.charge-limit。同樣只有本機作用中的工作階段可以授權，
   預設是 auth_admin_keep：輸入管理員密碼後，polkit 的暫時授權只屬於執行 pkexec 的那個程序
   （看板），約 5 分鐘內同一個看板再次調整不必重新輸入，其他程式不能沿用。
+- 一鍵更新（只有 .deb）：tw.local.system-device-monitor.update，allow_active＝auth_admin，
+  每次都要輸入管理員密碼（見下方「一鍵更新與發布簽章」）。
 - 非作用中的工作階段與遠端一律拒絕（allow_any、allow_inactive＝no）。
 - 每個動作都綁定 org.freedesktop.policykit.exec.path＝小程式的絕對路徑，pkexec 只有在執行
   這個檔案時才使用這個動作。
 - 開啟程式、開啟設定視窗都不會要求授權；只有使用者在設定裡切換「CPU 功耗取樣」、放開充電上限
-  滑桿（或停 0.6 秒）、切換「開機與喚醒後保留」時才執行 pkexec。
+  滑桿（或停 0.6 秒）、切換「開機與喚醒後保留」或按「安裝更新」時才執行 pkexec。
 - 動作 ID 的命名與自訂規則：
   - 管理員若要寫 polkit 規則（/etc/polkit-1/rules.d）放寬或收緊這些動作，請比對完整的動作 ID
     （例如 `action.id == "tw.local.system-device-monitor.cpu-power"`），不要用
@@ -271,6 +277,57 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 
 多人共用、或會執行不信任程式的帳號不建議開啟。
 
+## 一鍵更新與發布簽章（sdm-update，只有 .deb）
+
+做法與 Sparkle（macOS 常見的更新框架）及維護者的 macOS 版相同：維護者以離線保管的 Ed25519 私鑰簽
+每個 Release 的 SHA256SUMS，程式內建對應的公鑰；只有簽章與檢查碼都相符的 .deb 才會安裝。
+
+- 簽章格式：SHA256SUMS.sig 是一行 base64，內容是對 SHA256SUMS 檔案原始位元組的 64 位元組 Ed25519
+  簽章。公鑰是 32 位元組原始公鑰的 base64，放在陣列裡：sdm/constants.py 的 Update.PUBLIC_KEYS 與
+  helper/sdm-update 的 PUBLIC_KEYS（測試確認兩者相同）；任何一把驗證通過即可。驗證時把公鑰組成
+  SubjectPublicKeyInfo 的 PEM，與簽章一起寫在私人暫存目錄，以 /usr/bin/openssl pkeyutl -verify
+  -pubin -rawin 驗證。陣列是空的時候（還沒產生正式金鑰的版本）一律拒絕安裝，設定頁顯示
+  「未設定簽章金鑰」。公鑰只來自程式本身，絕不從環境變數、參數或設定檔讀取。
+- 私鑰只在維護者自己的電腦上：以 scripts/release_keys.py 產生在任何 git 工作樹以外的 0700 資料夾
+  （私鑰 0600），離線備份；不放進專案、CI、雲端同步資料夾或 GitHub Secrets。發布時在本機以
+  make release-assets 簽章（離線簽章），腳本確認這把金鑰的公鑰列在 Update.PUBLIC_KEYS 裡，
+  並以程式端同樣的驗證確認簽章後才寫出 SHA256SUMS.sig。make privacy 會拒絕專案資料夾裡
+  （含被 .gitignore 忽略的）任何私鑰檔。
+- 換金鑰：先發布一個公鑰陣列同時含新舊兩把的版本（仍以舊金鑰簽，新舊並存），之後的版本改用
+  新金鑰簽，再找一個版本把舊公鑰移除。私鑰外洩時立刻從陣列移除那把公鑰並以新金鑰發布；
+  還停在只認舊公鑰版本的使用者要手動安裝一次新版。私鑰遺失時同樣只能換新金鑰。
+- 程式端（一般使用者）：只連 HTTPS 的 github.com、api.github.com 與 *.githubusercontent.com，
+  每一次轉址都重新確認，有大小上限（API 1 MB、SHA256SUMS 64 KB、.sig 1 KB、.deb 30 MB）與逾時；
+  先下載並驗證簽章，再下載 .deb、比對 SHA256SUMS 中這個檔名（完全相同）的雜湊，再以 dpkg-deb -f
+  確認 Package、Architecture all、Version 與 Release 相同，並以 dpkg --compare-versions 確認比已安裝
+  的版本新；最後才執行 pkexec。
+- polkit 動作 tw.local.system-device-monitor.update：allow_active＝auth_admin（每次都要密碼，不是
+  auth_admin_keep），allow_any、allow_inactive＝no；exec.path＝/usr/libexec/system-device-monitor/sdm-update。
+  只有 .deb 安裝這個小程式與動作，原始碼安裝不提供（原始碼資料夾以 git 更新）。這個動作不在
+  unattended 前綴底下，也不會被任何免密碼的規則涵蓋。
+- sdm-update 以 root 執行時不相信程式端的檢查，自己再做一次：沿用開關小程式的規則
+  （#!/usr/bin/python3 -IB、只用標準函式庫、執行路徑一字不差、PKEXEC_UID 是一般帳號、固定的 PATH、
+  只以參數清單執行、一行 JSON、結束碼 0／2／3／4、系統日誌只記錄動作名稱）；參數固定為
+  install <.deb> <SHA256SUMS> <SHA256SUMS.sig>，檔名必須完全符合。三個檔案以
+  O_NOFOLLOW｜O_NONBLOCK 開啟，fstat 必須是呼叫者擁有、不超過上限的一般檔案，經由描述子複製到
+  /var/cache/system-device-monitor/staging/<亂數>/（root 0700，O_EXCL），之後只用這份 root 的複本：
+  以內建公鑰驗證簽章、比對雜湊、dpkg-deb -f 檢查欄位並確認比 dpkg-query 查到的已安裝版本新、
+  dpkg-deb -c 確認每一項都只在本套件的位置（/usr/bin/system-device-monitor、
+  /usr/share/system-device-monitor/、/usr/share/doc/system-device-monitor/、
+  /usr/libexec/system-device-monitor/、/usr/share/applications/system-device-monitor*.desktop、
+  /usr/share/polkit-1/actions/tw.local.system-device-monitor*、/usr/lib/systemd/system/system-device-monitor*、
+  /usr/share/icons/hicolor/*/apps/system-device-monitor.png），只有一般檔案與目錄、擁有者 root/root、
+  沒有 setuid／setgid／黏著位元、沒有群組或其他人可寫、沒有「..」。接著以 fcntl 等 dpkg 的前端鎖
+  （最多 120 秒，忙碌時乾淨地失敗），以 apt-get install -y --no-install-recommends --no-remove
+  （DEBIAN_FRONTEND=noninteractive，逾時 300 秒）安裝暫存的複本，確認已安裝的版本後刪除複本。
+  套件不是以 .deb 安裝時直接拒絕。
+- 為什麼簽章在小程式裡還要再驗一次：就算你的帳號被入侵、而且你輸入了管理員密碼，root 端也只會
+  安裝維護者簽過的 .deb；被竄改的 GitHub 帳號或 Release 檔案同樣無法讓程式安裝沒有簽章的套件。
+  不能降級，也不能重裝同一版。
+- 簽章不能防的事：維護者的私鑰外洩；能攔截網路的人讓你一直看不到新版本（看板只會顯示
+  「已是最新版本」或檢查失敗）；新版本本身的程式錯誤。apt-get 會照常從系統設定的套件庫安裝新版本
+  需要的相依套件。
+
 ## 永遠不做的事
 
 - 不安裝 setuid 程式或 polkit 規則；不在安裝時啟用任何東西（充電上限的單元只在你開啟保留時啟用）。
@@ -278,6 +335,8 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - 不經過 shell 執行任何命令；不從使用者可寫的位置以 root 載入程式碼（原始碼安裝的暫存檔先驗證雜湊）。
 - 取樣服務不連網路、不寫檔、不執行外部程式；小程式不寫入上表以外的位置，充電上限小程式在 sysfs
   只寫電池的兩個充電門檻。
+- 更新小程式不連網路，只安裝簽章與檢查碼都相符、比已安裝版本新的 .deb；看板不在背景自動安裝，
+  一定是你按「安裝更新」並輸入管理員密碼。
 - 不讀取或回傳 RAPL 以外的硬體資訊；不把 CPU 功耗寫進日誌或歷史檔。
 
 ## 已知限制
@@ -293,6 +352,8 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - 授權或小程式超過 2 分鐘沒有完成時，看板不再等待並嘗試結束 pkexec；已經以 root 執行的小程式
   一般使用者無法結束，會在 systemctl 的逾時內自行結束。
 - 只讀第一個處理器插槽（intel-rapl:0）；多插槽伺服器的其他插槽不列入。
+- 安裝更新時，看板最多等 5 分鐘（含輸入密碼的時間）；超過時不再等待，但已經開始的 apt-get 會在
+  root 端繼續完成，完成後請重新開啟看板。
 - 使用者私人群組的判斷依賴帳號與群組資料庫能完整列出：使用 sssd 等網域帳號而且
   enumerate=false 時，getpwall() 看不到其他網域帳號；群組成員也可能只記錄在 gshadow
   （或可用 newgrp 加入有密碼的群組），不會出現在 getgrgid() 的成員清單。這類環境請讓原始碼資料夾

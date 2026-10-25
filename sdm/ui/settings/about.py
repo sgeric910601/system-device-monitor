@@ -9,7 +9,7 @@ from sdm.ui.settings.controls import wrapped
 from sdm.ui.widgets import box, label
 
 PURPOSE = ("在 Ubuntu 頂端列與視窗中唯讀監看這台電腦的耗電、電池、系統資源與周邊電量。"
-           "只讀取本機資料，沒有雲端上傳或遙測。")
+           "只讀取本機資料，沒有雲端上傳或遙測；唯一的網路存取是選用的更新檢查（只連到 GitHub）。")
 NO_DOCS = "找不到本機的說明文件。"
 
 

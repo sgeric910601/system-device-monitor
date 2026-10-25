@@ -22,6 +22,20 @@ Git 提交使用 GitHub noreply 信箱，MIT 署名使用公開帳號。
 GitHub 登入使用系統憑證儲存，驗證憑證不寫進專案或遠端 URL。
 
 一般使用不會自動截圖或上傳資料。
+
+唯一的網路存取是選用的更新檢查（「設定 → 更新 → 自動檢查更新」，預設開啟，可以關閉）：
+- 自動檢查：看板啟動 15 秒後與之後每 6 小時看一次，但距離上次成功的檢查超過 24 小時才送出
+  一個 HTTPS 請求到 api.github.com，讀取本專案公開的 Releases 清單。關閉後完全不連線；
+  「立即檢查」只在你按下時連線一次。
+- 安裝更新（只有 .deb，按「安裝更新」才進行）：從 github.com 與它轉址到的 GitHub 下載主機
+  （*.githubusercontent.com，例如 objects.githubusercontent.com、release-assets.githubusercontent.com）
+  下載 SHA256SUMS、SHA256SUMS.sig 與 .deb，放在 XDG_RUNTIME_DIR 底下的私人暫存目錄，安裝後刪除。
+- 送出的只有請求本身：網址、User-Agent（system-device-monitor/版本號）與 Accept 標頭；
+  沒有 cookie、帳號、裝置識別碼、設定或任何讀值。GitHub 與網路路徑上的系統一定看得到你的 IP
+  與請求時間，這是任何連線都無法避免的。只連 HTTPS，主機不在上述名單（含每一次轉址）就停止；
+  會使用系統的代理伺服器設定（https_proxy 等環境變數）。
+- 只在 XDG 狀態目錄的 update-state.json 記錄上次成功檢查的時間與通知過的版本號，不記錄其他內容，
+  也不寫進日誌。模擬測試（--smoke-test）與示範模式（--preview）完全不連網路。
 本機主動啟用 --capture 後，截圖可能含私人設備名稱與掛載路徑。
 回報問題只提供去識別化的摘要，勿直接附上原始日誌、設定或截圖。
 

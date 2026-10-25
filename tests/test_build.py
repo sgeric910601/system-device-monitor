@@ -202,7 +202,8 @@ class ControlText(unittest.TestCase):
             "gir1.2-gudev-1.0, gir1.2-ayatanaappindicator3-0.1, gir1.2-notify-0.7, "
             "librsvg2-common, util-linux, openssl")
         self.assertIn("Package: system-device-monitor\nVersion: 1.2.3\n", text)
-        self.assertTrue(text.endswith(" GPU, network and currently connected peripherals. No telemetry.\n"))
+        self.assertTrue(text.endswith(" GPU, network and currently connected peripherals.\n"
+                                      " No telemetry; optional update check against GitHub.\n"))
 
 
 if __name__ == "__main__":

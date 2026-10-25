@@ -4,14 +4,15 @@ Ubuntu 桌面上的即時系統資源與周邊電量看板。提供彩色頂端�
 最近五分鐘曲線，以及目前連線中的 USB／藍牙設備。
 
 A local GTK 3 system and peripheral battery monitor for Ubuntu.
-No telemetry, accounts, or cloud service required.
+No telemetry, accounts, or cloud service; the only network access is an optional update check
+against GitHub (signed one-click updates for the .deb).
 
 ## 功能
 
 - 視窗與設定：主視窗左側是頁面側欄（電源、系統總覽、CPU／GPU、記憶體、磁碟、網路、連線設備），
   視窗寬度小於 640 px 時側欄收起，改用標題列左上角的頁面選單；關閉視窗時記住目前的頁面。
   標題列的齒輪按鈕開啟設定視窗（一般、頂端列、監控模組、顯示項目、通知、周邊設備、夥伴、桌面寵物、
-  外觀、管理員功能、關於），所有變更立即套用，不需要重新啟動。第一次啟動時詢問監控範圍：
+  外觀、管理員功能、更新、關於），所有變更立即套用，不需要重新啟動。第一次啟動時詢問監控範圍：
   「只看電源」或「電源＋系統監控」
   （桌機為「只看耗電」／「耗電＋系統監控」）。視窗寬度 480 px 起都能正常顯示。
 - 頂端列兩種模式：「分開顯示」時耗電（筆電為電池）、CPU、CPU 溫度、RAM、GPU、網路各一個圖示
@@ -85,6 +86,10 @@ No telemetry, accounts, or cloud service required.
 - 頂端列選單的「設備電量」每台設備一行，只列出有回報電量的設備；UPS 另有專屬一行。
 - 關閉視窗後繼續在頂端列運作；選單「退出」才停止。
 - 首次啟動啟用登入自啟，可在「設定 → 一般」關閉；更新保留既有選擇。
+- 更新（「設定 → 更新」）：每 24 小時最多向 GitHub 確認一次有沒有新的正式版，有就通知一次；
+  「立即檢查」也列出測試版。.deb 安裝可以一鍵更新：先在這台電腦驗證維護者的發布簽章
+  （Ed25519，與 macOS 版相同的做法）與檢查碼，再輸入管理員密碼由 apt-get 安裝，完成後自動重新啟動；
+  原始碼資料夾顯示 git 指令。自動檢查可以關閉，見 [使用說明](docs/USAGE.md#更新)。
 
 ## 安裝：Ubuntu 套件
 
@@ -237,7 +242,9 @@ Solaar 電量查詢每 60 秒執行一次，獨立背景工作不阻塞裝置清
 
 ## 隱私與授權
 
-應用程式只讀取本機資料，沒有雲端上傳或遙測。管理員元件的安全設計見 [SECURITY.md](docs/SECURITY.md)。
+應用程式只讀取本機資料，沒有雲端上傳或遙測；唯一的網路存取是選用的更新檢查（只連到 GitHub，
+可在「設定 → 更新」關閉，詳情見 [PRIVACY.md](docs/PRIVACY.md)）。管理員元件與更新簽章的安全設計見
+[SECURITY.md](docs/SECURITY.md)。
 發布包不包含使用者設定、裝置清單、截圖、日誌或驗證憑證。
 診斷預設不截圖；分享資料前請依 [PRIVACY.md](docs/PRIVACY.md) 檢查。
 本專案使用 [MIT License](LICENSE)。

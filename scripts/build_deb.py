@@ -140,7 +140,8 @@ def control_text(version):
             "Homepage: https://github.com/sgeric910601/system-device-monitor\n"
             "Description: Local system resources and peripheral battery dashboard\n"
             " GTK desktop dashboard and colored AppIndicators for CPU, memory,\n"
-            " GPU, network and currently connected peripherals. No telemetry.\n")
+            " GPU, network and currently connected peripherals.\n"
+            " No telemetry; optional update check against GitHub.\n")
 
 
 def generated_files(version):

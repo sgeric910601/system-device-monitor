@@ -11,6 +11,14 @@
   目前只以合成資料驗證，尚未在筆電實機測試。
 - .deb 與原始碼安裝新增充電上限小程式、polkit 動作與重新套用的 systemd 單元（安裝時不啟用）；
   移除時停用該單元並刪除保留的充電上限；「設定 → 管理員功能」列出充電上限元件的狀態。
+- 新增一鍵更新（「設定 → 更新」）：每 24 小時最多向 GitHub 確認一次新的正式版並通知一次，
+  「立即檢查」也列出測試版；只連到 api.github.com 與發布檔的下載主機，可以關閉。
+  .deb 安裝先驗證維護者的 Ed25519 發布簽章（SHA256SUMS.sig，與 macOS 版相同）與檢查碼，
+  再由新的管理員小程式 sdm-update（polkit 動作 tw.local.system-device-monitor.update，每次都要密碼）
+  驗證後以 apt-get 安裝並自動重新啟動；原始碼資料夾顯示 git 指令。
+- 發布流程新增 scripts/release_keys.py（在專案以外產生簽章金鑰）與 make release-assets 的簽章與自我驗證；
+  隱私檢查會拒絕專案資料夾裡的私鑰。
+- .deb 的說明改為「No telemetry; optional update check against GitHub.」。
 - 新增選用的管理員 CPU 功耗取樣（預設關閉）：「設定 → 管理員功能」顯示元件狀態與原始碼安裝指令，
   開關需要管理員授權。socket 啟動的系統服務從不以 root 執行（臨時帳號、沒有任何能力），
   RAPL 計數器由 systemd 唯讀開好交給它；只回答開啟它的使用者，提供固定 1 秒視窗的平均、
