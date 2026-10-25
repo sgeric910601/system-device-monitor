@@ -203,6 +203,28 @@ class Update:
     MIN_CHECK_GAP_SECONDS = 24 * 3600           # 距離上次成功檢查超過 24 小時才連到 GitHub
 
 
+class SmartCharging:
+    """智慧充電（「幾點前充到幾 %」）：判斷、控制、喚醒與紀錄檔；數值沿用參考專案。"""
+    MIN_PERCENT = 50            # 目標、保養上限與還原值的範圍（與充電上限小程式相同）
+    MAX_PERCENT = 100
+    BUFFER_MINUTES = 15         # 預留給估算誤差與開始充電前的延遲
+    MAXIMUM_MINUTES = 24 * 60
+    TAPER_START = 80            # 80% 以上充電變慢（定電壓階段）
+    TAPER_FACTOR = 1.8          # 這一段的時間乘上這個倍數
+    HOLD_STEP = 5               # 等待時的上限不低於目前電量，進位到 5% 一格
+    FALLBACK_RATE = 20.0        # 沒有預估也沒有歷史時的充電速度（每小時 %）
+    RATE_WINDOW_SECONDS = 7 * 24 * 3600     # 歷史充電速度看最近 7 天
+    RATE_MIN_SECONDS = 10 * 60  # 一段充電至少 10 分鐘、充 3% 才採用
+    RATE_MIN_PERCENT = 3
+    RATE_GAP_SECONDS = 30 * 60  # 相鄰兩筆超過 30 分鐘視為中斷
+    RATE_LOW, RATE_HIGH = 1, 100            # 合理的速度範圍（每小時 %）
+    RATE_CACHE_SECONDS = 600    # 歷史速度 10 分鐘內不重算
+    WAKE_LEAD_SECONDS = 60      # 精準喚醒排在開始前一分鐘，醒來就提高上限
+    WAKE_EARLIEST = 60          # 喚醒時間只能在 60 秒後到 7 天內
+    WAKE_LATEST = 7 * 24 * 3600
+    WAKE_REPLACE_SECONDS = 5 * 60           # 與已排定的時間相差 5 分鐘以上才重排
+
+
 class Supply:
     """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
     TYPE_BATTERY = "Battery"
