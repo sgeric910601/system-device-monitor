@@ -1,7 +1,7 @@
 #!/bin/sh
 # 系統與裝置監看：移除後重新載入 systemd；完全移除（purge）時再刪除本套件的 drop-in
-# （目錄裡沒有其他檔案時連同目錄），以及 sdm-charge-limit 保留的充電上限狀態檔
-# （/var/lib/system-device-monitor 空了才刪除目錄）。從不遞迴刪除目錄。
+# （目錄裡沒有其他檔案時連同目錄），並再確認一次 sdm-charge-limit 保留的充電上限已刪除
+# （prerm 移除時已刪；/var/lib/system-device-monitor 空了才刪除目錄）。從不遞迴刪除目錄。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只刪除檔案。
 set -e
 

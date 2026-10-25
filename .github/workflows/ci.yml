@@ -156,12 +156,12 @@ jobs:
           sudo systemctl start system-device-monitor-charge-limit.service
           test "$(systemctl show -p Result --value system-device-monitor-charge-limit.service)" = "success"
           test "$(systemctl show -p ExecMainStatus --value system-device-monitor-charge-limit.service)" = "0"
-          sudo rm -f /var/lib/system-device-monitor/charge-limit.json
-          sudo rmdir /var/lib/system-device-monitor
+          # 保留的值留著：移除套件時 prerm 必須刪除它
       - name: Remove and purge
         run: |
           set -eu
           sudo apt-get remove -y system-device-monitor
+          test ! -e /var/lib/system-device-monitor/charge-limit.json
           test ! -e /usr/bin/system-device-monitor
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.socket
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.service

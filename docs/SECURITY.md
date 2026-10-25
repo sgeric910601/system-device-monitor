@@ -215,9 +215,10 @@
 
 - postinst 只重新載入 systemd；socket 原本已啟用時才重新啟動它。從不自動啟用。
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
-  也停用充電上限的單元（刪除它的 wants 連結），保留的值留到 purge。
-- postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），以及
-  /var/lib/system-device-monitor/charge-limit.json（目錄空了才刪目錄）；從不遞迴刪除目錄。
+  也停用充電上限的單元（刪除它的 wants 連結），並刪除 /var/lib/system-device-monitor/charge-limit.json
+  （目錄空了才刪目錄），重新安裝時不會悄悄套回舊的上限。
+- postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），並再確認一次
+  charge-limit.json 已刪除；從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。
 
 ## RAPL 旁路

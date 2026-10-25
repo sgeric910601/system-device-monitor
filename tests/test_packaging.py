@@ -114,15 +114,19 @@ class ScriptText(unittest.TestCase):
         for name in MAINTAINER:
             with self.subTest(script=name):
                 self.assertNotIn("rm -r", self.text(name))
-                if name != "postrm":
+                if name == "postinst":
                     self.assertNotIn("/var/lib", self.text(name))
 
-    def test_purge_removes_only_the_charge_limit_state_file(self):
-        lines = [line.strip() for line in self.text("postrm").splitlines()
-                 if ("/var/lib" in line or "STATE_DIR" in line) and not line.startswith("#")]
-        self.assertEqual(lines, ['STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"',
-                                 'rm -f "$STATE_DIR/charge-limit.json"',
-                                 'rmdir "$STATE_DIR" 2>/dev/null || true'])
+    def test_remove_and_purge_delete_only_the_charge_limit_state_file(self):
+        for name in ("prerm", "postrm"):
+            with self.subTest(script=name):
+                lines = [line.strip() for line in self.text(name).splitlines()
+                         if ("/var/lib" in line or "STATE_DIR" in line)
+                         and not line.startswith("#")]
+                self.assertEqual(lines, [
+                    'STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"',
+                    'rm -f "$STATE_DIR/charge-limit.json"',
+                    'rmdir "$STATE_DIR" 2>/dev/null || true'])
 
     def test_unit_names_match_the_shipped_units(self):
         for name in MAINTAINER:
@@ -136,7 +140,7 @@ class ScriptText(unittest.TestCase):
     def test_prerm_disables_the_charge_limit_unit(self):
         text = self.text("prerm")
         self.assertIn('systemctl disable "$LIMIT_UNIT"', text)
-        self.assertNotIn("charge-limit.json", text)
+        self.assertIn("charge-limit.json", text)
 
     def test_live_systemd_is_skipped_for_an_offline_root(self):
         for name in MAINTAINER:
@@ -194,11 +198,19 @@ class ScriptRuns(unittest.TestCase):
         self.state.mkdir(parents=True, exist_ok=True)
         (self.state/"charge-limit.json").write_text("{}\n")
 
-    def test_prerm_remove_disables_the_charge_limit_unit_but_keeps_its_state(self):
+    def test_prerm_remove_disables_the_charge_limit_unit_and_deletes_its_state(self):
         self.populate_limit()
         self.run_script("prerm", "remove")
         self.assertFalse(any(os.path.lexists(link) for link in self.limit_wants))
-        self.assertTrue((self.state/"charge-limit.json").exists())
+        self.assertFalse(self.state.exists())
+
+    def test_prerm_remove_keeps_other_state_files(self):
+        self.populate_limit()
+        local = self.state/"charge-limit-local.json"
+        local.write_text("{}\n")
+        self.run_script("prerm", "remove")
+        self.assertFalse((self.state/"charge-limit.json").exists())
+        self.assertTrue(local.exists())
 
     def test_prerm_upgrade_keeps_the_charge_limit_unit(self):
         self.populate_limit()

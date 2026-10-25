@@ -79,6 +79,14 @@ class ChargeLimit(unittest.TestCase):
         self.assertIn("sudo systemctl start system-device-monitor-charge-limit.service", WORKFLOW)
         self.assertIn("-p Result --value system-device-monitor-charge-limit.service", WORKFLOW)
 
+    def test_package_removal_deletes_the_saved_limit(self):
+        remove = WORKFLOW.index("sudo apt-get remove -y system-device-monitor")
+        purge = WORKFLOW.index("sudo apt-get purge -y system-device-monitor")
+        check = WORKFLOW.index("test ! -e /var/lib/system-device-monitor/charge-limit.json")
+        self.assertLess(remove, check)
+        self.assertLess(check, purge)
+        self.assertNotIn("sudo rm -f /var/lib/system-device-monitor/charge-limit.json", WORKFLOW)
+
     def test_remove_and_purge_leave_nothing_behind(self):
         for path in ("/usr/lib/systemd/system/system-device-monitor-charge-limit.service",
                      "/etc/systemd/system/multi-user.target.wants/"
