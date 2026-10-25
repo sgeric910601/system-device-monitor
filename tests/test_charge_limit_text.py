@@ -64,6 +64,14 @@ class Flags(unittest.TestCase):
         self.assertTrue(text.visible(READY))
         self.assertFalse(text.visible(replace(READY, supply=None)))
 
+    def test_persist_mismatch_warning(self):
+        self.assertEqual(text.persist_warning(READY), "")
+        warning = text.persist_warning(replace(READY, persist_mismatch=True))
+        self.assertTrue(warning.startswith("保留設定未生效"))
+        self.assertIn("重新開啟", warning)
+        self.assertEqual(text.persist_warning(replace(READY, persist_mismatch=True, demo=True)),
+                         "")
+
     def test_conflicts_are_listed_one_per_line(self):
         state = replace(READY, conflicts=(Conflict("tlp", "甲。"), Conflict("asusd", "乙。")))
         self.assertEqual(text.conflict_text(state), "甲。\n乙。")

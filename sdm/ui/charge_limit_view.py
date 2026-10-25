@@ -38,6 +38,8 @@ class ChargeLimitView(Gtk.Box):
         self.status = label("", "muted", True)
         self.pack_start(self.status, False, False, 0)
         self.pack_start(self.build_persist_row(), False, False, 0)
+        self.persist_warning = label("", "power-warning", True)
+        self.pack_start(self.persist_warning, False, False, 0)
         self.conflicts = label("", "power-warning", True)
         self.link = Gtk.LinkButton.new_with_label("", text.SETTINGS_LINK)
         self.link.set_halign(Gtk.Align.START)
@@ -142,6 +144,9 @@ class ChargeLimitView(Gtk.Box):
             if not state.busy and self.switch.get_active() != state.persist:
                 self.switch.set_active(state.persist)
             self.persist_row.set_sensitive(text.persist_enabled(state))
+            warning = text.persist_warning(state)
+            set_text(self.persist_warning, warning)
+            show_if(self.persist_warning, bool(warning))
             set_text(self.conflicts, text.conflict_text(state))
             show_if(self.conflicts, bool(state.conflicts))
             show_if(self.link, text.needs_settings(state))

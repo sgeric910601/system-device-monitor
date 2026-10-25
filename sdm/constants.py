@@ -142,6 +142,8 @@ class ChargeLimit:
     AUTOMATIC_POLL = 0.1
     PKEXEC_TIMEOUT = 120        # 等待授權與小程式完成的上限（秒）
     PROTOCOL_TIMEOUT = 5
+    SYSTEMCTL = "/usr/bin/systemctl"
+    UNIT_CHECK_TIMEOUT = 5      # 以一般權限查詢單元是否啟用（systemctl is-enabled）的逾時（秒）
     CONFLICT_TIMEOUT = 3        # 偵測衝突程式時 systemctl is-active 的逾時（秒）
 
 

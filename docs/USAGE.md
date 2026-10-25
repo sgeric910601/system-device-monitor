@@ -358,6 +358,8 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
   記在 /var/lib/system-device-monitor/charge-limit.json（原始碼安裝為 charge-limit-local.json，
   只有電池名稱、上限與起點），並啟用 system-device-monitor-charge-limit.service，開機與每次喚醒後
   重新套用；關閉時刪除這個檔案並停用服務。只保留你自己設定的值；開關一樣需要管理員授權。
+  開關只有在這個檔案存在、而且服務已啟用時才顯示為開啟（以一般權限查詢 systemctl is-enabled）；
+  兩者不一致（例如服務被手動停用）時顯示「保留設定未生效」，重新開啟這個開關即可修復。
 - 與其他程式衝突：TLP（設定了 START_CHARGE_THRESH／STOP_CHARGE_THRESH）、asusd（asusctl）
   與系統的「保護電池健康」（UPower 1.90.5 以後的充電門檻）也會設定充電門檻，並在開機、喚醒或
   插拔電源時套回自己的值。偵測到時滑桿下方顯示提醒與處理方式；仍然可以調整，但值可能被改回去。

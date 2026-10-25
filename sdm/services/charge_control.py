@@ -12,7 +12,9 @@
 - 自動寫入（之後的智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
   每 0.1 秒確認一次，最多等 10 秒；不帶 --persist，不改變使用者保留的值與重新套用的單元。
 不需要授權就能知道的事（是否支援、目前的上限、是否保留）都以一般權限讀取，
-開啟程式時不會要求密碼。所有方法都在主執行緒呼叫。
+開啟程式時不會要求密碼。「開機與喚醒後保留」要狀態檔屬於這顆電池、而且單元已啟用
+（以一般權限執行 systemctl is-enabled）才算開啟；兩者不一致時 persist_mismatch 為 True。
+所有方法都在主執行緒呼叫。
 """
 from dataclasses import dataclass, replace
 import os
@@ -44,10 +46,13 @@ class LimitLayout:
     kind: str                   # deb／local
     helper: str                 # pkexec 執行的小程式
     state: str                  # 保留的狀態檔
+    unit: str                   # 開機與喚醒後重新套用的單元
 
 
-LAYOUTS = (LimitLayout(KIND_DEB, ChargeLimit.DEB_HELPER, ChargeLimit.DEB_STATE),
-           LimitLayout(KIND_LOCAL, ChargeLimit.LOCAL_HELPER, ChargeLimit.LOCAL_STATE))
+LAYOUTS = (LimitLayout(KIND_DEB, ChargeLimit.DEB_HELPER, ChargeLimit.DEB_STATE,
+                       ChargeLimit.DEB_UNIT),
+           LimitLayout(KIND_LOCAL, ChargeLimit.LOCAL_HELPER, ChargeLimit.LOCAL_STATE,
+                       ChargeLimit.LOCAL_UNIT))
 
 
 def discover(lstat=os.lstat):
@@ -67,7 +72,8 @@ class ChargeState:
     has_start: bool = False
     options: tuple = DEFAULT_OPTIONS
     draft: Optional[int] = None         # 拖動中、還沒寫入的值
-    persist: bool = False               # 「開機與喚醒後保留」
+    persist: bool = False               # 「開機與喚醒後保留」：狀態檔與單元都是開啟
+    persist_mismatch: bool = False      # 狀態檔與單元不一致（保留設定未生效）
     layout: Optional[LimitLayout] = None
     protocol: Optional[bool] = None     # None：確認中或沒有安裝；False：版本不符
     busy: bool = False
@@ -118,6 +124,7 @@ class ChargeControl:
         self.debouncer = CommitDebouncer(schedule, cancel, self.commit)
         self.queue, self.automatic, self.poll_timer, self.read_timer = [], False, None, None
         self.written_at = None
+        self.saved, self.unit_enabled, self.unit_generation = False, None, 0
 
     def update(self, **changes):
         state = replace(self.state, **changes)
@@ -147,17 +154,43 @@ class ChargeControl:
         return None if layout is None else self.root/layout.state.lstrip("/")
 
     def reload(self):
-        """以一般權限重新讀取門檻與保留狀態（不執行任何程式）；寫入中或拖動中不改變上限。"""
+        """以一般權限重新讀取門檻與保留狀態；寫入中或拖動中不改變上限。"""
         battery = find_battery(self.root)
-        saved = read_saved(self.state_path())
-        persist = battery is not None and saved is not None and saved.supply == battery.supply
         if battery is None:
-            self.update(supply=None, persist=False)
+            self.saved, self.unit_enabled = False, None
+            self.update(supply=None, persist=False, persist_mismatch=False)
             return
-        changes = dict(supply=battery.supply, has_start=battery.has_start, persist=persist)
+        changes = dict(supply=battery.supply, has_start=battery.has_start)
         if not self.state.busy and self.debouncer.draft is None:
             changes.update(limit=normalized(battery.end), start=battery.start)
         self.update(**changes)
+        self.reload_persist()
+
+    def reload_persist(self):
+        """狀態檔是否屬於這顆電池，再以一般權限查詢單元是否啟用（非同步）。"""
+        saved = read_saved(self.state_path())
+        self.saved = saved is not None and saved.supply == self.state.supply
+        self.unit_generation += 1
+        layout = self.state.layout
+        if layout is None or self.state.supply is None:
+            self.unit_enabled = None
+            self.apply_persist()
+            return
+        generation = self.unit_generation
+        self.runner.run([ChargeLimit.SYSTEMCTL, "is-enabled", "--quiet", layout.unit],
+                        ChargeLimit.UNIT_CHECK_TIMEOUT,
+                        lambda status, _output: self.unit_checked(generation, status))
+
+    def unit_checked(self, generation, status):
+        if generation != self.unit_generation or self.stopped:
+            return
+        self.unit_enabled = None if status is None else status == 0
+        self.apply_persist()
+
+    def apply_persist(self):
+        enabled = self.unit_enabled
+        self.update(persist=self.saved and enabled is True,
+                    persist_mismatch=enabled is not None and self.saved != enabled)
 
     def observe(self, power):
         """新的耗電快照：使用者沒有在調整時，跟著系統的上限（例如被其他程式改掉）。"""
@@ -323,8 +356,7 @@ class ChargeControl:
     def finish(self, ok, limit, message, finished):
         self.written_at = self.wall()
         self.update(busy=False, outcome=APPLIED if ok else FAILED, message=message, limit=limit)
-        saved = read_saved(self.state_path())
-        self.update(persist=saved is not None and saved.supply == self.state.supply)
+        self.reload_persist()
         finished(ok)
 
     def stop(self):

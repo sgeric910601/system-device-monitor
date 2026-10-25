@@ -16,6 +16,8 @@ TEXTS = {
     APPLYING: "套用中…",
     APPLIED: "已套用",
 }
+PERSIST_MISMATCH = ("保留設定未生效：保留的值與開機服務不一致，"
+                    "請重新開啟「開機與喚醒後保留」。")
 NOT_INSTALLED_TEXT = "需要先安裝管理員元件才能調整"
 REINSTALL_TEXT = "管理員元件版本不符，需要重新安裝"
 
@@ -57,6 +59,11 @@ def slider_enabled(state):
 
 def persist_enabled(state):
     return state.ready and not state.busy and state.draft is None
+
+
+def persist_warning(state):
+    """保留的狀態檔與單元不一致時的提醒（示範模式沒有）。"""
+    return PERSIST_MISMATCH if state.persist_mismatch and not state.demo else ""
 
 
 def conflict_text(state):

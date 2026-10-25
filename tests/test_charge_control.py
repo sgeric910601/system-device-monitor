@@ -20,6 +20,7 @@ from tests.fixtures.sysfs import thinkpad
 from tests.test_privileged import fake_tree
 
 PKEXEC = "/usr/bin/pkexec"
+SYSTEMCTL = "/usr/bin/systemctl"
 HELPER = ChargeLimit.DEB_HELPER
 PROTOCOL_OK = '{"protocol":1,"version":"1.0"}\n'
 END = "sys/class/power_supply/BAT0/charge_control_end_threshold"
@@ -31,12 +32,18 @@ def ok_output(end, persist="off"):
 
 
 class Runner:
-    """假的執行器：記錄（參數、逾時、回呼），由測試決定何時完成。"""
+    """假的執行器：記錄（參數、逾時、回呼），由測試決定何時完成。
+    systemctl is-enabled 另外記在 unit_checks，依 enabled 立即回答（defer 時由測試回答）。"""
 
     def __init__(self):
-        self.calls = []
+        self.calls, self.unit_checks, self.enabled, self.defer = [], [], False, False
 
     def run(self, argv, timeout, done):
+        if argv[0] == SYSTEMCTL:
+            self.unit_checks.append((list(argv), timeout, done))
+            if not self.defer:
+                done(0 if self.enabled else 1, "")
+            return
         self.calls.append((list(argv), timeout, done))
 
     def finish(self, status, output="", index=-1):
@@ -78,10 +85,12 @@ class Base(unittest.TestCase):
     def sysfs(self, end):
         (self.root/END).write_text(f"{end}\n")
 
-    def save_state(self, supply="BAT0", end=80):
+    def save_state(self, supply="BAT0", end=80, enabled=True):
+        """小程式 --persist on 的結果：狀態檔，以及（預設）已啟用的單元。"""
         path = self.root/ChargeLimit.DEB_STATE.lstrip("/")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"format": 1, "supply": supply, "end": end, "start": None}))
+        self.runner.enabled = enabled
 
     @property
     def state(self):
@@ -132,6 +141,56 @@ class Discovery(Base):
         self.save_state(supply="BAT1")
         self.control.reload()
         self.assertFalse(self.state.persist)
+
+    def test_persist_needs_the_state_file_and_the_enabled_unit(self):
+        cases = ((True, True, True, False), (True, False, False, True),
+                 (False, True, False, True), (False, False, False, False))
+        for saved, enabled, persist, mismatch in cases:
+            with self.subTest(saved=saved, enabled=enabled):
+                path = self.root/ChargeLimit.DEB_STATE.lstrip("/")
+                if saved:
+                    self.save_state(enabled=enabled)
+                else:
+                    path.unlink(missing_ok=True)
+                    self.runner.enabled = enabled
+                self.control.reload()
+                self.assertEqual((self.state.persist, self.state.persist_mismatch),
+                                 (persist, mismatch))
+
+    def test_unit_is_checked_without_privileges(self):
+        self.runner.unit_checks.clear()
+        self.control.reload()
+        argv, timeout, _ = self.runner.unit_checks[0]
+        self.assertEqual(argv, [SYSTEMCTL, "is-enabled", "--quiet", ChargeLimit.DEB_UNIT])
+        self.assertEqual(timeout, ChargeLimit.UNIT_CHECK_TIMEOUT)
+
+    def test_source_install_checks_its_own_unit(self):
+        self.helpers = (ChargeLimit.LOCAL_HELPER,)
+        self.control = self.make()
+        self.assertEqual(self.runner.unit_checks[-1][0][-1], ChargeLimit.LOCAL_UNIT)
+
+    def test_unknown_unit_state_is_neither_on_nor_a_mismatch(self):
+        self.save_state()
+        self.runner.defer = True
+        self.control.reload()
+        self.runner.unit_checks[-1][2](None, "")
+        self.assertEqual((self.state.persist, self.state.persist_mismatch), (False, False))
+
+    def test_late_unit_answers_are_ignored(self):
+        self.save_state()
+        self.runner.defer = True
+        self.control.reload()
+        first = self.runner.unit_checks[-1][2]
+        self.control.reload()
+        self.runner.unit_checks[-1][2](0, "")
+        first(1, "")
+        self.assertEqual((self.state.persist, self.state.persist_mismatch), (True, False))
+
+    def test_no_unit_check_without_helper_or_battery(self):
+        self.helpers = ()
+        self.runner.unit_checks.clear()
+        self.control = self.make()
+        self.assertEqual(self.runner.unit_checks, [])
 
     def test_unlimited_reads_as_one_hundred(self):
         self.sysfs(100)
@@ -299,6 +358,16 @@ class Persist(Base):
     def test_no_change_needs_no_authorization(self):
         self.control.set_persist(False)
         self.assertEqual(self.runner.calls, [])
+
+    def test_switch_on_repairs_a_mismatch(self):
+        self.save_state(enabled=False)
+        self.control.reload()
+        self.assertTrue(self.state.persist_mismatch)
+        self.control.set_persist(True)
+        self.assertEqual(self.runner.writes()[0][-2:], ["--persist", "on"])
+        self.runner.enabled = True
+        self.runner.finish(0, ok_output(80, "on"))
+        self.assertEqual((self.state.persist, self.state.persist_mismatch), (True, False))
 
     def test_failed_switch_keeps_the_real_state(self):
         self.control.set_persist(True)
