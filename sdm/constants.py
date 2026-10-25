@@ -189,6 +189,18 @@ class Update:
     HELPER = "/usr/libexec/system-device-monitor/sdm-update"   # 只隨 .deb 安裝（原始碼安裝沒有）
     ACTION = "tw.local.system-device-monitor.update"            # polkit 動作（每次都要管理員密碼）
     PROTOCOL = 1
+    PKEXEC = "/usr/bin/pkexec"
+    PKEXEC_TIMEOUT = 300                        # 等待授權、驗證與 apt-get 的上限（秒）
+    PROTOCOL_TIMEOUT = 5                        # 「sdm-update --protocol」的逾時（秒）
+    DPKG = "/usr/bin/dpkg"
+    DPKG_DEB = "/usr/bin/dpkg-deb"
+    DPKG_QUERY = "/usr/bin/dpkg-query"
+    LAUNCHER = "/usr/bin/system-device-monitor"  # 安裝更新後以它重新啟動（.deb）
+    PACKAGE_ROOT = "/usr/share/system-device-monitor"
+    STATE_FILE = "update-state.json"            # XDG 狀態目錄：上次檢查的時間與通知過的版本
+    FIRST_CHECK_SECONDS = 15                    # 開啟程式後第一次看是否該檢查
+    CHECK_INTERVAL_SECONDS = 6 * 3600           # 之後每 6 小時看一次
+    MIN_CHECK_GAP_SECONDS = 24 * 3600           # 距離上次成功檢查超過 24 小時才連到 GitHub
 
 
 class Supply:
