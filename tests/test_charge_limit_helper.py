@@ -170,6 +170,7 @@ class Location(Base):
             helper.sys.argv = original
         self.assertEqual(context.helper_path, odd)
         self.assertEqual(context.ppid, os.getppid())
+        self.assertGreater(context.boottime(), 0)
         self.assertIs(context.write, os.write)
 
     def test_layouts(self):
@@ -296,6 +297,8 @@ class Helper(unittest.TestCase):
                           helper.LOCK_POLL_S),
                          (ChargeLimit.RUN_DIR, ChargeLimit.LOCK_NAME, ChargeLimit.LOCK_WAIT,
                           ChargeLimit.LOCK_POLL))
+        self.assertEqual((helper.TIMES_NAME, helper.MIN_WRITE_GAP_S),
+                         (ChargeLimit.TIMES_NAME, ChargeLimit.MIN_WRITE_GAP))
 
     def test_systemctl_runs_without_a_shell_and_with_a_fixed_path(self):
         seen = {}

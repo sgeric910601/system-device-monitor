@@ -9,7 +9,7 @@ import os
 
 from sdm.constants import ChargeLimit
 from tests.fixtures.charge_root import (DEB_STATE, DEB_UNIT, END, ENV, LOCAL_STATE, LOCAL_UNIT,
-                                        LOCK, START, UNIT_ENV, Base, Driver, helper)
+                                        LOCK, START, TIMES, UNIT_ENV, Base, Driver, helper)
 
 
 class Ordering(Base):
@@ -401,6 +401,89 @@ class Serialized(Base):
                     if os.path.lexists(path):
                         os.unlink(path)
                 os.chmod(lock.parent, 0o755)
+                prepare()
+                self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
+        self.assertEqual(self.driver.writes, [])
+
+
+class RateLimit(Base):
+    """同一顆電池兩次 set 至少相隔 10 秒（開機後的時鐘）；太快時結束碼 3（rate-limited）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.battery(end=80, start=75)
+        self.boot_step = 0.0
+
+    def test_second_write_within_ten_seconds_is_refused(self):
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+        self.boot += 4.2
+        self.output.clear()
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output, [{"ok": False, "error": "rate-limited", "retry_after": 6}])
+        self.assertEqual(self.driver.writes, [(END, 85)])
+        self.assertEqual(self.logged, ["set ok", "set rate-limited"])
+        self.boot = 1000.0 + ChargeLimit.MIN_WRITE_GAP      # 第一次寫入在 1000 秒
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
+        self.assertEqual(self.value("BAT0", END), 90)
+
+    def test_each_battery_has_its_own_gap(self):
+        self.battery("BAT1", end=80, start=None, device="platform/BAT1")
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+        self.assertEqual(self.main(["set", "BAT1", "85"]), helper.EXIT_OK)
+
+    def test_attempts_that_reach_the_driver_count(self):
+        self.driver.refuse = {85}
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
+        self.output.clear()
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[0]["error"], "rate-limited")
+
+    def test_refused_calls_do_not_count(self):
+        self.assertEqual(self.main(["set", "BAT9", "85"]), helper.EXIT_FAILED)
+        self.assertEqual(self.main(["set", "BAT0", "101"]), helper.EXIT_USAGE)
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+
+    def test_restore_and_status_are_not_limited_and_do_not_count(self):
+        self.root.file(DEB_STATE, json.dumps({"format": 1, "supply": "BAT0", "end": 85}))
+        self.assertEqual(self.restore(), helper.EXIT_OK)
+        self.assertEqual(self.main(["status"]), helper.EXIT_OK)
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
+        self.assertEqual(self.restore(), helper.EXIT_OK)
+        self.assertEqual(self.main(["status"]), helper.EXIT_OK)
+
+    def test_times_file_is_private(self):
+        previous = os.umask(0o022)
+        try:
+            self.main(["set", "BAT0", "85"])
+        finally:
+            os.umask(previous)
+        self.assertEqual(self.root.mode(TIMES), 0o600)
+        self.assertEqual(set(json.loads((self.root.path/TIMES).read_text())), {"BAT0"})
+
+    def test_old_entries_are_dropped(self):
+        self.battery("BAT1", end=80, start=None, device="platform/BAT1")
+        self.main(["set", "BAT1", "85"])
+        self.boot += ChargeLimit.MIN_WRITE_GAP + 1
+        self.main(["set", "BAT0", "85"])
+        self.assertEqual(set(json.loads((self.root.path/TIMES).read_text())), {"BAT0"})
+
+    def test_unreadable_or_odd_times_are_ignored(self):
+        self.main(["set", "BAT0", "85"])
+        for text in ("garbage", "[]", '{"BAT0": "x"}', '{"BAT0": true}', '{"bad name": 1}'):
+            with self.subTest(text=text):
+                (self.root.path/TIMES).write_text(text)
+                os.chmod(self.root.path/TIMES, 0o600)
+                self.boot += 0.1
+                self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+
+    def test_untrusted_times_file_is_refused(self):
+        self.root.directory(os.path.dirname(TIMES))
+        path = self.root.path/TIMES
+        for prepare in (lambda: (path.write_text("{}"), path.chmod(0o644)),
+                        lambda: path.symlink_to(self.root.file("elsewhere/times", "{}"))):
+            with self.subTest(prepare=prepare):
+                if os.path.lexists(path):
+                    os.unlink(path)
                 prepare()
                 self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
         self.assertEqual(self.driver.writes, [])

@@ -208,6 +208,7 @@ class ScriptRuns(unittest.TestCase):
         run = self.root/"run/system-device-monitor"
         run.mkdir(parents=True)
         (run/"charge-limit.lock").write_text("")
+        (run/"charge-limit.times").write_text("{}")
         self.run_script("prerm", "remove")
         self.assertFalse(run.exists())
 

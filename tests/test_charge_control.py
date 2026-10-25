@@ -73,7 +73,8 @@ class Base(unittest.TestCase):
     def make(self, start=True):
         control = ChargeControl(self.runner, lambda: self.changes.append(1), root=self.root,
                                 lstat=fake_tree(*self.helpers), schedule=self.timers.schedule,
-                                cancel=self.timers.cancel, wall=lambda: self.now)
+                                cancel=self.timers.cancel, wall=lambda: self.now,
+                                clock=lambda: self.timers.now)
         if start:
             control.refresh()
         return control
@@ -251,7 +252,48 @@ class UserWrites(Base):
         self.assertEqual(len(self.runner.writes()), 1)
         self.sysfs(85)
         self.runner.finish(0, ok_output(85))
+        self.assertEqual(len(self.runner.writes()), 1)      # 小程式要求兩次寫入相隔 10 秒
+        self.assertEqual(self.state.status, APPLYING)
+        self.timers.advance(ChargeLimit.MIN_WRITE_GAP)
         self.assertEqual([argv[4] for argv in self.runner.writes()], ["85", "95"])
+
+    def test_writes_are_spaced_by_the_minimum_gap(self):
+        self.control.drag(85)
+        self.timers.advance(1)
+        self.sysfs(85)
+        self.runner.finish(0, ok_output(85))
+        finished = self.timers.now
+        self.timers.advance(3)
+        self.control.drag(90)
+        self.timers.advance(0.6)
+        self.assertEqual((len(self.runner.writes()), self.state.status), (1, APPLYING))
+        self.timers.advance(finished + ChargeLimit.MIN_WRITE_GAP - self.timers.now - 0.01)
+        self.assertEqual(len(self.runner.writes()), 1)
+        self.timers.advance(0.02)
+        self.assertEqual([argv[4] for argv in self.runner.writes()], ["85", "90"])
+
+    def test_cancelled_authorization_does_not_delay_the_next_write(self):
+        self.control.drag(85)
+        self.timers.advance(1)
+        self.runner.finish(126, "")
+        self.control.set_editing(True)
+        self.control.drag(90)
+        self.control.set_editing(False)
+        self.assertEqual(len(self.runner.writes()), 2)
+
+    def test_first_write_is_not_delayed(self):
+        self.control.set_editing(True)
+        self.control.drag(90)
+        self.control.set_editing(False)
+        self.assertEqual(len(self.runner.writes()), 1)
+
+    def test_helper_rate_limit_is_explained(self):
+        self.control.drag(85)
+        self.timers.advance(1)
+        self.runner.finish(3, '{"ok":false,"error":"rate-limited","retry_after":7}\n')
+        self.assertEqual(self.state.status, FAILED)
+        self.assertIn("太頻繁", self.state.message)
+        self.assertIn("7", self.state.message)
 
     def test_read_back_is_polled_three_times(self):
         self.control.drag(85)
@@ -406,7 +448,7 @@ class Automatic(Base):
         self.assertEqual([argv[4] for argv in self.runner.writes()], ["85"])
         self.sysfs(85)
         self.runner.finish(0, ok_output(85))
-        self.timers.advance(0.2)
+        self.timers.advance(ChargeLimit.MIN_WRITE_GAP + 0.2)
         self.assertEqual([argv[4] for argv in self.runner.writes()], ["85", "95"])
 
     def test_gives_up_after_ten_seconds(self):
@@ -439,6 +481,7 @@ class Automatic(Base):
         self.assertEqual(len(self.runner.writes()), 1)
         self.sysfs(90)
         self.runner.finish(0, ok_output(90))
+        self.timers.advance(ChargeLimit.MIN_WRITE_GAP)
         self.assertEqual([argv[4] for argv in self.runner.writes()], ["90", "95"])
 
     def test_user_drag_during_an_automatic_write_is_written_afterwards(self):
@@ -448,6 +491,7 @@ class Automatic(Base):
         self.assertEqual(len(self.runner.writes()), 1)
         self.sysfs(90)
         self.runner.finish(0, ok_output(90))
+        self.timers.advance(ChargeLimit.MIN_WRITE_GAP)
         self.assertEqual([argv[4] for argv in self.runner.writes()], ["90", "85"])
 
     def test_not_ready(self):

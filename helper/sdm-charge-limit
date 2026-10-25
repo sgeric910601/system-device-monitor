@@ -1,41 +1,26 @@
 #!/usr/bin/python3 -IB
 """系統與裝置監看：充電上限的管理員小程式（由 pkexec，或開機與喚醒後由 systemd 單元執行）。
 
-用法：
-  sdm-charge-limit set <電池> <上限> [--persist on|off]
-  sdm-charge-limit status
-  sdm-charge-limit restore --from-unit        只由 system-device-monitor-charge-limit.service 執行
-  sdm-charge-limit --protocol                 不需要權限
-參數（不符時結束碼 2，在檢查權限之前）：電池名稱只能是 1–32 個英文字母、數字或底線；上限是
-50–100 的十進位整數（不接受前導 0、正負號、空白、小數或指數）；--persist 最多一次。
-不接受起點：起點只在驅動需要（上限不高於目前的起點）時自動改成上限 − 5。
-權限：
-- set、status：必須以 root 執行，PKEXEC_UID 為十進位、在 /etc/login.defs 的 UID_MIN～UID_MAX 之間
-  （讀不到時 1000～60000）、不是 root 或 nobody、帳號存在。
-- restore：必須以 root 執行而且沒有 PKEXEC_UID（經由 pkexec 一律拒絕），INVOCATION_ID 是 systemd
-  設定的 32 位小寫十六進位，父程序是 PID 1。
-- 執行路徑（sys.argv[0]，不做任何正規化）必須剛好是兩個安裝位置之一，否則 pkexec 可能沒有使用
-  本程式的 polkit 動作；依位置決定單元與狀態檔。自己、單元檔與路徑上每一層都必須屬於 root 且
-  群組與其他人不可寫。
-一次只執行一個：set、status 與 restore 在讀取門檻前先以 flock 取得
-/run/system-device-monitor/charge-limit.lock（root 擁有、0600，其他帳號無法開啟它來卡住小程式），
-最多等 10 秒，拿不到時結束碼 3（busy）。
-電池：/sys/class/power_supply/<電池> 的實際位置必須在 /sys/devices 之下，type 為 Battery、
-scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold；屬性檔一律以 O_NOFOLLOW
-開啟，必須是一般檔案。
-寫入：上限不高於目前的起點時，先把起點改成上限 − 5，再寫上限；否則只寫上限。
-已經相同的值不再寫。屬性檔以 O_WRONLY｜O_NOFOLLOW 開啟、
-寫入十進位數字，再讀回確認（最多 3 次、間隔 0.3 秒）；不符時結束碼 3 並回報實際的值。
-保留：--persist on 把這次的電池與上限寫入 /var/lib/system-device-monitor 的狀態檔（目錄 0755、
-檔案 0644，先寫同目錄的暫存檔並 fsync 再整檔取代），並啟用單元；--persist off 刪除狀態檔並停用單元；
-沒有指定時不改變。寫入沒有套用時不改變保留狀態。restore 只讀狀態檔（root 擁有的一般檔案、
-4 KB 以內、格式完全相符），電池仍在時才重新套用，不執行任何外部程式。
-只以參數清單執行 /usr/bin/systemctl（不經過 shell），固定的 PATH；標準輸出只有一行 JSON；
-結束碼固定（0 成功、2 參數錯誤、3 失敗或沒有套用、4 沒有權限）；系統日誌只記錄動作名稱與結果。
-只使用標準函式庫。
+用法：set <電池> <上限> [--persist on|off]｜status｜restore --from-unit（只給單元）｜--protocol。
+完整的規則見 docs/SECURITY.md「充電上限小程式」，重點：
+- 參數不符時結束碼 2（在檢查權限之前）：電池 1–32 個英數或底線；上限是 50–100 的十進位整數
+  （不接受前導 0、正負號、空白、小數或指數）；不接受起點，只在上限不高於目前的起點時自動改成上限 − 5。
+- set、status：root，而且 PKEXEC_UID 是 /etc/login.defs 範圍內、存在的一般帳號。restore：root、
+  沒有 PKEXEC_UID、有 systemd 的 INVOCATION_ID、父程序是 PID 1。否則結束碼 4。
+- 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己、單元檔與每一層上層目錄
+  都屬於 root 且群組與其他人不可寫。
+- 一次只執行一個：先以 flock 取得 /run/system-device-monitor/charge-limit.lock（root 0600），
+  最多等 10 秒（busy）；同一顆電池兩次 set 至少相隔 10 秒（rate-limited，記在 charge-limit.times）。
+- 電池的實際位置在 /sys/devices 之下、type 為 Battery、scope 不是 Device、有 charge_control_end_threshold；
+  屬性檔以 O_NOFOLLOW 開啟並必須是一般檔案；寫入十進位數字後讀回確認（3 次、間隔 0.3 秒）。
+- --persist on 寫入 /var/lib/system-device-monitor 的狀態檔（0644，暫存檔＋fsync＋整檔取代）並啟用單元，
+  off 刪除並停用，沒有指定時不改變；restore 只讀狀態檔並重新套用，不執行外部程式。
+- 只以參數清單執行 /usr/bin/systemctl、固定的 PATH；標準輸出只有一行 JSON；結束碼 0、2、3（失敗或
+  沒有套用）、4；系統日誌只記錄動作與結果。只使用標準函式庫。
 """
 import fcntl
 import json
+import math
 import os
 import pwd
 import re
@@ -56,6 +41,7 @@ FROM_UNIT = "--from-unit"
 OPTION_PERSIST = "--persist"
 PERSIST_ON, PERSIST_OFF, PERSIST_UNCHANGED = "on", "off", "unchanged"
 NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
+RATE_LIMITED = "rate-limited"
 LOGGED_ERRORS = ("busy",)               # 會寫進系統日誌的錯誤代號；其他一律記成 failed
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
@@ -93,6 +79,8 @@ LOCK_NAME = "charge-limit.lock"
 LOCK_MODE = 0o600
 LOCK_WAIT_S = 10.0
 LOCK_POLL_S = 0.1
+TIMES_NAME = "charge-limit.times"       # 各電池上次 set 的開機後秒數
+MIN_WRITE_GAP_S = 10.0
 PRIVATE_BITS = 0o077
 DIRECTORY_MODE = 0o755
 FILE_MODE = 0o644
@@ -113,6 +101,14 @@ class NotPermitted(Exception):
 
 class Failed(Exception):
     """無法安全地完成；訊息是固定的英文代號（也是輸出的 error）。"""
+
+
+class RateLimited(Failed):
+    """同一顆電池距離上次寫入不到 10 秒；retry_after 為還要等的秒數（無條件進位）。"""
+
+    def __init__(self, retry_after):
+        super().__init__(RATE_LIMITED)
+        self.retry_after = retry_after
 
 
 class Outcome(Exception):
@@ -158,6 +154,7 @@ class Context(NamedTuple):
     ppid: int = 0
     write: Callable = os.write
     clock: Callable = time.monotonic
+    boottime: Callable = lambda: time.clock_gettime(time.CLOCK_BOOTTIME)
 
 
 def log(message):
@@ -208,7 +205,8 @@ def production_context():
     return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
                    user_exists=user_exists, helper_path=sys.argv[0],
                    uid_range=login_uid_range(), sleep=time.sleep, ppid=os.getppid(),
-                   write=os.write, clock=time.monotonic)
+                   write=os.write, clock=time.monotonic,
+                   boottime=lambda: time.clock_gettime(time.CLOCK_BOOTTIME))
 
 
 # ── 參數 ───────────────────────────────────────────────────
@@ -311,11 +309,21 @@ def check_location(context, layout):
 
 # ── 一次只執行一個 ─────────────────────────────────────────
 
-def open_child_directory(context, parent_path, name):
-    """開啟（必要時以 0755 建立）parent_path 底下的目錄；必須受信任。"""
-    parent = open_directory(context, parent_path)
+def make_directory(parent, name):
+    """建立目錄並回傳 True；已存在時回傳 False（不改變既有目錄的權限）。"""
     try:
-        created = make_directory(parent, name)
+        os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+    except FileExistsError:
+        return False
+    return True
+
+
+def open_child_directory(context, relative, create):
+    """開啟（create 時必要時以 0755 建立）relative 這個目錄；它與每一層上層都必須受信任。"""
+    parent = open_directory(context, os.path.dirname(relative))
+    try:
+        name = os.path.basename(relative)
+        created = create and make_directory(parent, name)
         fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
     finally:
         os.close(parent)
@@ -331,8 +339,7 @@ def open_child_directory(context, parent_path, name):
 
 def open_lock(context):
     """root 擁有、只有 root 能開啟的鎖檔（0600、一般檔案、不跟隨符號連結）。"""
-    directory = open_child_directory(context, os.path.dirname(RUN_DIR),
-                                     os.path.basename(RUN_DIR))
+    directory = open_child_directory(context, RUN_DIR, True)
     try:
         fd = os.open(LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
                      | os.O_CLOEXEC, LOCK_MODE, dir_fd=directory)
@@ -359,6 +366,54 @@ def acquire_lock(context):
                 os.close(fd)
                 raise Failed("busy") from None
             context.sleep(LOCK_POLL_S)
+
+
+# ── 寫入間隔 ───────────────────────────────────────────────
+
+def read_times(directory, owner):
+    """各電池上次 set 的開機後秒數；檔案必須是 root 的 0600 一般檔案，內容不合格式時當成空的。"""
+    try:
+        fd = os.open(TIMES_NAME, READ_FLAGS, dir_fd=directory)
+    except FileNotFoundError:
+        return {}
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_mode & PRIVATE_BITS:
+            raise Failed("untrusted-file")
+        data = handle.read(STATE_MAX_BYTES + 1)
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {key: stamp for key, stamp in value.items() if SUPPLY_PATTERN.fullmatch(key)
+            and type(stamp) in (int, float) and math.isfinite(stamp)}
+
+
+def check_rate(context, supply):
+    directory = open_child_directory(context, RUN_DIR, True)
+    try:
+        last = read_times(directory, context.owner).get(supply)
+    finally:
+        os.close(directory)
+    elapsed = None if last is None else context.boottime() - last
+    if elapsed is not None and 0 <= elapsed < MIN_WRITE_GAP_S:
+        raise RateLimited(math.ceil(MIN_WRITE_GAP_S - elapsed))
+
+
+def record_write(context, supply):
+    """記下這顆電池的寫入時間，並丟掉已經超過間隔的其他紀錄。"""
+    directory = open_child_directory(context, RUN_DIR, True)
+    try:
+        now = context.boottime()
+        times = {key: stamp for key, stamp in read_times(directory, context.owner).items()
+                 if 0 <= now - stamp < MIN_WRITE_GAP_S}
+        times[supply] = now
+        replace_file(directory, TIMES_NAME, (json.dumps(times, sort_keys=True) + "\n").encode(),
+                     LOCK_MODE)
+    finally:
+        os.close(directory)
 
 
 # ── 電池的屬性檔 ───────────────────────────────────────────
@@ -468,34 +523,6 @@ def apply_request(context, dir_fd, request):
 
 # ── 保留（狀態檔與單元）───────────────────────────────────
 
-def make_directory(parent, name):
-    """建立目錄並回傳 True；已存在時回傳 False（不改變既有目錄的權限）。"""
-    try:
-        os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
-    except FileExistsError:
-        return False
-    return True
-
-
-def open_state_directory(context, create):
-    """/var/lib/system-device-monitor 的描述子；新建的一律 0755，不受 umask 影響。"""
-    parent = open_directory(context, STATE_PARENT)
-    try:
-        name = os.path.basename(STATE_DIR)
-        created = create and make_directory(parent, name)
-        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
-    finally:
-        os.close(parent)
-    try:
-        if created:
-            os.fchmod(fd, DIRECTORY_MODE)
-        check_directory(fd, context.owner)
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
-
-
 def replace_file(dir_fd, name, data, mode):
     """先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW）並 fsync，再整檔取代；只取代一般檔案。"""
     try:
@@ -529,7 +556,7 @@ def state_bytes(request):
 
 
 def save_state(context, layout, request):
-    directory = open_state_directory(context, create=True)
+    directory = open_child_directory(context, STATE_DIR, True)
     try:
         replace_file(directory, layout.state, state_bytes(request), FILE_MODE)
     finally:
@@ -539,7 +566,7 @@ def save_state(context, layout, request):
 def remove_state(context, layout):
     """刪除狀態檔（目錄空了一併刪除）；回傳原本是否存在。"""
     try:
-        directory = open_state_directory(context, create=False)
+        directory = open_child_directory(context, STATE_DIR, False)
     except FileNotFoundError:
         return False
     try:
@@ -603,7 +630,7 @@ def parse_state(data):
 def read_state(context, layout):
     """狀態檔的位元組；不存在時為 None。必須是 root 擁有、群組與其他人不可寫的一般檔案。"""
     try:
-        directory = open_state_directory(context, create=False)
+        directory = open_child_directory(context, STATE_DIR, False)
     except FileNotFoundError:
         return None
     try:
@@ -633,11 +660,14 @@ def load_state(context, layout):
 # ── 動作 ───────────────────────────────────────────────────
 
 def set_limit(context, layout, request):
+    """寫入之前確認間隔；只要開始嘗試寫入（不論結果）就記下時間。"""
+    check_rate(context, request.supply)
     fd = open_battery(context, request.supply)
     try:
         end, start = apply_request(context, fd, request)
     finally:
         os.close(fd)
+        record_write(context, request.supply)
     try:
         persist(context, layout, request)
     except (Failed, OSError):
@@ -732,6 +762,9 @@ def outcome_of(command, request, env, context):
         result = run_action(command, request, env, context)
     except NotPermitted:
         return EXIT_NOT_PERMITTED, {"ok": False, "error": "not-permitted"}, "not-permitted"
+    except RateLimited as error:
+        return EXIT_FAILED, {"ok": False, "error": RATE_LIMITED,
+                             "retry_after": error.retry_after}, RATE_LIMITED
     except Outcome as outcome:
         return EXIT_FAILED, {"ok": False, "error": outcome.error, "applied": outcome.end,
                              "applied_start": outcome.start}, outcome.error

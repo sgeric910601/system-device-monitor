@@ -20,6 +20,7 @@ DEB_UNIT = "system-device-monitor-charge-limit.service"
 LOCAL_UNIT = "system-device-monitor-local-charge-limit.service"
 DEB_STATE = "var/lib/system-device-monitor/charge-limit.json"
 LOCK = "run/system-device-monitor/charge-limit.lock"
+TIMES = "run/system-device-monitor/charge-limit.times"
 LOCAL_STATE = "var/lib/system-device-monitor/charge-limit-local.json"
 SYSTEMCTL = "/usr/bin/systemctl"
 USER = 1000
@@ -79,6 +80,7 @@ class Base(unittest.TestCase):
         self.root = FakeRoot(self)
         self.runner, self.driver = Runner(), Driver()
         self.output, self.logged, self.sleeps, self.on_sleep, self.now = [], [], [], [], 0.0
+        self.boot, self.boot_step = 1000.0, 100.0   # 開機後的秒數；預設每次讀取都過了很久
         self.root.file("usr/lib/systemd/system/" + DEB_UNIT)
         self.root.file("etc/systemd/system/" + LOCAL_UNIT)
         for path in (ChargeLimit.DEB_HELPER, ChargeLimit.LOCAL_HELPER):
@@ -86,6 +88,10 @@ class Base(unittest.TestCase):
         self.root.directory("var/lib")
         self.root.directory("run")
         self.root.directory("sys/class/power_supply")
+
+    def boottime(self):
+        self.boot += self.boot_step
+        return self.boot
 
     def sleep(self, seconds):
         """假的 sleep：記錄並推進假時鐘，再執行測試掛上的動作（例如放開別人拿著的鎖）。"""
@@ -114,7 +120,8 @@ class Base(unittest.TestCase):
         return MODULE.Context(
             root=str(self.root.path), owner=os.getuid(), run=self.runner, euid=euid,
             user_exists=known, helper_path=helper or self.helper_path, uid_range=uid_range,
-            sleep=self.sleep, ppid=ppid, write=self.driver, clock=lambda: self.now)
+            sleep=self.sleep, ppid=ppid, write=self.driver, clock=lambda: self.now,
+            boottime=self.boottime)
 
     def main(self, argv, env=ENV, **options):
         return helper.main(argv, dict(env), self.context(**options), emit=self.output.append,

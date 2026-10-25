@@ -134,6 +134,8 @@ class ChargeLimit:
     LOCK_NAME = "charge-limit.lock"
     LOCK_WAIT = 10.0            # 另一個小程式正在執行時最多等幾秒，之後結束碼 3（busy）
     LOCK_POLL = 0.1
+    TIMES_NAME = "charge-limit.times"   # 各電池上次寫入的時間（root 0600，與鎖檔同一目錄）
+    MIN_WRITE_GAP = 10.0        # 同一顆電池兩次寫入至少相隔幾秒；看板自己等，太快時小程式拒絕
     SUPPLY_PATTERN = r"[A-Za-z0-9_]{1,32}"     # 電池名稱：BAT0、BATT、CMB0…
     MIN_LIMIT = 50              # 小程式接受的上限範圍（含）
     MAX_LIMIT = 100             # 100＝不限制

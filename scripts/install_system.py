@@ -17,8 +17,8 @@
   已安裝 .deb 套件時拒絕（兩者擇一）。
 - remove：停用並停止 socket 與服務、停用充電上限的單元，只刪除 FILES 列出的檔案、drop-in、
   sockets.target.wants 與 multi-user／sleep.target.wants 的符號連結、原始碼版保留的
-  充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）與充電上限小程式的鎖檔
-  （/run/system-device-monitor/charge-limit.lock）；目錄裡還有其他檔案時保留目錄。
+  充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）與充電上限小程式的鎖檔、
+  寫入時間（/run/system-device-monitor/charge-limit.lock、.times）；目錄裡還有其他檔案時保留目錄。
 標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）。
 只使用標準函式庫，不載入專案裡的任何模組。
 """
@@ -69,6 +69,7 @@ STATE_DIR = "var/lib/system-device-monitor"
 LIMIT_STATE = STATE_DIR + "/charge-limit-local.json"     # 只刪除原始碼版自己的狀態檔
 RUN_DIR = "run/system-device-monitor"
 LIMIT_LOCK = RUN_DIR + "/charge-limit.lock"     # sdm-charge-limit 的鎖檔（執行期，重開機就消失）
+LIMIT_TIMES = RUN_DIR + "/charge-limit.times"   # 各電池上次寫入的時間（執行期）
 PACKAGE = "system-device-monitor"
 NOT_INSTALLED = ("not-installed", "config-files")
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -370,6 +371,7 @@ def remove(context, stage, digest, uid):
     remove_entry(context, LIMIT_STATE)
     remove_empty_directory(context, STATE_DIR)
     remove_entry(context, LIMIT_LOCK)
+    remove_entry(context, LIMIT_TIMES)
     remove_empty_directory(context, RUN_DIR)
     remove_empty_directory(context, HELPER_DIR)
     systemctl(context, "daemon-reload")

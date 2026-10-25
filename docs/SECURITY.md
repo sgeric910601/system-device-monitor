@@ -127,6 +127,12 @@
   （以 O_NOFOLLOW 開啟；權限或擁有者不符時拒絕），其他帳號無法開啟它來佔住鎖；目錄與 CPU 功耗的
   socket 共用（root、0755，從 /run 逐層確認）。別的小程式拿著鎖時每 0.1 秒再試，10 秒後以結束碼 3
   （busy）放棄。所以看板、命令列與開機後的重新套用不會交錯寫入。
+- 寫入間隔：同一顆電池兩次 set 至少相隔 10 秒。每次開始嘗試寫入（不論結果）後，把開機後的時鐘
+  （CLOCK_BOOTTIME，睡眠也會計時）記在同一目錄的 charge-limit.times（root、0600，整檔取代，
+  只留 10 秒內的紀錄）；太快的呼叫以結束碼 3（rate-limited，附 retry_after 秒數）拒絕，
+  不讀也不寫門檻。restore 與 status 不受限制也不計入。看板自己會等滿 10 秒才執行小程式，
+  正常操作不會碰到這個限制。這是為了之後可選的免密碼規則：即使不必輸入密碼，也不能讓其他程式
+  在短時間內反覆改寫門檻或反覆啟用、停用單元。
 - 電池檢查：/sys/class/power_supply/<電池> 的實際位置（realpath）必須在 /sys/devices 之下；
   type 必須是 Battery、scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold。
   所有屬性檔都在電池目錄的描述子底下以 O_NOFOLLOW｜O_NONBLOCK 開啟，必須是一般檔案。
@@ -215,7 +221,7 @@
   程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
   remove 只刪除它安裝的檔案、drop-in、sockets.target.wants 與充電上限單元在
   multi-user.target.wants／sleep.target.wants 的符號連結、原始碼版保留的充電上限
-  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限小程式的鎖檔。
+  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限小程式的鎖檔、寫入時間。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
   Python 與它的參數；只在你自己執行這個指令時出現。
 
@@ -224,8 +230,8 @@
 - postinst 只重新載入 systemd；socket 原本已啟用時才重新啟動它。從不自動啟用。
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
   也停用充電上限的單元（刪除它的 wants 連結），並刪除 /var/lib/system-device-monitor/charge-limit.json
-  （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）與 /run/system-device-monitor/charge-limit.lock
-  （目錄空了才刪目錄）。
+  （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）與 /run/system-device-monitor 的
+  charge-limit.lock、charge-limit.times（目錄空了才刪目錄）。
 - postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），並再確認一次
   charge-limit.json 已刪除；從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。

@@ -9,6 +9,8 @@
 - 使用者拖動 → CommitDebouncer（放開或停 0.6 秒）→ pkexec 小程式 set <電池> <上限>
   --persist on|off（依「開機與喚醒後保留」），逾時 120 秒；成功後再以一般權限讀 sysfs 確認
   （最多 3 次、間隔 0.3 秒）。驅動不接受某個值時改用實際套用的值，並從選項移除被拒絕的值。
+- 小程式要求同一顆電池兩次寫入至少相隔 10 秒：距離上次執行小程式不到 10 秒時，先等到滿 10 秒
+  （狀態維持「套用中」）再執行，正常操作不會被拒絕。
 - 自動寫入（之後的智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
   每 0.1 秒確認一次，最多等 10 秒；不帶 --persist，不改變使用者保留的值與重新套用的單元。
 不需要授權就能知道的事（是否支援、目前的上限、是否保留）都以一般權限讀取，
@@ -34,11 +36,13 @@ from sdm.services.privileged import (KIND_DEB, KIND_LOCAL, failure_text, parse_p
 UNSUPPORTED, NOT_INSTALLED, CHECKING = "unsupported", "not-installed", "checking"
 IDLE, APPLYING, APPLIED, FAILED = "idle", "applying", "applied", "failed"
 NOT_APPLIED, PERSIST_FAILED, BUSY = "not-applied", "persist-failed", "busy"
+RATE_LIMITED = "rate-limited"
 EXIT_FAILED = 3
 READ_BACK = "已執行，但讀回的上限是 {}"
 REFUSED = "這顆電池不接受 {}%，目前是 {}；可以改選 {}%"
 PERSIST_TEXT = "上限已套用，但無法變更「開機與喚醒後保留」"
 BUSY_TEXT = "另一個充電上限的調整正在進行，請稍後再試"
+RATE_TEXT = "調整太頻繁，請 {} 秒後再試"
 UNREADABLE = "讀不到"
 
 
@@ -118,9 +122,11 @@ class ChargeControl:
     """on_change() 在狀態改變後呼叫；runner 為 sdm.services.privileged.HelperRunner。"""
 
     def __init__(self, runner, on_change, root=Path("/"), lstat=os.lstat,
-                 schedule=glib_schedule, cancel=glib_cancel, wall=time.time):
+                 schedule=glib_schedule, cancel=glib_cancel, wall=time.time,
+                 clock=time.monotonic):
         self.runner, self.on_change, self.root, self.lstat = runner, on_change, Path(root), lstat
-        self.schedule, self.cancel, self.wall = schedule, cancel, wall
+        self.schedule, self.cancel, self.wall, self.clock = schedule, cancel, wall, clock
+        self.last_run, self.gap_timer = None, None
         self.state, self.generation, self.stopped = ChargeState(), 0, False
         self.debouncer = CommitDebouncer(schedule, cancel, self.commit)
         self.queue, self.automatic, self.poll_timer, self.read_timer = [], False, None, None
@@ -310,13 +316,26 @@ class ChargeControl:
         if persist is not None:
             argv += ["--persist", "on" if persist else "off"]
         self.update(busy=True, outcome="", message="")
-        self.runner.run(argv, ChargeLimit.PKEXEC_TIMEOUT,
-                        lambda status, output: self.helper_done(target, status, output,
-                                                                finished))
+        wait = 0 if self.last_run is None else \
+            self.last_run + ChargeLimit.MIN_WRITE_GAP - self.clock()
+        if wait > 0:
+            self.gap_timer = self.schedule(wait, lambda: self.run_helper(argv, target, finished))
+        else:
+            self.run_helper(argv, target, finished)
+
+    def run_helper(self, argv, target, finished):
+        self.gap_timer = None
+        if not self.stopped:
+            self.runner.run(argv, ChargeLimit.PKEXEC_TIMEOUT,
+                            lambda status, output: self.helper_done(target, status, output,
+                                                                    finished))
+        return False
 
     def helper_done(self, target, status, output, finished):
         if self.stopped:
             return
+        if status in (0, EXIT_FAILED):          # 小程式真的執行了（取消授權等不算）
+            self.last_run = self.clock()
         result = parse_result(output)
         if status == 0 and result is not None and result["ok"]:
             self.confirm(target, ChargeLimit.READBACK_ATTEMPTS, finished)
@@ -351,6 +370,11 @@ class ChargeControl:
             self.finish(False, normalized(applied), PERSIST_TEXT, finished)
         elif status == EXIT_FAILED and error == BUSY:
             self.finish(False, self.state.limit, BUSY_TEXT, finished)
+        elif status == EXIT_FAILED and error == RATE_LIMITED:
+            wait = result.get("retry_after")
+            seconds = wait if type(wait) is int and 0 < wait <= ChargeLimit.MIN_WRITE_GAP \
+                else round(ChargeLimit.MIN_WRITE_GAP)
+            self.finish(False, self.state.limit, RATE_TEXT.format(seconds), finished)
         else:
             reading = read_thresholds(self.root, self.state.supply)
             limit = self.state.limit if reading is None else normalized(reading.end)
@@ -365,7 +389,7 @@ class ChargeControl:
     def stop(self):
         self.stopped = True
         self.debouncer.stop()
-        for source in (self.poll_timer, self.read_timer):
+        for source in (self.poll_timer, self.read_timer, self.gap_timer):
             if source is not None:
                 self.cancel(source)
 
