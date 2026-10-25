@@ -53,6 +53,17 @@
     polkit 規則改成免密碼」的動作：目前是充電上限，之後還有智慧充電的定時喚醒。它們的預設仍然
     需要管理員密碼（auth_admin_keep），套件與原始碼安裝都不安裝任何規則。必須每次都輸入密碼的動作
     （例如本文件的 CPU 功耗取樣、之後的安裝更新）絕不使用這個前綴。
+  - 之後可選的免密碼規則（只在使用者自己開啟時安裝）必須同時符合：
+    - 只對本機、作用中的工作階段生效（`subject.local && subject.active`），而且只對開啟它的那個帳號
+      （比對 `subject.user`）；遠端、非作用中或其他帳號一律回到預設（要密碼）。
+    - 比對完整的動作 ID，例如 `action.id == "tw.local.system-device-monitor.unattended.charge-limit"`
+      （原始碼安裝為 `...unattended.local.charge-limit`），不使用前綴比對。
+    - 只涵蓋 set：pkexec 124 支援 `org.freedesktop.policykit.exec.argv1` 註記，可以讓 set 使用自己的
+      動作（argv1＝set），status 留在另一個要密碼的動作；做不到時，規則必須檢查
+      `action.lookup("command_line")` 以「小程式的完整路徑＋空白＋set＋空白」開頭。restore 本來就
+      無法經由 pkexec 執行。
+    - 免密碼不放寬小程式的任何檢查：參數驗證、一次只執行一個與同一顆電池 10 秒的寫入間隔都照常生效，
+      而且不接受起點，只能寫 50–100% 的上限與開關保留。
 
 ## 開關小程式（sdm-cpu-power）
 

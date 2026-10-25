@@ -120,6 +120,13 @@ class Policies(unittest.TestCase):
         local = (POLICIES/(ChargeLimit.ACTION_LOCAL + ".policy")).read_text(encoding="utf-8")
         self.assertEqual(text.replace("（套件）", "（原始碼安裝）"), local)
 
+    def test_security_notes_set_the_conditions_for_a_future_rule(self):
+        text = (HELPERS.parent/"docs/SECURITY.md").read_text(encoding="utf-8")
+        for words in ("subject.local", "subject.active", "org.freedesktop.policykit.exec.argv1",
+                      f'action.id == "{ChargeLimit.ACTION_DEB}"', 'action.lookup("command_line")',
+                      "只涵蓋 set"):
+            self.assertIn(words, text)
+
     def test_no_polkit_rules_are_shipped(self):
         self.assertEqual(sorted(path.suffix for path in POLICIES.iterdir()), [".policy"] * 4)
 
