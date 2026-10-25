@@ -86,6 +86,7 @@ class ChargeLimit(unittest.TestCase):
         self.assertLess(remove, check)
         self.assertLess(check, purge)
         self.assertNotIn("sudo rm -f /var/lib/system-device-monitor/charge-limit.json", WORKFLOW)
+        self.assertIn("test ! -e /run/system-device-monitor/charge-limit.lock", WORKFLOW)
 
     def test_remove_and_purge_leave_nothing_behind(self):
         for path in ("/usr/lib/systemd/system/system-device-monitor-charge-limit.service",

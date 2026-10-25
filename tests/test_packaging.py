@@ -204,6 +204,21 @@ class ScriptRuns(unittest.TestCase):
         self.assertFalse(any(os.path.lexists(link) for link in self.limit_wants))
         self.assertFalse(self.state.exists())
 
+    def test_prerm_remove_deletes_the_helper_lock(self):
+        run = self.root/"run/system-device-monitor"
+        run.mkdir(parents=True)
+        (run/"charge-limit.lock").write_text("")
+        self.run_script("prerm", "remove")
+        self.assertFalse(run.exists())
+
+    def test_prerm_remove_keeps_other_runtime_files(self):
+        run = self.root/"run/system-device-monitor"
+        run.mkdir(parents=True)
+        (run/"charge-limit.lock").write_text("")
+        (run/"other").write_text("")
+        self.run_script("prerm", "remove")
+        self.assertEqual(sorted(path.name for path in run.iterdir()), ["other"])
+
     def test_prerm_remove_keeps_other_state_files(self):
         self.populate_limit()
         local = self.state/"charge-limit-local.json"

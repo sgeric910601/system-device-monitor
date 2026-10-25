@@ -19,6 +19,7 @@ START = "charge_control_start_threshold"
 DEB_UNIT = "system-device-monitor-charge-limit.service"
 LOCAL_UNIT = "system-device-monitor-local-charge-limit.service"
 DEB_STATE = "var/lib/system-device-monitor/charge-limit.json"
+LOCK = "run/system-device-monitor/charge-limit.lock"
 LOCAL_STATE = "var/lib/system-device-monitor/charge-limit-local.json"
 SYSTEMCTL = "/usr/bin/systemctl"
 USER = 1000
@@ -77,13 +78,21 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = FakeRoot(self)
         self.runner, self.driver = Runner(), Driver()
-        self.output, self.logged, self.sleeps = [], [], []
+        self.output, self.logged, self.sleeps, self.on_sleep, self.now = [], [], [], [], 0.0
         self.root.file("usr/lib/systemd/system/" + DEB_UNIT)
         self.root.file("etc/systemd/system/" + LOCAL_UNIT)
         for path in (ChargeLimit.DEB_HELPER, ChargeLimit.LOCAL_HELPER):
             self.root.file(path.lstrip("/"), mode=0o755)
         self.root.directory("var/lib")
+        self.root.directory("run")
         self.root.directory("sys/class/power_supply")
+
+    def sleep(self, seconds):
+        """假的 sleep：記錄並推進假時鐘，再執行測試掛上的動作（例如放開別人拿著的鎖）。"""
+        self.sleeps.append(seconds)
+        self.now += seconds
+        for hook in self.on_sleep:
+            hook()
 
     def battery(self, name="BAT0", end=80, start=75, kind="Battery", scope=None,
                 device="platform/PNP0C0A:00"):
@@ -105,7 +114,7 @@ class Base(unittest.TestCase):
         return MODULE.Context(
             root=str(self.root.path), owner=os.getuid(), run=self.runner, euid=euid,
             user_exists=known, helper_path=helper or self.helper_path, uid_range=uid_range,
-            sleep=self.sleeps.append, ppid=ppid, write=self.driver)
+            sleep=self.sleep, ppid=ppid, write=self.driver, clock=lambda: self.now)
 
     def main(self, argv, env=ENV, **options):
         return helper.main(argv, dict(env), self.context(**options), emit=self.output.append,

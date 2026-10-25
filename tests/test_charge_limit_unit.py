@@ -23,7 +23,10 @@ HARDENING = {
 }
 SYSCALLS = ["@system-service", "~@privileged @resources"]
 TIMEOUTS = {"TimeoutStartSec": "30s", "TimeoutStopSec": "10s"}
-SERVICE_KEYS = set(HARDENING) | set(TIMEOUTS) | {"Type", "ExecStart", "SystemCallFilter"}
+RUNTIME = {"RuntimeDirectory": "system-device-monitor", "RuntimeDirectoryMode": "0755",
+           "RuntimeDirectoryPreserve": "yes"}
+SERVICE_KEYS = set(HARDENING) | set(TIMEOUTS) | set(RUNTIME) | {"Type", "ExecStart",
+                                                                 "SystemCallFilter"}
 SLEEP_TARGETS = ("suspend.target", "hibernate.target", "hybrid-sleep.target",
                  "suspend-then-hibernate.target")
 LANG = "{http://www.w3.org/XML/1998/namespace}lang"
@@ -38,7 +41,7 @@ class RestoreUnits(unittest.TestCase):
             with self.subTest(unit=name, key=key):
                 self.assertEqual(single(entries, "Service", key), value)
         self.assertEqual(entries[("Service", "SystemCallFilter")], SYSCALLS)
-        for key, value in TIMEOUTS.items():
+        for key, value in {**TIMEOUTS, **RUNTIME}.items():
             with self.subTest(unit=name, key=key):
                 self.assertEqual(single(entries, "Service", key), value)
         keys = {key for section, key in entries if section == "Service"}
@@ -71,6 +74,10 @@ class RestoreUnits(unittest.TestCase):
                          (ChargeLimit.DEB_STATE, ChargeLimit.LOCAL_STATE)):
             text = text.replace(old, new)
         self.assertEqual(text, (UNITS/ChargeLimit.LOCAL_UNIT).read_text(encoding="utf-8"))
+
+    def test_runtime_directory_holds_the_helper_lock(self):
+        self.assertEqual("/run/" + RUNTIME["RuntimeDirectory"], ChargeLimit.RUN_DIR)
+        self.assertEqual(helper.RUN_DIR, "run/" + RUNTIME["RuntimeDirectory"])
 
     def test_the_helper_accepts_the_unit_command(self):
         self.assertEqual(helper.parse_args(["restore", helper.FROM_UNIT]), ("restore", None))

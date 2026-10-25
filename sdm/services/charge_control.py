@@ -33,11 +33,12 @@ from sdm.services.privileged import (KIND_DEB, KIND_LOCAL, failure_text, parse_p
 
 UNSUPPORTED, NOT_INSTALLED, CHECKING = "unsupported", "not-installed", "checking"
 IDLE, APPLYING, APPLIED, FAILED = "idle", "applying", "applied", "failed"
-NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
+NOT_APPLIED, PERSIST_FAILED, BUSY = "not-applied", "persist-failed", "busy"
 EXIT_FAILED = 3
 READ_BACK = "已執行，但讀回的上限是 {}"
 REFUSED = "這顆電池不接受 {}%，目前是 {}；可以改選 {}%"
 PERSIST_TEXT = "上限已套用，但無法變更「開機與喚醒後保留」"
+BUSY_TEXT = "另一個充電上限的調整正在進行，請稍後再試"
 UNREADABLE = "讀不到"
 
 
@@ -348,6 +349,8 @@ class ChargeControl:
             self.finish(False, normalized(applied), message, finished)
         elif status == EXIT_FAILED and error == PERSIST_FAILED:
             self.finish(False, normalized(applied), PERSIST_TEXT, finished)
+        elif status == EXIT_FAILED and error == BUSY:
+            self.finish(False, self.state.limit, BUSY_TEXT, finished)
         else:
             reading = read_thresholds(self.root, self.state.supply)
             limit = self.state.limit if reading is None else normalized(reading.end)

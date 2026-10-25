@@ -17,6 +17,9 @@
 - 執行路徑（sys.argv[0]，不做任何正規化）必須剛好是兩個安裝位置之一，否則 pkexec 可能沒有使用
   本程式的 polkit 動作；依位置決定單元與狀態檔。自己、單元檔與路徑上每一層都必須屬於 root 且
   群組與其他人不可寫。
+一次只執行一個：set、status 與 restore 在讀取門檻前先以 flock 取得
+/run/system-device-monitor/charge-limit.lock（root 擁有、0600，其他帳號無法開啟它來卡住小程式），
+最多等 10 秒，拿不到時結束碼 3（busy）。
 電池：/sys/class/power_supply/<電池> 的實際位置必須在 /sys/devices 之下，type 為 Battery、
 scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold；屬性檔一律以 O_NOFOLLOW
 開啟，必須是一般檔案。
@@ -31,6 +34,7 @@ scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshol
 結束碼固定（0 成功、2 參數錯誤、3 失敗或沒有套用、4 沒有權限）；系統日誌只記錄動作名稱與結果。
 只使用標準函式庫。
 """
+import fcntl
 import json
 import os
 import pwd
@@ -52,6 +56,7 @@ FROM_UNIT = "--from-unit"
 OPTION_START, OPTION_PERSIST = "--start", "--persist"
 PERSIST_ON, PERSIST_OFF, PERSIST_UNCHANGED = "on", "off", "unchanged"
 NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
+LOGGED_ERRORS = ("busy",)               # 會寫進系統日誌的錯誤代號；其他一律記成 failed
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -84,6 +89,12 @@ STATE_DIR = STATE_PARENT + "/system-device-monitor"
 STATE_FORMAT = 1
 STATE_MAX_BYTES = 4096
 STATE_KEYS = frozenset({"format", "supply", "end", "start"})
+RUN_DIR = "run/system-device-monitor"   # 與 CPU 功耗的 socket 共用；單元以 RuntimeDirectory= 保留
+LOCK_NAME = "charge-limit.lock"
+LOCK_MODE = 0o600
+LOCK_WAIT_S = 10.0
+LOCK_POLL_S = 0.1
+PRIVATE_BITS = 0o077
 DIRECTORY_MODE = 0o755
 FILE_MODE = 0o644
 UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
@@ -148,6 +159,7 @@ class Context(NamedTuple):
     sleep: Callable = time.sleep
     ppid: int = 0
     write: Callable = os.write
+    clock: Callable = time.monotonic
 
 
 def log(message):
@@ -198,7 +210,7 @@ def production_context():
     return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
                    user_exists=user_exists, helper_path=sys.argv[0],
                    uid_range=login_uid_range(), sleep=time.sleep, ppid=os.getppid(),
-                   write=os.write)
+                   write=os.write, clock=time.monotonic)
 
 
 # ── 參數 ───────────────────────────────────────────────────
@@ -314,6 +326,58 @@ def check_location(context, layout):
             raise Failed("untrusted-file") from None
         finally:
             os.close(fd)
+
+
+# ── 一次只執行一個 ─────────────────────────────────────────
+
+def open_child_directory(context, parent_path, name):
+    """開啟（必要時以 0755 建立）parent_path 底下的目錄；必須受信任。"""
+    parent = open_directory(context, parent_path)
+    try:
+        created = make_directory(parent, name)
+        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        if created:
+            os.fchmod(fd, DIRECTORY_MODE)
+        check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_lock(context):
+    """root 擁有、只有 root 能開啟的鎖檔（0600、一般檔案、不跟隨符號連結）。"""
+    directory = open_child_directory(context, os.path.dirname(RUN_DIR),
+                                     os.path.basename(RUN_DIR))
+    try:
+        fd = os.open(LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | os.O_CLOEXEC, LOCK_MODE, dir_fd=directory)
+    finally:
+        os.close(directory)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+            or info.st_mode & PRIVATE_BITS:
+        os.close(fd)
+        raise Failed("untrusted-file")
+    return fd
+
+
+def acquire_lock(context):
+    """取得獨占鎖並回傳描述子（關閉即釋放）；別人拿著時每 0.1 秒再試，10 秒後放棄。"""
+    fd = open_lock(context)
+    deadline = context.clock() + LOCK_WAIT_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if context.clock() >= deadline:
+                os.close(fd)
+                raise Failed("busy") from None
+            context.sleep(LOCK_POLL_S)
 
 
 # ── 電池的屬性檔 ───────────────────────────────────────────
@@ -680,7 +744,11 @@ def run_action(command, request, env, context):
         caller_uid(env, context)
     layout = layout_for(context.helper_path)
     check_location(context, layout)
-    return ACTIONS[command](context, layout, request)
+    lock = acquire_lock(context)
+    try:
+        return ACTIONS[command](context, layout, request)
+    finally:
+        os.close(lock)
 
 
 def emit_json(value):
@@ -698,7 +766,8 @@ def outcome_of(command, request, env, context):
         return EXIT_FAILED, {"ok": False, "error": outcome.error, "applied": outcome.end,
                              "applied_start": outcome.start}, outcome.error
     except Failed as error:
-        return EXIT_FAILED, {"ok": False, "error": str(error)}, "failed"
+        logged = str(error) if str(error) in LOGGED_ERRORS else "failed"
+        return EXIT_FAILED, {"ok": False, "error": str(error)}, logged
     except OSError:
         return EXIT_FAILED, {"ok": False, "error": "failed"}, "failed"
     return EXIT_OK, result, "skipped" if result.get("restored") is False else "ok"

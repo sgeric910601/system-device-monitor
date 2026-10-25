@@ -4,7 +4,8 @@
 # restore 只讀狀態檔、重新寫入同一顆電池的門檻，不執行任何外部程式。
 # 以 root 執行（sysfs 的門檻檔屬於 root），但沒有任何能力；只有 /sys/devices 可寫
 # （/sys/class/power_supply 底下只是指向 /sys/devices 的符號連結），
-# 其他檔案系統唯讀，沒有網路，看不到家目錄與其他程序。
+# 其他檔案系統唯讀（小程式的鎖檔所在的 /run/system-device-monitor 除外），
+# 沒有網路，看不到家目錄與其他程序。
 [Unit]
 Description=System Device Monitor charge limit restore
 After=multi-user.target suspend.target hibernate.target hybrid-sleep.target suspend-then-hibernate.target
@@ -26,6 +27,10 @@ PrivateTmp=yes
 PrivateIPC=yes
 ProtectSystem=strict
 ReadWritePaths=/sys/devices
+# 小程式的鎖檔在 /run/system-device-monitor（與 CPU 功耗的 socket 共用），停止時不刪除
+RuntimeDirectory=system-device-monitor
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

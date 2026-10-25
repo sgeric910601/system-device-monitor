@@ -305,6 +305,13 @@ class UserWrites(Base):
         self.assertEqual((self.state.status, self.state.limit), (FAILED, 85))
         self.assertIn("保留", self.state.message)
 
+    def test_another_run_in_progress(self):
+        self.control.drag(85)
+        self.timers.advance(1)
+        self.runner.finish(3, '{"ok":false,"error":"busy"}\n')
+        self.assertEqual(self.state.status, FAILED)
+        self.assertIn("另一個", self.state.message)
+
     def test_other_helper_failures(self):
         self.control.drag(85)
         self.timers.advance(1)

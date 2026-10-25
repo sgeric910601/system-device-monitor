@@ -294,6 +294,10 @@ class Helper(unittest.TestCase):
                           ChargeLimit.STATE_MAX_BYTES))
         self.assertEqual("/" + helper.STATE_DIR, ChargeLimit.STATE_DIR)
         self.assertEqual(helper.SYSTEMCTL, ChargeLimit.SYSTEMCTL)
+        self.assertEqual(("/" + helper.RUN_DIR, helper.LOCK_NAME, helper.LOCK_WAIT_S,
+                          helper.LOCK_POLL_S),
+                         (ChargeLimit.RUN_DIR, ChargeLimit.LOCK_NAME, ChargeLimit.LOCK_WAIT,
+                          ChargeLimit.LOCK_POLL))
 
     def test_systemctl_runs_without_a_shell_and_with_a_fixed_path(self):
         seen = {}

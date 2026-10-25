@@ -130,6 +130,10 @@ class ChargeLimit:
     LOCAL_STATE = STATE_DIR + "/charge-limit-local.json"
     STATE_FORMAT = 1
     STATE_MAX_BYTES = 4096
+    RUN_DIR = "/run/system-device-monitor"      # 小程式的鎖檔（root 0600）；單元的 RuntimeDirectory
+    LOCK_NAME = "charge-limit.lock"
+    LOCK_WAIT = 10.0            # 另一個小程式正在執行時最多等幾秒，之後結束碼 3（busy）
+    LOCK_POLL = 0.1
     SUPPLY_PATTERN = r"[A-Za-z0-9_]{1,32}"     # 電池名稱：BAT0、BATT、CMB0…
     MIN_LIMIT = 50              # 小程式接受的上限範圍（含）
     MAX_LIMIT = 100             # 100＝不限制

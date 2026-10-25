@@ -315,6 +315,18 @@ class Remove(Base):
         self.assertFalse((self.root.path/"var/lib/system-device-monitor").exists())
         self.assertTrue((self.root.path/"var/lib").is_dir())
 
+    def test_removes_the_helper_lock(self):
+        self.root.file("run/system-device-monitor/charge-limit.lock", "")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertFalse((self.root.path/"run/system-device-monitor").exists())
+        self.assertTrue((self.root.path/"run").is_dir())
+
+    def test_keeps_other_runtime_files(self):
+        self.root.file("run/system-device-monitor/charge-limit.lock", "")
+        other = self.root.file("run/system-device-monitor/cpu-power.sock", "")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertTrue(other.exists())
+
     def test_keeps_the_package_state_file(self):
         self.root.file(LIMIT_STATE, "{}\n")
         package = self.root.file("var/lib/system-device-monitor/charge-limit.json", "{}\n")
@@ -385,6 +397,7 @@ class Consistency(unittest.TestCase):
         self.assertEqual(installer.LIMIT_UNIT, local_limit.unit)
         self.assertEqual("/" + installer.LIMIT_STATE, ChargeLimit.LOCAL_STATE)
         self.assertEqual(installer.LIMIT_STATE, limit.STATE_DIR + "/" + local_limit.state)
+        self.assertEqual(installer.LIMIT_LOCK, limit.RUN_DIR + "/" + limit.LOCK_NAME)
 
     def test_sources_exist_and_are_public(self):
         manifest = json.loads((ROOT/"package-files.json").read_text(encoding="utf-8"))

@@ -3,12 +3,13 @@
 假驅動要求起點小於上限（與 ThinkPad 等相同），寫入順序錯了就會以 EINVAL 拒絕；
 ASUS 型的假驅動只接受 60／80／100，其他值改成最接近的一個。
 """
+import fcntl
 import json
 import os
 
 from sdm.constants import ChargeLimit
 from tests.fixtures.charge_root import (DEB_STATE, DEB_UNIT, END, ENV, LOCAL_STATE, LOCAL_UNIT,
-                                        START, Base, Driver, helper)
+                                        LOCK, START, UNIT_ENV, Base, Driver, helper)
 
 
 class Ordering(Base):
@@ -328,3 +329,89 @@ class Status(Base):
         (self.root.path/"sys/class/power_supply/bad name").mkdir()
         self.assertEqual(self.main(["status"]), helper.EXIT_OK)
         self.assertEqual([item["supply"] for item in self.output[0]["batteries"]], ["BAT0"])
+
+
+class Serialized(Base):
+    """同一時間只有一個小程式在讀寫門檻：root 專用的鎖檔，等待最多 10 秒。"""
+
+    def setUp(self):
+        super().setUp()
+        self.battery(end=80, start=75)
+
+    def hold_lock(self):
+        path = self.root.path/LOCK
+        self.root.directory(os.path.dirname(LOCK))
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.chmod(path, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self.addCleanup(os.close, fd)
+        return fd
+
+    def test_lock_file_is_private_and_released_after_each_run(self):
+        previous = os.umask(0o077)
+        try:
+            self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+        finally:
+            os.umask(previous)
+        self.assertEqual(self.root.mode(LOCK), 0o600)
+        self.assertEqual(self.root.mode(os.path.dirname(LOCK)), 0o755)
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
+        self.assertEqual(self.sleeps, [])
+
+    def test_waits_for_another_run_then_proceeds(self):
+        fd = self.hold_lock()
+
+        def release():
+            if len(self.sleeps) == 10:          # 另一個小程式在 1 秒後結束
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        self.on_sleep.append(release)
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+        self.assertEqual(self.sleeps, [ChargeLimit.LOCK_POLL] * 10)
+        self.assertEqual(self.value("BAT0", END), 85)
+
+    def test_gives_up_after_ten_seconds(self):
+        self.hold_lock()
+        runs = ((lambda: self.main(["set", "BAT0", "85"])), (lambda: self.main(["status"])),
+                (lambda: self.restore()))
+        for run in runs:
+            with self.subTest(run=run):
+                self.output.clear()
+                started = self.now
+                self.assertEqual(run(), helper.EXIT_FAILED)
+                self.assertEqual(self.output, [{"ok": False, "error": "busy"}])
+                self.assertGreaterEqual(self.now - started, ChargeLimit.LOCK_WAIT)
+                self.assertLess(self.now - started, ChargeLimit.LOCK_WAIT + 1)
+        self.assertEqual(self.driver.writes, [])
+        self.assertEqual(self.logged, ["set busy", "status busy", "restore busy"])
+
+    def test_interleaved_runs_are_serialized(self):
+        inner, driver = [], self.driver
+
+        def nested(fd, data):
+            if not inner:
+                inner.append(helper.main(["set", "BAT0", "90"], dict(ENV), self.context(),
+                                         emit=self.output.append, report=self.logged.append))
+            return driver(fd, data)
+        context = self.context()._replace(write=nested)
+        code = helper.main(["set", "BAT0", "85"], dict(ENV), context, emit=self.output.append,
+                           report=self.logged.append)
+        self.assertEqual((code, inner), (helper.EXIT_OK, [helper.EXIT_FAILED]))
+        self.assertEqual(self.output[0], {"ok": False, "error": "busy"})
+        self.assertEqual(self.driver.writes, [(END, 85)])
+        self.assertEqual(self.value("BAT0", END), 85)
+
+    def test_untrusted_lock_files_are_refused(self):
+        lock = self.root.path/LOCK
+        self.root.directory(os.path.dirname(LOCK))
+        cases = (lambda: (lock.write_text(""), lock.chmod(0o644)),
+                 lambda: lock.symlink_to(self.root.file("elsewhere/lock", "")),
+                 lambda: os.chmod(lock.parent, 0o775))
+        for prepare in cases:
+            with self.subTest(prepare=prepare):
+                for path in (lock,):
+                    if os.path.lexists(path):
+                        os.unlink(path)
+                os.chmod(lock.parent, 0o755)
+                prepare()
+                self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
+        self.assertEqual(self.driver.writes, [])

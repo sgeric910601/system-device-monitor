@@ -1,7 +1,8 @@
 #!/bin/sh
 # 系統與裝置監看：移除套件前停用並停止 CPU 功耗取樣的 socket 與服務，
 # 並刪除 sdm-cpu-power enable 寫入的 drop-in；也停用「開機與喚醒後保留充電上限」的單元，
-# 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）。升級時（upgrade）不動任何東西。
+# 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）與小程式的鎖檔
+# （/run/system-device-monitor 空了才刪除目錄）。升級時（upgrade）不動任何東西。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只刪除檔案。
 set -e
 
@@ -10,6 +11,7 @@ SERVICE=system-device-monitor-cpu-power.service
 LIMIT_UNIT=system-device-monitor-charge-limit.service
 UNIT_DIR="${DPKG_ROOT:-}/etc/systemd/system"
 STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"
+RUN_DIR="${DPKG_ROOT:-}/run/system-device-monitor"
 
 if [ "$1" = "remove" ]; then
     if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
@@ -24,6 +26,8 @@ if [ "$1" = "remove" ]; then
     rm -f "$UNIT_DIR/sleep.target.wants/$LIMIT_UNIT"
     rm -f "$STATE_DIR/charge-limit.json"
     rmdir "$STATE_DIR" 2>/dev/null || true
+    rm -f "$RUN_DIR/charge-limit.lock"
+    rmdir "$RUN_DIR" 2>/dev/null || true
 fi
 
 exit 0

@@ -162,6 +162,7 @@ jobs:
           set -eu
           sudo apt-get remove -y system-device-monitor
           test ! -e /var/lib/system-device-monitor/charge-limit.json
+          test ! -e /run/system-device-monitor/charge-limit.lock
           test ! -e /usr/bin/system-device-monitor
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.socket
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.service

@@ -122,6 +122,11 @@
   （32 位小寫十六進位）而且父程序是 PID 1；經由 pkexec 執行一律拒絕（結束碼 4）。
 - 執行路徑（sys.argv[0]，不正規化）必須與兩個安裝位置之一一字不差，依位置決定單元與狀態檔；
   自己、單元檔與路徑上每一層目錄都必須屬於 root 且群組與其他人不可寫，否則結束碼 3。
+- 一次只執行一個：set、status 與 restore 在讀取門檻之前，先以 flock 取得
+  /run/system-device-monitor/charge-limit.lock 的獨占鎖。鎖檔是 root 擁有、0600 的一般檔案
+  （以 O_NOFOLLOW 開啟；權限或擁有者不符時拒絕），其他帳號無法開啟它來佔住鎖；目錄與 CPU 功耗的
+  socket 共用（root、0755，從 /run 逐層確認）。別的小程式拿著鎖時每 0.1 秒再試，10 秒後以結束碼 3
+  （busy）放棄。所以看板、命令列與開機後的重新套用不會交錯寫入。
 - 電池檢查：/sys/class/power_supply/<電池> 的實際位置（realpath）必須在 /sys/devices 之下；
   type 必須是 Battery、scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold。
   所有屬性檔都在電池目錄的描述子底下以 O_NOFOLLOW｜O_NONBLOCK 開啟，必須是一般檔案。
@@ -162,7 +167,9 @@
   RestrictAddressFamilies=AF_UNIX、RestrictNamespaces、SystemCallFilter=@system-service
   減去 @privileged 與 @resources、SystemCallArchitectures=native、MemoryDenyWriteExecute、
   MemoryMax=64M、TasksMax=4、LockPersonality、RestrictRealtime、RestrictSUIDSGID、UMask=0077。
-- 整個檔案系統唯讀，只有 ReadWritePaths=/sys/devices 可寫（ProtectKernelTunables 讓 /sys 唯讀，
+- RuntimeDirectory=system-device-monitor（0755、RuntimeDirectoryPreserve=yes）：小程式的鎖檔所在的
+  /run/system-device-monitor 在單元中可寫，停止時不刪除（裡面也有 CPU 功耗的 socket）。
+- 其他檔案系統唯讀，只有 ReadWritePaths=/sys/devices 可寫（ProtectKernelTunables 讓 /sys 唯讀，
   可寫的路徑依 systemd 的規則巢狀在裡面；/sys/class/power_supply 底下只是指向 /sys/devices 的
   符號連結）。systemd-analyze security 的曝險分數為 0.7（以 root 執行是主要的扣分）。
 
@@ -207,8 +214,8 @@
   雜湊（暫存檔一律 O_NOFOLLOW｜O_NONBLOCK 開啟），全部通過後才開始寫入；目的地與權限寫死在
   程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
   remove 只刪除它安裝的檔案、drop-in、sockets.target.wants 與充電上限單元在
-  multi-user.target.wants／sleep.target.wants 的符號連結，以及原始碼版保留的充電上限
-  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）。
+  multi-user.target.wants／sleep.target.wants 的符號連結、原始碼版保留的充電上限
+  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限小程式的鎖檔。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
   Python 與它的參數；只在你自己執行這個指令時出現。
 
@@ -217,7 +224,8 @@
 - postinst 只重新載入 systemd；socket 原本已啟用時才重新啟動它。從不自動啟用。
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
   也停用充電上限的單元（刪除它的 wants 連結），並刪除 /var/lib/system-device-monitor/charge-limit.json
-  （目錄空了才刪目錄），重新安裝時不會悄悄套回舊的上限。
+  （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）與 /run/system-device-monitor/charge-limit.lock
+  （目錄空了才刪目錄）。
 - postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），並再確認一次
   charge-limit.json 已刪除；從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。
