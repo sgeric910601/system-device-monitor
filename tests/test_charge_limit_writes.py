@@ -21,11 +21,6 @@ class Ordering(Base):
         self.assertEqual(self.output, [{"ok": True, "action": "set", "supply": "BAT0",
                                         "end": 60, "start": 55, "persist": "unchanged"}])
 
-    def test_requested_start_is_used_when_lowering(self):
-        self.battery(end=80, start=75)
-        self.assertEqual(self.main(["set", "BAT0", "60", "--start", "40"]), helper.EXIT_OK)
-        self.assertEqual(self.driver.writes, [(START, 40), (END, 60)])
-
     def test_end_equal_to_the_current_start_also_lowers_the_start_first(self):
         self.battery(end=85, start=80)
         self.assertEqual(self.main(["set", "BAT0", "80"]), helper.EXIT_OK)
@@ -33,10 +28,10 @@ class Ordering(Base):
 
     def test_raising_writes_the_end_first(self):
         self.battery(end=60, start=55)
-        self.assertEqual(self.main(["set", "BAT0", "90", "--start", "85"]), helper.EXIT_OK)
-        self.assertEqual(self.driver.writes, [(END, 90), (START, 85)])
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
+        self.assertEqual(self.driver.writes, [(END, 90)])
 
-    def test_start_is_left_alone_when_not_requested_and_not_in_the_way(self):
+    def test_start_is_left_alone_when_not_in_the_way(self):
         self.battery(end=80, start=40)
         self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
         self.assertEqual(self.driver.writes, [(END, 90)])
@@ -48,15 +43,9 @@ class Ordering(Base):
         self.assertEqual(self.driver.writes, [(END, 60)])
         self.assertIsNone(self.output[0]["start"])
 
-    def test_requested_start_without_a_start_file_is_unsupported(self):
-        self.battery("BAT1", end=80, start=None)
-        self.assertEqual(self.main(["set", "BAT1", "60", "--start", "50"]), helper.EXIT_FAILED)
-        self.assertEqual(self.output, [{"ok": False, "error": "unsupported"}])
-        self.assertEqual(self.driver.writes, [])
-
     def test_values_already_in_place_are_not_written_again(self):
         self.battery(end=80, start=75)
-        self.assertEqual(self.main(["set", "BAT0", "80", "--start", "75"]), helper.EXIT_OK)
+        self.assertEqual(self.main(["set", "BAT0", "80"]), helper.EXIT_OK)
         self.assertEqual(self.driver.writes, [])
         self.assertEqual(self.sleeps, [])
 
@@ -64,8 +53,8 @@ class Ordering(Base):
         directory = self.battery(end=80, start=75)
         (directory/START).write_text("garbage\n")
         self.driver.ordered = False
-        self.assertEqual(self.main(["set", "BAT0", "60", "--start", "50"]), helper.EXIT_OK)
-        self.assertEqual(self.driver.writes, [(END, 60), (START, 50)])
+        self.assertEqual(self.main(["set", "BAT0", "60"]), helper.EXIT_OK)
+        self.assertEqual(self.driver.writes, [(END, 60)])
 
 
 class ReadBack(Base):
@@ -133,7 +122,7 @@ class Persist(Base):
 
     def test_persist_on_stores_the_value_and_enables_the_unit(self):
         self.assertEqual(self.main(["set", "BAT0", "85", "--persist", "on"]), helper.EXIT_OK)
-        self.assertEqual(self.state(), {"format": 1, "supply": "BAT0", "end": 85, "start": None})
+        self.assertEqual(self.state(), {"format": 1, "supply": "BAT0", "end": 85})
         self.assertEqual(self.root.mode(DEB_STATE), 0o644)
         self.assertEqual(self.root.mode(os.path.dirname(DEB_STATE)), 0o755)
         self.assertEqual(self.systemctl_calls(), [("enable", DEB_UNIT)])
@@ -150,9 +139,10 @@ class Persist(Base):
         self.assertEqual(self.root.mode(DEB_STATE), 0o644)
         self.assertEqual(self.root.mode(os.path.dirname(DEB_STATE)), 0o755)
 
-    def test_requested_start_is_stored(self):
-        self.main(["set", "BAT0", "60", "--start", "50", "--persist", "on"])
-        self.assertEqual(self.state()["start"], 50)
+    def test_automatic_start_is_not_stored(self):
+        self.main(["set", "BAT0", "60", "--persist", "on"])
+        self.assertEqual(self.value("BAT0", START), 55)
+        self.assertEqual(self.state(), {"format": 1, "supply": "BAT0", "end": 60})
 
     def test_persist_off_removes_the_state_and_disables_the_unit(self):
         self.main(["set", "BAT0", "85", "--persist", "on"])
@@ -237,7 +227,7 @@ class Restore(Base):
 
     def test_reapplies_the_persisted_value(self):
         self.battery(end=100, start=95)
-        self.write_state({"format": 1, "supply": "BAT0", "end": 80, "start": None})
+        self.write_state({"format": 1, "supply": "BAT0", "end": 80})
         self.assertEqual(self.restore(), helper.EXIT_OK)
         self.assertEqual(self.output, [{"ok": True, "action": "restore", "restored": True}])
         self.assertEqual(self.driver.writes, [(START, 75), (END, 80)])
@@ -246,7 +236,7 @@ class Restore(Base):
 
     def test_is_idempotent(self):
         self.battery(end=100, start=95)
-        self.write_state({"format": 1, "supply": "BAT0", "end": 80, "start": 70})
+        self.write_state({"format": 1, "supply": "BAT0", "end": 80})
         self.restore()
         self.driver.writes.clear()
         self.assertEqual(self.restore(), helper.EXIT_OK)
@@ -260,27 +250,27 @@ class Restore(Base):
 
     def test_battery_that_is_gone_is_skipped(self):
         self.battery("BAT1")
-        self.write_state({"format": 1, "supply": "BAT0", "end": 80, "start": None})
+        self.write_state({"format": 1, "supply": "BAT0", "end": 80})
         self.assertEqual(self.restore(), helper.EXIT_OK)
         self.assertEqual(self.output[0]["restored"], False)
 
     def test_local_layout_reads_its_own_state(self):
         self.helper_path = ChargeLimit.LOCAL_HELPER
         self.battery(end=100, start=None)
-        self.write_state({"format": 1, "supply": "BAT0", "end": 80, "start": None})
+        self.write_state({"format": 1, "supply": "BAT0", "end": 80})
         self.assertEqual(self.restore(), helper.EXIT_OK)
         self.assertEqual(self.output[0]["restored"], False)
-        self.write_state({"format": 1, "supply": "BAT0", "end": 85, "start": None}, LOCAL_STATE)
+        self.write_state({"format": 1, "supply": "BAT0", "end": 85}, LOCAL_STATE)
         self.restore()
         self.assertEqual(self.value("BAT0", END), 85)
 
     def test_invalid_state_is_refused(self):
         self.battery(end=100, start=None)
-        good = {"format": 1, "supply": "BAT0", "end": 80, "start": None}
+        good = {"format": 1, "supply": "BAT0", "end": 80}
         cases = ("not json", "[]", json.dumps(dict(good, format=2)),
                  json.dumps(dict(good, end=101)), json.dumps(dict(good, end="80")),
-                 json.dumps(dict(good, end=True)), json.dumps(dict(good, start=80)),
-                 json.dumps(dict(good, start=-1)), json.dumps(dict(good, supply="../BAT0")),
+                 json.dumps(dict(good, end=True)), json.dumps(dict(good, start=None)),
+                 json.dumps(dict(good, start=70)), json.dumps(dict(good, supply="../BAT0")),
                  json.dumps(dict(good, extra=1)), json.dumps({"format": 1}),
                  "{" * 5000)
         for text in cases:
@@ -293,7 +283,7 @@ class Restore(Base):
 
     def test_untrusted_state_file_is_refused(self):
         self.battery(end=100, start=None)
-        good = {"format": 1, "supply": "BAT0", "end": 80, "start": None}
+        good = {"format": 1, "supply": "BAT0", "end": 80}
         path = self.write_state(good, mode=0o664)
         self.assertEqual(self.restore(), helper.EXIT_FAILED)
         path.unlink()
@@ -308,14 +298,13 @@ class Status(Base):
         self.battery("BAT0", end=80, start=75)
         self.battery("CMB0", end=None, start=None, device="platform/CMB0")
         self.battery("hidpp_battery_0", scope="Device", device="usb/hidpp")
-        self.root.file(DEB_STATE, json.dumps({"format": 1, "supply": "BAT0", "end": 80,
-                                              "start": None}))
+        self.root.file(DEB_STATE, json.dumps({"format": 1, "supply": "BAT0", "end": 80}))
         self.runner.enabled = True
         self.assertEqual(self.main(["status"]), helper.EXIT_OK)
         self.assertEqual(self.output, [{
             "ok": True, "action": "status", "batteries": [{"supply": "BAT0", "end": 80,
                                                            "start": 75}],
-            "persist": {"supply": "BAT0", "end": 80, "start": None}, "enabled": True}])
+            "persist": {"supply": "BAT0", "end": 80}, "enabled": True}])
         self.assertEqual(self.systemctl_calls(), [("is-enabled", "--quiet", DEB_UNIT)])
 
     def test_invalid_state_is_reported_as_unknown(self):

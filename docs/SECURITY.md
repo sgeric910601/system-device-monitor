@@ -109,13 +109,13 @@
 ## 充電上限小程式（sdm-charge-limit）
 
 - 以 #!/usr/bin/python3 -IB 執行，只用標準函式庫，不載入專案裡的任何模組。
-- 用法固定：`set <電池> <上限> [--start <起點>] [--persist on|off]`、`status`、
+- 用法固定：`set <電池> <上限> [--persist on|off]`、`status`、
   `restore --from-unit`，或不需要權限的 `--protocol`。在檢查權限之前先驗證參數，不符一律結束碼 2：
   - 電池名稱：`^[A-Za-z0-9_]{1,32}$`（BAT0、BATT、CMB0…；不接受 /、..、空白或非 ASCII）。
   - 上限：`^(5[0-9]|[6-9][0-9]|100)$`，也就是 50–100 的十進位整數，不接受前導 0、正負號、
     空白、小數或指數（49、101、-80、79.5、8e1、 80、080、1e2 都拒絕）。
-  - 起點：`^([0-9]|[1-9][0-9])$` 而且小於上限；--start 與 --persist 各最多一次，順序不限，
-    --persist 只接受 on 或 off。
+  - `--persist` 最多一次，只接受 on 或 off。不接受起點（沒有 --start）：起點只在驅動需要時
+    由小程式自動計算，呼叫者無法指定。
 - set 與 status 必須以 root 執行，而且 PKEXEC_UID 的規則與 CPU 功耗開關相同（十進位、在
   /etc/login.defs 的 UID_MIN～UID_MAX 之間、不是 root 或 nobody、帳號存在），否則結束碼 4。
 - restore 只給重新套用的單元使用：必須是 root、沒有 PKEXEC_UID、有 systemd 設定的 INVOCATION_ID
@@ -130,12 +130,12 @@
 - 電池檢查：/sys/class/power_supply/<電池> 的實際位置（realpath）必須在 /sys/devices 之下；
   type 必須是 Battery、scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold。
   所有屬性檔都在電池目錄的描述子底下以 O_NOFOLLOW｜O_NONBLOCK 開啟，必須是一般檔案。
-- 寫入順序：上限不高於目前的起點時，先把起點改成指定的值（沒有指定時為上限 − 5），再寫上限；
-  否則先寫上限，再寫指定的起點。已經相同的值不再寫；驅動沒有起點檔卻指定了 --start 時拒絕。
+- 寫入順序：上限不高於目前的起點時（驅動要求起點小於上限），先把起點改成上限 − 5，再寫上限；
+  否則只寫上限，不動起點。已經相同的值不再寫。
   門檻檔以 O_WRONLY｜O_NOFOLLOW｜O_NONBLOCK 開啟（不建立、不截斷），只寫十進位數字，
   之後讀回確認（最多 3 次、間隔 0.3 秒）；不符時結束碼 3，並回報實際的上限與起點。
   只寫 charge_control_start_threshold 與 charge_control_end_threshold，不碰其他屬性。
-- 保留：只有寫入確認成功後才處理。`--persist on` 把這次的電池、上限與起點寫成
+- 保留：只有寫入確認成功後才處理。`--persist on` 把這次的電池與上限寫成
   /var/lib/system-device-monitor/charge-limit.json（原始碼安裝為 charge-limit-local.json）：
   /var 與 /var/lib 必須已存在且受信任（不建立），自己的目錄以 0755 建立（不受 umask 影響），
   檔案先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW、0644）並 fsync，再整檔取代；既有的同名項目

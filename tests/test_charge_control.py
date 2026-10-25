@@ -89,7 +89,7 @@ class Base(unittest.TestCase):
         """小程式 --persist on 的結果：狀態檔，以及（預設）已啟用的單元。"""
         path = self.root/ChargeLimit.DEB_STATE.lstrip("/")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"format": 1, "supply": supply, "end": end, "start": None}))
+        path.write_text(json.dumps({"format": 1, "supply": supply, "end": end}))
         self.runner.enabled = enabled
 
     @property

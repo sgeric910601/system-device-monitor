@@ -152,7 +152,7 @@ jobs:
           test ! -e /var/lib/system-device-monitor
           # 在真正的 systemd 中執行重新套用（以 root 寫入一個保留值）：執行器沒有電池，略過但必須成功
           sudo install -d -m 0755 /var/lib/system-device-monitor
-          printf '%s\n' '{"end": 80, "format": 1, "start": null, "supply": "BAT0"}' | sudo tee /var/lib/system-device-monitor/charge-limit.json >/dev/null
+          printf '%s\n' '{"end": 80, "format": 1, "supply": "BAT0"}' | sudo tee /var/lib/system-device-monitor/charge-limit.json >/dev/null
           sudo systemctl start system-device-monitor-charge-limit.service
           test "$(systemctl show -p Result --value system-device-monitor-charge-limit.service)" = "success"
           test "$(systemctl show -p ExecMainStatus --value system-device-monitor-charge-limit.service)" = "0"

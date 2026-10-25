@@ -22,8 +22,7 @@ from sdm.data.sources import read
 END_FILE = "charge_control_end_threshold"
 START_FILE = "charge_control_start_threshold"
 SUPPLY = re.compile(ChargeLimit.SUPPLY_PATTERN)
-STATE_KEYS = frozenset({"format", "supply", "end", "start"})
-MAX_START = ChargeLimit.MAX_LIMIT - 1
+STATE_KEYS = frozenset({"format", "supply", "end"})
 PERCENT_MAX_DIGITS = 3
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
@@ -38,10 +37,9 @@ class Thresholds:
 
 @dataclass(frozen=True)
 class SavedLimit:
-    """「開機與喚醒後保留」的值。"""
+    """「開機與喚醒後保留」的值（起點由小程式在需要時自動計算，不保留）。"""
     supply: str
     end: int
-    start: Optional[int]
 
 
 def percent(path):
@@ -99,11 +97,9 @@ def valid_state(value):
     if not isinstance(value, dict) or set(value) != STATE_KEYS \
             or not is_integer(value["format"]) or value["format"] != ChargeLimit.STATE_FORMAT:
         return False
-    supply, end, start = value["supply"], value["end"], value["start"]
-    if not isinstance(supply, str) or not SUPPLY.fullmatch(supply) or not is_integer(end) \
-            or not ChargeLimit.MIN_LIMIT <= end <= ChargeLimit.MAX_LIMIT:
-        return False
-    return start is None or (is_integer(start) and 0 <= start <= MAX_START and start < end)
+    supply, end = value["supply"], value["end"]
+    return isinstance(supply, str) and bool(SUPPLY.fullmatch(supply)) and is_integer(end) \
+        and ChargeLimit.MIN_LIMIT <= end <= ChargeLimit.MAX_LIMIT
 
 
 def read_saved(path):
@@ -117,4 +113,4 @@ def read_saved(path):
         return None
     if not valid_state(value):
         return None
-    return SavedLimit(value["supply"], value["end"], value["start"])
+    return SavedLimit(value["supply"], value["end"])

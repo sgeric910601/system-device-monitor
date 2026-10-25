@@ -2,13 +2,13 @@
 """系統與裝置監看：充電上限的管理員小程式（由 pkexec，或開機與喚醒後由 systemd 單元執行）。
 
 用法：
-  sdm-charge-limit set <電池> <上限> [--start <起點>] [--persist on|off]
+  sdm-charge-limit set <電池> <上限> [--persist on|off]
   sdm-charge-limit status
   sdm-charge-limit restore --from-unit        只由 system-device-monitor-charge-limit.service 執行
   sdm-charge-limit --protocol                 不需要權限
 參數（不符時結束碼 2，在檢查權限之前）：電池名稱只能是 1–32 個英文字母、數字或底線；上限是
-50–100 的十進位整數（不接受前導 0、正負號、空白、小數或指數）；起點是 0–99 且小於上限；
---start 與 --persist 各最多一次、順序不限。
+50–100 的十進位整數（不接受前導 0、正負號、空白、小數或指數）；--persist 最多一次。
+不接受起點：起點只在驅動需要（上限不高於目前的起點）時自動改成上限 − 5。
 權限：
 - set、status：必須以 root 執行，PKEXEC_UID 為十進位、在 /etc/login.defs 的 UID_MIN～UID_MAX 之間
   （讀不到時 1000～60000）、不是 root 或 nobody、帳號存在。
@@ -23,10 +23,10 @@
 電池：/sys/class/power_supply/<電池> 的實際位置必須在 /sys/devices 之下，type 為 Battery、
 scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold；屬性檔一律以 O_NOFOLLOW
 開啟，必須是一般檔案。
-寫入：上限不高於目前的起點時，先把起點改成指定的值（沒有指定時為上限 − 5），再寫上限；
-否則先寫上限，再寫指定的起點。已經相同的值不再寫。屬性檔以 O_WRONLY｜O_NOFOLLOW 開啟、
+寫入：上限不高於目前的起點時，先把起點改成上限 − 5，再寫上限；否則只寫上限。
+已經相同的值不再寫。屬性檔以 O_WRONLY｜O_NOFOLLOW 開啟、
 寫入十進位數字，再讀回確認（最多 3 次、間隔 0.3 秒）；不符時結束碼 3 並回報實際的值。
-保留：--persist on 把這次的電池、上限與起點寫入 /var/lib/system-device-monitor 的狀態檔（目錄 0755、
+保留：--persist on 把這次的電池與上限寫入 /var/lib/system-device-monitor 的狀態檔（目錄 0755、
 檔案 0644，先寫同目錄的暫存檔並 fsync 再整檔取代），並啟用單元；--persist off 刪除狀態檔並停用單元；
 沒有指定時不改變。寫入沒有套用時不改變保留狀態。restore 只讀狀態檔（root 擁有的一般檔案、
 4 KB 以內、格式完全相符），電池仍在時才重新套用，不執行任何外部程式。
@@ -45,7 +45,7 @@ import subprocess
 import sys
 import syslog
 import time
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, NamedTuple
 
 PROTOCOL = 1
 VERSION = "1.0"
@@ -53,7 +53,7 @@ EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
 HELPER_NAME = "sdm-charge-limit"
 PROTOCOL_FLAG = "--protocol"
 FROM_UNIT = "--from-unit"
-OPTION_START, OPTION_PERSIST = "--start", "--persist"
+OPTION_PERSIST = "--persist"
 PERSIST_ON, PERSIST_OFF, PERSIST_UNCHANGED = "on", "off", "unchanged"
 NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
 LOGGED_ERRORS = ("busy",)               # 會寫進系統日誌的錯誤代號；其他一律記成 failed
@@ -64,7 +64,6 @@ COMMAND_TIMEOUT_S = 60
 UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
 SUPPLY_PATTERN = re.compile(r"[A-Za-z0-9_]{1,32}")
 END_PATTERN = re.compile(r"5[0-9]|[6-9][0-9]|100")
-START_PATTERN = re.compile(r"[0-9]|[1-9][0-9]")
 INVOCATION_PATTERN = re.compile(r"[0-9a-f]{32}")
 MAX_UID = 4294967294
 NOBODY = 65534
@@ -79,7 +78,7 @@ TYPE_BATTERY = "Battery"
 SCOPE_DEVICE = "Device"
 ATTRIBUTE_MAX_BYTES = 64
 PERCENT_MAX_DIGITS = 3
-MIN_END, MAX_END, MAX_START = 50, 100, 99
+MIN_END, MAX_END = 50, 100
 MAX_BATTERIES = 32
 START_GAP = 5                           # 必須先降低起點、又沒有指定時：上限 − 5
 READBACK_ATTEMPTS = 3
@@ -88,7 +87,7 @@ STATE_PARENT = "var/lib"
 STATE_DIR = STATE_PARENT + "/system-device-monitor"
 STATE_FORMAT = 1
 STATE_MAX_BYTES = 4096
-STATE_KEYS = frozenset({"format", "supply", "end", "start"})
+STATE_KEYS = frozenset({"format", "supply", "end"})
 RUN_DIR = "run/system-device-monitor"   # 與 CPU 功耗的 socket 共用；單元以 RuntimeDirectory= 保留
 LOCK_NAME = "charge-limit.lock"
 LOCK_MODE = 0o600
@@ -143,7 +142,6 @@ LAYOUTS = (
 class Request(NamedTuple):
     supply: str
     end: int
-    start: Optional[int] = None
     persist: str = PERSIST_UNCHANGED
 
 
@@ -215,34 +213,17 @@ def production_context():
 
 # ── 參數 ───────────────────────────────────────────────────
 
-def parse_options(words):
-    """--start 與 --persist：成對出現、各最多一次、順序不限。"""
-    if len(words) % 2:
-        raise Usage()
-    options = {}
-    for key, value in zip(words[::2], words[1::2]):
-        if key not in (OPTION_START, OPTION_PERSIST) or key in options:
-            raise Usage()
-        options[key] = value
-    return options
-
-
 def parse_set(words):
-    if len(words) < 2:
+    """<電池> <上限> [--persist on|off]；其他寫法一律拒絕（包括 --start）。"""
+    if len(words) == 4 and words[2] == OPTION_PERSIST and words[3] in (PERSIST_ON, PERSIST_OFF):
+        persist = words[3]
+    elif len(words) == 2:
+        persist = PERSIST_UNCHANGED
+    else:
         raise Usage()
-    supply, end_text = words[0], words[1]
-    options = parse_options(words[2:])
-    start_text = options.get(OPTION_START)
-    persist = options.get(OPTION_PERSIST, PERSIST_UNCHANGED)
-    if not SUPPLY_PATTERN.fullmatch(supply) or not END_PATTERN.fullmatch(end_text) \
-            or (start_text is not None and not START_PATTERN.fullmatch(start_text)) \
-            or (OPTION_PERSIST in options and persist not in (PERSIST_ON, PERSIST_OFF)):
+    if not SUPPLY_PATTERN.fullmatch(words[0]) or not END_PATTERN.fullmatch(words[1]):
         raise Usage()
-    end = int(end_text)
-    start = None if start_text is None else int(start_text)
-    if start is not None and start >= end:
-        raise Usage()
-    return Request(supply, end, start, persist)
+    return Request(words[0], int(words[1]), persist)
 
 
 def parse_args(argv):
@@ -428,18 +409,11 @@ def open_battery(context, supply):
 
 
 def target_steps(request, current, has_start):
-    """（屬性檔、值）的寫入順序：上限不高於目前的起點時先降低起點。"""
-    if request.start is not None and not has_start:
-        raise Failed("unsupported")
+    """（屬性檔、值）的寫入順序：上限不高於目前的起點時，先把起點降到上限 − 5。"""
     start = current[START_FILE]
     if has_start and start is not None and request.end <= start:
-        lowered = request.start if request.start is not None else \
-            max(request.end - START_GAP, 0)
-        return [(START_FILE, lowered), (END_FILE, request.end)]
-    steps = [(END_FILE, request.end)]
-    if request.start is not None:
-        steps.append((START_FILE, request.start))
-    return steps
+        return [(START_FILE, max(request.end - START_GAP, 0)), (END_FILE, request.end)]
+    return [(END_FILE, request.end)]
 
 
 def write_value(context, dir_fd, name, value):
@@ -550,8 +524,7 @@ def replace_file(dir_fd, name, data, mode):
 
 
 def state_bytes(request):
-    value = {"format": STATE_FORMAT, "supply": request.supply, "end": request.end,
-             "start": request.start}
+    value = {"format": STATE_FORMAT, "supply": request.supply, "end": request.end}
     return (json.dumps(value, sort_keys=True) + "\n").encode("utf-8")
 
 
@@ -620,14 +593,11 @@ def parse_state(data):
     if not isinstance(value, dict) or set(value) != STATE_KEYS \
             or not is_integer(value["format"]) or value["format"] != STATE_FORMAT:
         raise Failed("invalid-state")
-    supply, end, start = value["supply"], value["end"], value["start"]
+    supply, end = value["supply"], value["end"]
     if not isinstance(supply, str) or not SUPPLY_PATTERN.fullmatch(supply) \
             or not is_integer(end) or not MIN_END <= end <= MAX_END:
         raise Failed("invalid-state")
-    if start is not None and (not is_integer(start) or not 0 <= start <= MAX_START
-                              or start >= end):
-        raise Failed("invalid-state")
-    return Request(supply, end, start)
+    return Request(supply, end)
 
 
 def read_state(context, layout):
@@ -719,7 +689,7 @@ def saved_state(context, layout):
         return "invalid"
     if request is None:
         return None
-    return {"supply": request.supply, "end": request.end, "start": request.start}
+    return {"supply": request.supply, "end": request.end}
 
 
 def status(context, layout, _request):

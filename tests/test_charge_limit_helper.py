@@ -55,11 +55,12 @@ class Arguments(Base):
             with self.subTest(name=name):
                 self.assert_usage(["set", name, "80"])
 
-    def test_bad_starts_exit_two(self):
+    def test_start_is_never_accepted(self):
+        """起點只由小程式在驅動需要時自動計算，呼叫者不能指定。"""
         self.battery()
-        for options in (["--start", "80"], ["--start", "90"], ["--start", "-1"],
-                        ["--start", "05"], ["--start", "100"], ["--start", ""],
-                        ["--start", "7.5"], ["--start"], ["--start", "70", "--start", "75"]):
+        for options in (["--start", "0"], ["--start", "70"], ["--start", "80"], ["--start", "90"],
+                        ["--start", "-1"], ["--start", ""], ["--start"],
+                        ["--persist", "off", "--start", "70"]):
             with self.subTest(options=options):
                 self.assert_usage(["set", "BAT0", "80", *options])
         self.assertEqual(self.driver.writes, [])
@@ -71,12 +72,9 @@ class Arguments(Base):
             with self.subTest(options=options):
                 self.assert_usage(["set", "BAT0", "80", *options])
 
-    def test_options_may_come_in_any_order(self):
+    def test_persist_option_is_accepted(self):
         self.battery()
-        self.assertEqual(self.main(["set", "BAT0", "80", "--persist", "off", "--start", "0"]),
-                         helper.EXIT_OK)
-        self.assertEqual(self.main(["set", "BAT0", "80", "--start", "70", "--persist", "off"]),
-                         helper.EXIT_OK)
+        self.assertEqual(self.main(["set", "BAT0", "80", "--persist", "off"]), helper.EXIT_OK)
 
     def test_bad_arguments_are_checked_before_permissions(self):
         self.assertEqual(self.main(["set", "BAT0", "101"], env={}, euid=1000), helper.EXIT_USAGE)

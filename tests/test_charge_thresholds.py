@@ -60,23 +60,21 @@ class Saved(Base):
         return path
 
     def test_reads_the_persisted_value(self):
-        path = self.write({"format": 1, "supply": "BAT0", "end": 80, "start": None})
-        self.assertEqual(read_saved(path), SavedLimit("BAT0", 80, None))
-        path = self.write({"format": 1, "supply": "BAT0", "end": 85, "start": 75})
-        self.assertEqual(read_saved(path), SavedLimit("BAT0", 85, 75))
+        path = self.write({"format": 1, "supply": "BAT0", "end": 80})
+        self.assertEqual(read_saved(path), SavedLimit("BAT0", 80))
 
     def test_missing_or_invalid_state_is_none(self):
         self.assertIsNone(read_saved(self.root/"missing.json"))
         self.assertIsNone(read_saved(None))
-        good = {"format": 1, "supply": "BAT0", "end": 80, "start": None}
+        good = {"format": 1, "supply": "BAT0", "end": 80}
         for value in ("garbage", "[]", dict(good, format=2), dict(good, end=49),
-                      dict(good, end=True), dict(good, start=80), dict(good, supply="BAT 0"),
+                      dict(good, end=True), dict(good, start=None), dict(good, supply="BAT 0"),
                       dict(good, extra=1), " " * 5000):
             with self.subTest(value=str(value)[:40]):
                 self.assertIsNone(read_saved(self.write(value)))
 
     def test_symlink_is_not_followed(self):
-        target = self.write({"format": 1, "supply": "BAT0", "end": 80, "start": None})
+        target = self.write({"format": 1, "supply": "BAT0", "end": 80})
         link = self.root/"link.json"
         link.symlink_to(target)
         self.assertIsNone(read_saved(link))

@@ -356,7 +356,7 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
   「這顆電池不接受 85%，目前是 80%；可以改選 80%」，並把不接受的值從滑桿移除（這次執行有效）。
 - 「開機與喚醒後保留」：有些韌體在開機或從睡眠喚醒時會把門檻改回預設值。開啟後，你設定的上限
   記在 /var/lib/system-device-monitor/charge-limit.json（原始碼安裝為 charge-limit-local.json，
-  只有電池名稱、上限與起點），並啟用 system-device-monitor-charge-limit.service，開機與每次喚醒後
+  只有電池名稱與上限），並啟用 system-device-monitor-charge-limit.service，開機與每次喚醒後
   重新套用；關閉時刪除這個檔案並停用服務。只保留你自己設定的值；開關一樣需要管理員授權。
   開關只有在這個檔案存在、而且服務已啟用時才顯示為開啟（以一般權限查詢 systemctl is-enabled）；
   兩者不一致（例如服務被手動停用）時顯示「保留設定未生效」，重新開啟這個開關即可修復。
@@ -376,7 +376,7 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
     pkexec /usr/libexec/system-device-monitor/sdm-charge-limit status
     systemctl status system-device-monitor-charge-limit.service
 
-上限只接受 50–100 的整數（100＝不限制），--start 的起點是 0–99 且小於上限；
+上限只接受 50–100 的整數（100＝不限制）；起點不能指定，只在需要時自動調整（見上方）。
 沒有 --persist 時不改變保留的狀態。結束碼：0 成功、2 參數錯誤、3 失敗或沒有套用、4 沒有權限。
 同一時間只會執行一個（看板、命令列與開機後的重新套用共用一把鎖）；另一個正在進行時最多等 10 秒，
 之後以「busy」結束，看板顯示「另一個充電上限的調整正在進行，請稍後再試」。
