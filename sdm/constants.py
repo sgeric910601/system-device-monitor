@@ -237,6 +237,31 @@ class SmartCharging:
     DIRECTORY_MODE = 0o700      # 本程式建立的資料夾
 
 
+class Wake:
+    """智慧充電的精準喚醒：管理員小程式 sdm-wake（RTC 喚醒鬧鐘）與它的 polkit 動作。
+
+    helper/sdm-wake 以 root 執行、不載入本套件，所以各自保留同樣的值；
+    tests/test_wake_helper 確認兩邊一致。set 與 clear 各有一個動作（exec.argv1），
+    status 沒有自己的動作（pkexec 改用一般的 org.freedesktop.policykit.exec，每次都要密碼）。
+    """
+    PROTOCOL = 1
+    DEB_HELPER = CpuPower.DEB_HELPER_DIR + "/sdm-wake"
+    LOCAL_HELPER = CpuPower.LOCAL_HELPER_DIR + "/sdm-wake"
+    ACTION_DEB = "tw.local.system-device-monitor.unattended.wake"               # set
+    ACTION_CLEAR_DEB = "tw.local.system-device-monitor.unattended.wake-clear"   # clear
+    ACTION_LOCAL = "tw.local.system-device-monitor.unattended.local.wake"
+    ACTION_CLEAR_LOCAL = "tw.local.system-device-monitor.unattended.local.wake-clear"
+    RTC_ALARM = "/sys/class/rtc/rtc0/wakealarm"     # 所有人可讀；空的代表沒有鬧鐘
+    RECORD_NAME = "wake"        # 小程式排定的時間（ChargeLimit.RUN_DIR 底下，root 0600）
+    LOCK_NAME = "wake.lock"
+    TIMES_NAME = "wake.times"
+    LOCK_WAIT = 10.0
+    MIN_WRITE_GAP = 10.0        # set 與 clear 至少相隔幾秒；看板自己等，太快時小程式拒絕
+    RTC_TOLERANCE = 300         # 硬體時鐘與系統時間相差超過 5 分鐘（例如存的是本地時間）就拒絕
+    PKEXEC_TIMEOUT = 120
+    PROTOCOL_TIMEOUT = 5
+
+
 class Supply:
     """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
     TYPE_BATTERY = "Battery"

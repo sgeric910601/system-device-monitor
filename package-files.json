@@ -294,6 +294,7 @@
     "helper/sdm-cpu-power",
     "helper/sdm-cpu-power-service",
     "helper/sdm-update",
+    "helper/sdm-wake",
     "helper/systemd/system-device-monitor-charge-limit.service",
     "helper/systemd/system-device-monitor-cpu-power.service",
     "helper/systemd/system-device-monitor-cpu-power.socket",
@@ -506,6 +507,7 @@
     "tests/fixtures/signing.py",
     "tests/fixtures/sysfs.py",
     "tests/fixtures/update_listing.py",
+    "tests/fixtures/wake_root.py",
     "tests/png_samples.py",
     "tests/test_admin_text.py",
     "tests/test_alert_messages.py",
@@ -644,6 +646,7 @@
     "tests/test_updater.py",
     "tests/test_upower.py",
     "tests/test_ups.py",
+    "tests/test_wake_helper.py",
     "tests/test_widgets.py"
   ]
 }

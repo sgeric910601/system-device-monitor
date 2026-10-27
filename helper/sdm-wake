@@ -1,0 +1,577 @@
+#!/usr/bin/python3 -IB
+"""系統與裝置監看：智慧充電「精準喚醒」的管理員小程式（由 pkexec 執行），設定 RTC 喚醒鬧鐘。
+
+用法：set <Unix 時間>｜clear｜status｜--protocol。完整的規則見 docs/SECURITY.md「定時喚醒小程式」，重點：
+- 參數不符時結束碼 2（在檢查權限之前）：時間只接受 1–12 位 ASCII 十進位數字（不接受前導 0、
+  正負號、空白、小數、指數或其他語言的數字）。
+- set、clear、status：root，而且 PKEXEC_UID 是 /etc/login.defs 範圍內、存在的一般帳號；否則結束碼 4。
+- 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己與每一層上層目錄都屬於 root
+  且群組與其他人不可寫。
+- 一次只執行一個：flock /run/system-device-monitor/wake.lock（root 0600），最多等 10 秒（busy）；
+  set 與 clear 至少相隔 10 秒（rate-limited，開機後的時鐘記在 wake.times）。
+- RTC：/sys/class/rtc/rtc0 的實際位置必須在 /sys/devices 之下，wakealarm 是一般檔案（no-rtc）；
+  硬體時鐘（since_epoch）與系統時間相差超過 5 分鐘時拒絕（rtc-offset，例如硬體時鐘存本地時間）。
+- set：時間（系統時鐘）必須在 60 秒後到 7 天內（out-of-range）；目前有不是這個小程式記下的鬧鐘時
+  拒絕（alarm-in-use）；先寫 "0" 再寫時間，讀回不符時寫 "0" 取消（not-applied）；成功後把時間記在
+  /run/system-device-monitor/wake（root 0600，暫存檔＋fsync＋改名）。
+- clear：只有目前的鬧鐘等於記下的時間時才寫 "0"，之後刪除紀錄；別人的鬧鐘一律不動。
+- 屬性檔以 O_NOFOLLOW 開啟；不執行任何外部程式；標準輸出只有一行 JSON；結束碼 0、2、3、4；
+  系統日誌只記錄動作與結果，不記錄時間或使用者。只使用標準函式庫。
+"""
+import fcntl
+import json
+import math
+import os
+import pwd
+import re
+import secrets
+import stat
+import sys
+import syslog
+import time
+from typing import Callable, NamedTuple
+
+PROTOCOL = 1
+VERSION = "1.0"
+EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
+HELPER_NAME = "sdm-wake"
+PROTOCOL_FLAG = "--protocol"
+RATE_LIMITED = "rate-limited"
+LOGGED_ERRORS = ("busy", "no-rtc", "rtc-offset", "out-of-range", "alarm-in-use", "not-applied")
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
+UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
+EPOCH_PATTERN = re.compile(r"[1-9][0-9]{0,11}")
+MAX_UID = 4294967294
+NOBODY = 65534
+LOGIN_DEFS = "/etc/login.defs"
+LOGIN_DEFS_MAX_BYTES = 65536
+DEFAULT_UID_RANGE = (1000, 60000)       # login.defs 讀不到時的一般帳號範圍
+RTC_DIR = "sys/class/rtc/rtc0"          # 相對於根目錄
+DEVICES_DIR = "sys/devices"
+ALARM_FILE = "wakealarm"
+SINCE_EPOCH_FILE = "since_epoch"
+ATTRIBUTE_MAX_BYTES = 64
+EARLIEST_S, LATEST_S = 60, 7 * 24 * 3600
+RTC_TOLERANCE_S = 300
+CLEAR = "0"
+RUN_DIR = "run/system-device-monitor"   # 與其他小程式共用
+RECORD_NAME = "wake"
+RECORD_MAX_BYTES = 64
+LOCK_NAME = "wake.lock"
+TIMES_NAME = "wake.times"
+TIMES_KEY = "rtc0"
+TIMES_MAX_BYTES = 4096
+LOCK_WAIT_S = 10.0
+LOCK_POLL_S = 0.1
+MIN_WRITE_GAP_S = 10.0
+PRIVATE_BITS = 0o077
+PRIVATE_MODE = 0o600
+DIRECTORY_MODE = 0o755
+UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+WRITE_FLAGS = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+LOG_IDENT = "sdm-wake"
+
+
+class Usage(Exception):
+    """參數不符合固定的用法。"""
+
+
+class NotPermitted(Exception):
+    """不是經由 pkexec 的一般使用者。"""
+
+
+class Failed(Exception):
+    """無法安全地完成；訊息是固定的英文代號（也是輸出的 error）。"""
+
+
+class RateLimited(Failed):
+    """距離上次 set 或 clear 不到 10 秒；retry_after 為還要等的秒數（無條件進位）。"""
+
+    def __init__(self, retry_after):
+        super().__init__(RATE_LIMITED)
+        self.retry_after = retry_after
+
+
+class Layout(NamedTuple):
+    kind: str
+    helper_dir: str
+
+
+LAYOUTS = (Layout("deb", "/usr/libexec/system-device-monitor"),
+           Layout("local", "/usr/local/libexec/system-device-monitor"))
+
+
+class Context(NamedTuple):
+    """執行環境；測試以假根目錄、假的擁有者、假的 RTC 驅動與假時鐘代替。"""
+    root: str
+    owner: int
+    euid: int
+    user_exists: Callable
+    helper_path: str                    # 實際執行的路徑（sys.argv[0]），不正規化
+    uid_range: tuple = DEFAULT_UID_RANGE
+    sleep: Callable = time.sleep
+    write: Callable = os.write
+    clock: Callable = time.monotonic
+    boottime: Callable = lambda: time.clock_gettime(time.CLOCK_BOOTTIME)
+    realtime: Callable = lambda: time.clock_gettime(time.CLOCK_REALTIME)
+
+
+def log(message):
+    syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_INFO, message)
+
+
+def user_exists(uid):
+    try:
+        pwd.getpwuid(uid)
+    except KeyError:
+        return False
+    return True
+
+
+def parse_login_defs(text):
+    """（UID_MIN、UID_MAX）；缺少或不合理的值改用預設。"""
+    values = {}
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0] in ("UID_MIN", "UID_MAX") \
+                and UID_PATTERN.fullmatch(words[1]):
+            values[words[0]] = int(words[1])
+    low = values.get("UID_MIN", DEFAULT_UID_RANGE[0])
+    high = values.get("UID_MAX", DEFAULT_UID_RANGE[1])
+    return (low, high) if 0 < low <= high <= MAX_UID else DEFAULT_UID_RANGE
+
+
+def login_uid_range(path=LOGIN_DEFS):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return parse_login_defs(handle.read(LOGIN_DEFS_MAX_BYTES))
+    except OSError:
+        return DEFAULT_UID_RANGE
+
+
+def production_context():
+    return Context(root="/", owner=0, euid=os.geteuid(), user_exists=user_exists,
+                   helper_path=sys.argv[0], uid_range=login_uid_range())
+
+
+# ── 參數與權限 ─────────────────────────────────────────────
+
+def parse_args(argv):
+    """（命令、時間或 None）；不符合固定用法時拋出 Usage。"""
+    if argv in ([PROTOCOL_FLAG], ["status"], ["clear"]):
+        return argv[0], None
+    if len(argv) == 2 and argv[0] == "set" and EPOCH_PATTERN.fullmatch(argv[1]):
+        return "set", int(argv[1])
+    raise Usage()
+
+
+def caller_uid(env, context):
+    """pkexec 設定的 PKEXEC_UID：十進位、在一般帳號的範圍內、不是 root 或 nobody，而且帳號存在。"""
+    if context.euid != 0:
+        raise NotPermitted()
+    text = env.get("PKEXEC_UID", "")
+    if not UID_PATTERN.fullmatch(text):
+        raise NotPermitted()
+    uid = int(text)
+    low, high = context.uid_range
+    if uid in (0, NOBODY) or not low <= uid <= high or not context.user_exists(uid):
+        raise NotPermitted()
+    return uid
+
+
+def layout_for(helper_path):
+    """執行路徑必須與安裝位置一字不差（不接受 //、./、.. 或相對路徑）。"""
+    for layout in LAYOUTS:
+        if helper_path == layout.helper_dir + "/" + HELPER_NAME:
+            return layout
+    raise Failed("unknown-location")
+
+
+def check_directory(fd, owner):
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed("untrusted-directory")
+
+
+def open_directory(context, relative):
+    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；回傳描述子。"""
+    fd = os.open(context.root, DIRECTORY_FLAGS)
+    try:
+        check_directory(fd, context.owner)
+        for part in [part for part in relative.split("/") if part]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def check_location(context, layout):
+    """自己必須是受信任的一般檔案。"""
+    fd = open_directory(context, layout.helper_dir)
+    try:
+        info = os.stat(HELPER_NAME, dir_fd=fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+                or info.st_mode & UNSAFE_BITS:
+            raise Failed("untrusted-file")
+    except FileNotFoundError:
+        raise Failed("untrusted-file") from None
+    finally:
+        os.close(fd)
+
+
+# ── 執行期目錄、鎖與寫入間隔 ───────────────────────────────
+
+def open_run_directory(context):
+    """/run/system-device-monitor（必要時以 0755 建立）；它與每一層上層都必須受信任。"""
+    parent = open_directory(context, os.path.dirname(RUN_DIR))
+    try:
+        name = os.path.basename(RUN_DIR)
+        try:
+            os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+            created = True
+        except FileExistsError:
+            created = False
+        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        if created:
+            os.fchmod(fd, DIRECTORY_MODE)
+        check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_private(context, directory, name, flags):
+    """root 擁有、只有 root 能存取的一般檔案（0600、不跟隨符號連結）。"""
+    fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, PRIVATE_MODE,
+                 dir_fd=directory)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+            or info.st_mode & PRIVATE_BITS:
+        os.close(fd)
+        raise Failed("untrusted-file")
+    return fd
+
+
+def acquire_lock(context):
+    """取得獨占鎖並回傳描述子（關閉即釋放）；別人拿著時每 0.1 秒再試，10 秒後放棄。"""
+    directory = open_run_directory(context)
+    try:
+        fd = open_private(context, directory, LOCK_NAME, os.O_RDWR | os.O_CREAT)
+    finally:
+        os.close(directory)
+    deadline = context.clock() + LOCK_WAIT_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if context.clock() >= deadline:
+                os.close(fd)
+                raise Failed("busy") from None
+            context.sleep(LOCK_POLL_S)
+
+
+def read_small(context, directory, name, limit):
+    """root 0600 一般檔案的內容；不存在時為 None。"""
+    try:
+        fd = open_private(context, directory, name, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise Failed("untrusted-file") from None
+    with os.fdopen(fd, "rb") as handle:
+        data = handle.read(limit + 1)
+    return data if len(data) <= limit else b""
+
+
+def last_write(context):
+    """上次 set 或 clear 的開機後秒數；沒有或格式不符時為 None。"""
+    directory = open_run_directory(context)
+    try:
+        data = read_small(context, directory, TIMES_NAME, TIMES_MAX_BYTES)
+    finally:
+        os.close(directory)
+    try:
+        value = json.loads((data or b"").decode("utf-8")).get(TIMES_KEY)
+    except (ValueError, AttributeError, RecursionError):
+        return None
+    return value if type(value) in (int, float) and math.isfinite(value) else None
+
+
+def check_rate(context):
+    last = last_write(context)
+    elapsed = None if last is None else context.boottime() - last
+    if elapsed is not None and 0 <= elapsed < MIN_WRITE_GAP_S:
+        raise RateLimited(math.ceil(MIN_WRITE_GAP_S - elapsed))
+
+
+def replace_file(dir_fd, name, data, mode):
+    """先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW）並 fsync，再整檔取代；只取代一般檔案。"""
+    try:
+        existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise Failed("unexpected-file")
+    temporary = f".{name}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 mode, dir_fd=dir_fd)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+    os.fsync(dir_fd)
+
+
+def write_run_file(context, name, data):
+    directory = open_run_directory(context)
+    try:
+        replace_file(directory, name, data, PRIVATE_MODE)
+    finally:
+        os.close(directory)
+
+
+def record_time(context):
+    data = json.dumps({TIMES_KEY: context.boottime()}) + "\n"
+    write_run_file(context, TIMES_NAME, data.encode("utf-8"))
+
+
+# ── 這個小程式排定的時間 ───────────────────────────────────
+
+def read_record(context):
+    """記下的時間；沒有或內容不符格式時為 None。"""
+    directory = open_run_directory(context)
+    try:
+        data = read_small(context, directory, RECORD_NAME, RECORD_MAX_BYTES)
+    finally:
+        os.close(directory)
+    text = (data or b"").decode("ascii", "replace").strip()
+    return int(text) if EPOCH_PATTERN.fullmatch(text) else None
+
+
+def remove_record(context):
+    directory = open_run_directory(context)
+    try:
+        info = os.stat(RECORD_NAME, dir_fd=directory, follow_symlinks=False)
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            raise Failed("unexpected-file")
+        os.unlink(RECORD_NAME, dir_fd=directory)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(directory)
+
+
+# ── RTC ────────────────────────────────────────────────────
+
+def read_attribute(dir_fd, name):
+    """屬性檔的文字（一般檔案，不跟隨符號連結）；讀不到時為 None。"""
+    try:
+        fd = os.open(name, READ_FLAGS, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, ATTRIBUTE_MAX_BYTES)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return data.decode("ascii", "replace").strip()
+
+
+def open_rtc(context):
+    """rtc0 目錄的描述子：實際位置在 /sys/devices 之下，而且有 wakealarm 一般檔案。"""
+    devices = os.path.realpath(os.path.join(context.root, DEVICES_DIR))
+    real = os.path.realpath(os.path.join(context.root, RTC_DIR))
+    if real == devices or os.path.commonpath([devices, real]) != devices:
+        raise Failed("no-rtc")
+    try:
+        fd = os.open(real, DIRECTORY_FLAGS)
+    except OSError:
+        raise Failed("no-rtc") from None
+    try:
+        regular = stat.S_ISREG(os.stat(ALARM_FILE, dir_fd=fd, follow_symlinks=False).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(fd)
+        raise Failed("no-rtc")
+    return fd
+
+
+def read_alarm(dir_fd):
+    """目前的鬧鐘（Unix 時間）；沒有鬧鐘時為 None。"""
+    text = read_attribute(dir_fd, ALARM_FILE)
+    if text is None:
+        raise Failed("no-rtc")
+    if not text:
+        return None
+    if not EPOCH_PATTERN.fullmatch(text):
+        raise Failed("unexpected-alarm")
+    return int(text)
+
+
+def check_offset(context, dir_fd):
+    """硬體時鐘必須接近系統時間（核心把 RTC 當成 UTC）。"""
+    text = read_attribute(dir_fd, SINCE_EPOCH_FILE) or ""
+    if not EPOCH_PATTERN.fullmatch(text) or abs(int(text) - context.realtime()) > RTC_TOLERANCE_S:
+        raise Failed("rtc-offset")
+
+
+def write_alarm(context, dir_fd, text):
+    """寫入 wakealarm（不建立、不截斷）；驅動拒絕時拋出 OSError。"""
+    data = text.encode("ascii")
+    fd = os.open(ALARM_FILE, WRITE_FLAGS, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Failed("no-rtc")
+        if context.write(fd, data) != len(data):
+            raise Failed("not-applied")
+    finally:
+        os.close(fd)
+
+
+# ── 動作 ───────────────────────────────────────────────────
+
+def program(context, dir_fd, epoch):
+    """先取消再寫入時間並讀回；不符時取消並刪除紀錄。只要開始寫入（不論結果）就記下時間。"""
+    try:
+        write_alarm(context, dir_fd, CLEAR)
+        write_alarm(context, dir_fd, str(epoch))
+        if read_alarm(dir_fd) != epoch:
+            write_alarm(context, dir_fd, CLEAR)
+            remove_record(context)
+            raise Failed("not-applied")
+    finally:
+        record_time(context)
+
+
+def set_alarm(context, epoch):
+    check_rate(context)
+    fd = open_rtc(context)
+    try:
+        check_offset(context, fd)
+        if not EARLIEST_S <= epoch - context.realtime() <= LATEST_S:
+            raise Failed("out-of-range")
+        current = read_alarm(fd)
+        if current is not None and current != read_record(context):
+            raise Failed("alarm-in-use")
+        program(context, fd, epoch)
+    finally:
+        os.close(fd)
+    write_run_file(context, RECORD_NAME, f"{epoch}\n".encode("ascii"))
+    return {"ok": True, "action": "set", "alarm": epoch}
+
+
+def clear_alarm(context, _epoch):
+    """只取消這個小程式記下的鬧鐘；之後刪除紀錄（鬧鐘已經響過或被別人換掉時只刪紀錄）。"""
+    check_rate(context)
+    fd = open_rtc(context)
+    try:
+        recorded = read_record(context)
+        cleared = recorded is not None and read_alarm(fd) == recorded
+        if cleared:
+            try:
+                write_alarm(context, fd, CLEAR)
+            finally:
+                record_time(context)
+            if read_alarm(fd) is not None:
+                raise Failed("not-applied")
+    finally:
+        os.close(fd)
+    remove_record(context)
+    return {"ok": True, "action": "clear", "cleared": cleared}
+
+
+def status(context, _epoch):
+    try:
+        fd = open_rtc(context)
+    except Failed:
+        return {"ok": True, "action": "status", "rtc": False, "alarm": None,
+                "recorded": read_record(context)}
+    try:
+        current = read_alarm(fd)
+    finally:
+        os.close(fd)
+    return {"ok": True, "action": "status", "rtc": True, "alarm": current,
+            "recorded": read_record(context)}
+
+
+ACTIONS = {"set": set_alarm, "clear": clear_alarm, "status": status}
+
+
+def run_action(command, epoch, env, context):
+    caller_uid(env, context)
+    check_location(context, layout_for(context.helper_path))
+    lock = acquire_lock(context)
+    try:
+        return ACTIONS[command](context, epoch)
+    finally:
+        os.close(lock)
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def outcome_of(command, epoch, env, context):
+    """（結束碼、輸出、日誌的結果）。"""
+    try:
+        result = run_action(command, epoch, env, context)
+    except NotPermitted:
+        return EXIT_NOT_PERMITTED, {"ok": False, "error": "not-permitted"}, "not-permitted"
+    except RateLimited as error:
+        return EXIT_FAILED, {"ok": False, "error": RATE_LIMITED,
+                             "retry_after": error.retry_after}, RATE_LIMITED
+    except Failed as error:
+        logged = str(error) if str(error) in LOGGED_ERRORS else "failed"
+        return EXIT_FAILED, {"ok": False, "error": str(error)}, logged
+    except OSError:
+        return EXIT_FAILED, {"ok": False, "error": "failed"}, "failed"
+    return EXIT_OK, result, "ok"
+
+
+def main(argv, env, context=None, emit=emit_json, report=log):
+    try:
+        command, epoch = parse_args(list(argv))
+    except Usage:
+        emit({"ok": False, "error": "usage"})
+        return EXIT_USAGE
+    if command == PROTOCOL_FLAG:
+        emit({"protocol": PROTOCOL, "version": VERSION})
+        return EXIT_OK
+    code, output, result = outcome_of(command, epoch, env, context or production_context())
+    report(command + " " + result)
+    emit(output)
+    return code
+
+
+if __name__ == "__main__":
+    ENVIRONMENT = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(SAFE_ENV)
+    sys.exit(main(sys.argv[1:], ENVIRONMENT))
