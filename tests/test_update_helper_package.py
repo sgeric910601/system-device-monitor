@@ -69,6 +69,12 @@ class Listing(unittest.TestCase):
 
     def test_allowed_variants(self):
         for kind, path in (("x", "usr/libexec/system-device-monitor/sdm-charge-limit"),
+                           ("x", "usr/libexec/system-device-monitor/sdm-wake"),
+                           ("x", "usr/libexec/system-device-monitor/sdm-unattended"),
+                           ("f", "usr/share/polkit-1/actions/"
+                                 "tw.local.system-device-monitor.unattended.wake.policy"),
+                           ("f", "usr/share/polkit-1/actions/"
+                                 "tw.local.system-device-monitor.rules.policy"),
                            ("f", "usr/share/polkit-1/actions/"
                                  "tw.local.system-device-monitor.unattended.policy"),
                            ("f", "usr/lib/systemd/system/system-device-monitor-wake@.service"),
@@ -151,6 +157,9 @@ class RealDpkgDeb(unittest.TestCase):
         self.assertIsNotNone(entries)
         refused = [path for kind, path in entries if not helper.path_allowed(kind, path)]
         self.assertEqual(refused, [])
+        shipped = {path for _, path in entries}
+        for item in manifest["system"]:         # 每個系統檔案（含智慧充電的小程式與動作）都在檢查範圍內
+            self.assertIn(item["target"].lstrip("/"), shipped)
 
 
 class RunApt(unittest.TestCase):
