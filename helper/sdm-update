@@ -28,10 +28,8 @@ from typing import Callable, NamedTuple, Optional
 PROTOCOL = 1
 VERSION = "1.0"
 EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
-COMMAND = "install"
-PROTOCOL_FLAG = "--protocol"
-HELPER_NAME = "sdm-update"
-HELPER_DIR = "/usr/libexec/system-device-monitor"
+COMMAND, PROTOCOL_FLAG = "install", "--protocol"
+HELPER_NAME, HELPER_DIR = "sdm-update", "/usr/libexec/system-device-monitor"
 HELPER_PATH = HELPER_DIR + "/" + HELPER_NAME
 PACKAGE = "system-device-monitor"
 # 維護者發布金鑰的 Ed25519 公鑰（base64 的 32 位元組原始公鑰），與 Update.PUBLIC_KEYS 相同
@@ -51,13 +49,12 @@ DPKG_QUERY, APT_GET = "/usr/bin/dpkg-query", "/usr/bin/apt-get"
 DPKG_LOCK = "var/lib/dpkg/lock-frontend"                    # 相對於根目錄
 STAGING = ("var/cache", "system-device-monitor", "staging")  # 同上；後兩層不存在時建立
 LOCK_TIMEOUT_S, LOCK_POLL_S = 120, 1     # 等 dpkg 前端鎖的上限與間隔（秒）
+RUN_LOCK, RUN_LOCK_WAIT_S, RUN_LOCK_POLL_S = ".lock", 10, 0.2   # staging 裡的執行鎖（root 0600）
 APT_TIMEOUT_S = 30 * 60         # apt-get 的時限；超過時只送 SIGTERM 給它的程序群組，絕不送 SIGKILL
 APT_TERM_WAIT_S = 60            # 送出 SIGTERM 後再等的時間；仍未結束就讓它自己完成
 COMMAND_TIMEOUT_S = 60
 PREPARE_TIMEOUT_S = 240         # 從開始到檢查完套件內容的上限；之後是鎖與 apt-get 各自的逾時
-MAX_OUTPUT_BYTES = 4 * 1024 * 1024
-MAX_ENTRIES = 20000
-CHUNK_BYTES = 1024 * 1024
+MAX_OUTPUT_BYTES, MAX_ENTRIES, CHUNK_BYTES = 4 * 1024 * 1024, 20000, 1024 * 1024
 UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
 MAX_UID, NOBODY = 4294967294, 65534
 LOGIN_DEFS, LOGIN_DEFS_MAX_BYTES = "/etc/login.defs", 65536
@@ -188,10 +185,9 @@ def run_apt(argv, env=APT_ENV, budget=APT_TIMEOUT_S, grace=APT_TERM_WAIT_S):
 
 def user_exists(uid):
     try:
-        pwd.getpwuid(uid)
+        return pwd.getpwuid(uid) is not None
     except KeyError:
         return False
-    return True
 
 
 def parse_login_defs(text):
@@ -215,17 +211,11 @@ def login_uid_range(path=LOGIN_DEFS):
         return DEFAULT_UID_RANGE
 
 
-def timed_out(*_):
-    raise Failed("timeout")
-
-
 def set_alarm(seconds):
+    def timed_out(*_):
+        raise Failed("timeout")
     signal.signal(signal.SIGALRM, timed_out)
     signal.alarm(seconds)
-
-
-def no_alarm(_seconds):
-    return None
 
 
 def production_context():
@@ -470,22 +460,55 @@ def clean_stale(staging):
             pass
 
 
+def try_flock(fd):
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def acquire_run_lock(context, staging):
+    """staging/.lock（root 0600、O_NOFOLLOW）的獨占 flock：同一時間只有一個 sdm-update 在執行；
+    別人持有時最多等 10 秒，否則 busy。回傳描述子（關閉時釋放）。"""
+    try:
+        fd = os.open(RUN_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NOCTTY | os.O_CLOEXEC,
+                     PRIVATE_FILE, dir_fd=staging)
+    except OSError:
+        raise Failed("staging") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner or info.st_mode & 0o077:
+            raise Failed("staging")
+        wait_until(context, lambda: try_flock(fd), RUN_LOCK_WAIT_S, RUN_LOCK_POLL_S)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 class Workspace:
-    """這次執行的暫存目錄（staging/<亂數>，0700）；結束時刪除裡面的檔案與目錄本身。"""
+    """這次執行的暫存目錄（staging/<亂數>，0700），整段期間持有執行鎖；結束時刪除裡面的檔案與目錄本身。"""
 
     def __init__(self, context):
         self.context = context
-        self.staging = self.stage = None
+        self.staging = self.stage = self.lock = None
         self.name = secrets.token_hex(8)
 
     def __enter__(self):
         self.staging = open_staging(self.context)
         try:
-            clean_stale(self.staging)
+            self.lock = acquire_run_lock(self.context, self.staging)
+        except BaseException:
+            os.close(self.staging)
+            raise
+        try:
+            clean_stale(self.staging)       # 只在持有執行鎖時清理
             os.mkdir(self.name, PRIVATE_DIRECTORY, dir_fd=self.staging)
             fd = os.open(self.name, DIRECTORY_FLAGS, dir_fd=self.staging)
             os.fchmod(fd, PRIVATE_DIRECTORY)
         except OSError:
+            os.close(self.lock)
             os.close(self.staging)
             raise Failed("staging") from None
         self.stage = Stage(fd, os.path.join(self.context.root, *STAGING, self.name))
@@ -500,6 +523,7 @@ class Workspace:
                 os.rmdir(self.name, dir_fd=self.staging)
             except OSError:
                 pass
+            os.close(self.lock)
             os.close(self.staging)
         return False
 
@@ -512,9 +536,7 @@ def strict_base64(text):
 
 
 def decode_key(text):
-    if not isinstance(text, str) or not text.isascii():
-        return None
-    raw = strict_base64(text)
+    raw = strict_base64(text) if isinstance(text, str) and text.isascii() else None
     return raw if raw is not None and len(raw) == KEY_BYTES else None
 
 
@@ -522,10 +544,7 @@ def decode_signature(data):
     """SHA256SUMS.sig 的內容 → 64 位元組簽章；不是剛好一行 base64 時回傳 None。"""
     if not isinstance(data, bytes):
         return None
-    for ending in (b"\r\n", b"\n"):
-        if data.endswith(ending):
-            data = data[:-len(ending)]
-            break
+    data = data[:-2] if data.endswith(b"\r\n") else data[:-1] if data.endswith(b"\n") else data
     if not data or not data.isascii() or b"\n" in data or b"\r" in data:
         return None
     raw = strict_base64(data)
@@ -592,18 +611,12 @@ def verify_release(context, stage, request, keys):
 def parse_fields(data):
     """dpkg-deb -f 的「欄位: 值」→ 字典；格式不對或重複時回傳 None。"""
     try:
-        text = data.decode("ascii")
+        matches = [FIELD.fullmatch(line) for line in data.decode("ascii").split("\n") if line]
     except UnicodeDecodeError:
         return None
-    fields = {}
-    for line in text.split("\n"):
-        if not line:
-            continue
-        match = FIELD.fullmatch(line)
-        if match is None or match.group(1) in fields:
-            return None
-        fields[match.group(1)] = match.group(2)
-    return fields
+    if None in matches or len({match.group(1) for match in matches}) != len(matches):
+        return None
+    return {match.group(1): match.group(2) for match in matches}
 
 
 def listing_entries(data):
@@ -613,17 +626,11 @@ def listing_entries(data):
         lines = data.decode("ascii").split("\n")
     except UnicodeDecodeError:
         return None
-    if lines and lines[-1] == "":
-        lines.pop()
-    if not lines or len(lines) > MAX_ENTRIES:
+    lines = lines[:-1] if lines and lines[-1] == "" else lines
+    matches = [LISTING_LINE.fullmatch(line) for line in lines]
+    if not lines or len(lines) > MAX_ENTRIES or None in matches:
         return None
-    entries = []
-    for line in lines:
-        match = LISTING_LINE.fullmatch(line)
-        if match is None:
-            return None
-        entries.append((match.group(1), match.group(3)))
-    return entries
+    return [(match.group(1), match.group(3)) for match in matches]
 
 
 def path_allowed(kind, path):
@@ -682,14 +689,18 @@ def lock_free(path):
     return True
 
 
-def wait_for_lock(context):
-    check = context.lock_free or lock_free
-    path = os.path.join(context.root, DPKG_LOCK)
-    deadline = context.clock() + LOCK_TIMEOUT_S
-    while not check(path):
+def wait_until(context, ready, timeout, poll):
+    """ready() 成功前每 poll 秒再試一次；超過 timeout 秒時拋出 Failed("busy")。"""
+    deadline = context.clock() + timeout
+    while not ready():
         if context.clock() >= deadline:
             raise Failed("busy")
-        context.sleep(LOCK_POLL_S)
+        context.sleep(poll)
+
+
+def wait_for_lock(context):
+    check, path = context.lock_free or lock_free, os.path.join(context.root, DPKG_LOCK)
+    wait_until(context, lambda: check(path), LOCK_TIMEOUT_S, LOCK_POLL_S)
 
 
 def apt_install(context, stage, request):
@@ -711,17 +722,18 @@ def apt_install(context, stage, request):
 def install(context, uid, request):
     inputs = open_inputs(request, uid)
     try:
-        installed = installed_version(context)
         keys = usable_keys(context.keys)
         if not keys:
             raise Failed("no-keys")
         with Workspace(context) as stage:
+            installed = installed_version(context)      # 在執行鎖之內讀取
             for fd, name, limit in zip(inputs, (request.name, CHECKSUMS_NAME, SIGNATURE_NAME),
                                        (DEB_MAX_BYTES, CHECKSUMS_MAX_BYTES, SIGNATURE_MAX_BYTES)):
                 stage.copy(fd, name, limit)
             verify_release(context, stage, request, keys)
             check_package(context, stage, request, installed)
-            (context.alarm or no_alarm)(0)
+            if context.alarm:
+                context.alarm(0)            # 之後是 dpkg 鎖與 apt-get 各自的時限
             wait_for_lock(context)
             apt_install(context, stage, request)
     finally:
@@ -745,7 +757,7 @@ def main(argv, env, context=None, emit=emit_json, report=log):
         emit({"protocol": PROTOCOL, "version": VERSION})
         return EXIT_OK
     context = context or production_context()
-    alarm = context.alarm or no_alarm
+    alarm = context.alarm or (lambda _seconds: None)
     try:
         alarm(PREPARE_TIMEOUT_S)
         uid = caller_uid(env, context)

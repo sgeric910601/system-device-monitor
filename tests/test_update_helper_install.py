@@ -3,6 +3,7 @@
 假根目錄代替 /；dpkg-query、dpkg-deb、apt-get 由 FakeSystem 回答（openssl 與
 dpkg --compare-versions 用真的），簽章用暫存目錄裡的一次性金鑰，經由 Context 注入。
 """
+import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -86,8 +87,10 @@ class Base(unittest.TestCase):
         self.sums.write_bytes(sums)
         self.sig.write_bytes((key or self.key).signature_file(sums))
 
+    clock_step = 10             # 假時鐘每次讀取前進的秒數
+
     def context(self, keys=None):
-        clock = iter(range(0, 10 ** 6, 10))
+        clock = iter(range(0, 10 ** 6, self.clock_step))
         return helper.Context(root=str(self.root.path), owner=USER, run=self.system, euid=0,
                               user_exists=lambda uid: True, helper_path=Update.HELPER,
                               uid_range=(1, 2 ** 31),
@@ -111,9 +114,10 @@ class Base(unittest.TestCase):
         self.assert_staging_empty()
 
     def assert_staging_empty(self):
+        """暫存目錄只剩執行鎖（.lock）。"""
         staging = self.root.path/STAGING
         if staging.exists():
-            self.assertEqual(os.listdir(staging), [])
+            self.assertEqual([name for name in os.listdir(staging) if name != ".lock"], [])
 
 
 class Success(Base):
@@ -170,7 +174,55 @@ class Success(Base):
         keep = self.root.path/STAGING/"not-ours"
         keep.write_text("x")
         self.assertEqual(self.run_helper(), helper.EXIT_OK)
-        self.assertEqual(os.listdir(self.root.path/STAGING), ["not-ours"])
+        self.assertEqual(sorted(os.listdir(self.root.path/STAGING)), [".lock", "not-ours"])
+
+
+class RunLock(Base):
+    """同一時間只有一個 sdm-update 在執行：staging/.lock（root 0600）的獨占 flock。"""
+    clock_step = 1
+
+    def lock_path(self):
+        self.root.directory(STAGING)
+        os.chmod(self.root.path/STAGING, 0o700)
+        return self.root.path/STAGING/".lock"
+
+    def hold(self, path):
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        os.chmod(path, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+
+    def test_a_second_run_waits_then_reports_busy(self):
+        path = self.lock_path()
+        stale = self.root.directory(STAGING + "/0123456789abcdef")
+        (stale/NAME).write_bytes(b"old")
+        self.hold(path)
+        self.assertEqual(self.run_helper(), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1], {"ok": False, "error": "failed", "reason": "busy"})
+        self.assertTrue(self.slept)
+        self.assertTrue(all(seconds == helper.RUN_LOCK_POLL_S for seconds in self.slept))
+        self.assertEqual(helper.RUN_LOCK_WAIT_S, 10)
+        self.assertTrue((stale/NAME).exists())          # 沒拿到鎖時不清理
+        self.assertEqual(self.system.tools(), [])        # 也沒有查詢或執行任何程式
+
+    def test_the_lock_is_root_only_and_released(self):
+        self.assertEqual(self.run_helper(), helper.EXIT_OK)
+        path = self.root.path/STAGING/".lock"
+        self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o600)
+        fd = self.hold(path)                             # 已經釋放
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+    def test_unsafe_lock_files_are_refused(self):
+        path = self.lock_path()
+        target = self.root.path/"elsewhere"
+        path.symlink_to(target)
+        self.failed("staging")
+        self.assertFalse(target.exists())
+        path.unlink()
+        path.write_text("")
+        path.chmod(0o644)
+        self.failed("staging")
 
 
 class Inputs(Base):

@@ -48,6 +48,7 @@ class Workflow(unittest.TestCase):
                         'expect 4 sudo "$update" install', "truncate -s 31M"):
             self.assertIn(command, WORKFLOW)
         self.assertNotIn("apt-get install -y \"$work", WORKFLOW)
+        self.assertIn("grep -vx .lock", WORKFLOW)       # 暫存目錄只能留下執行鎖
 
     def test_remove_and_purge_leave_nothing_behind(self):
         self.assertIn("sudo apt-get remove -y system-device-monitor", WORKFLOW)

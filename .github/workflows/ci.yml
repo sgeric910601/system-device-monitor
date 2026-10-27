@@ -202,7 +202,7 @@ jobs:
           fails input "$work/big/$name" "$sums" "$sig"
           sudo install -m 644 "$work/$name" "$work/root/$name"
           fails input "$work/root/$name" "$sums" "$sig"
-          sudo sh -c 'test ! -e /var/cache/system-device-monitor/staging || test -z "$(ls -A /var/cache/system-device-monitor/staging)"'
+          sudo sh -c 'test ! -e /var/cache/system-device-monitor/staging || test -z "$(ls -A /var/cache/system-device-monitor/staging | grep -vx .lock)"'
           test "$(dpkg-query -W -f='${Version}' system-device-monitor)" = "$(cat VERSION)"
       - name: Remove and purge
         run: |

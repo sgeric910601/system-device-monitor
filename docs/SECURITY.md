@@ -29,7 +29,7 @@
 | 保留的充電上限（開啟保留時才建立） | /var/lib/system-device-monitor/charge-limit.json | /var/lib/system-device-monitor/charge-limit-local.json | root 0644（目錄 0755） |
 | 更新小程式 sdm-update | /usr/libexec/system-device-monitor/ | （不提供） | root 0755 |
 | polkit 動作（更新） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy | （不提供） | root 0644 |
-| 更新的暫存目錄（安裝更新時才建立，用完清空） | /var/cache/system-device-monitor/staging | （不提供） | root 0700 |
+| 更新的暫存目錄與執行鎖（安裝更新時才建立，用完清空，只留 .lock） | /var/cache/system-device-monitor/staging、staging/.lock | （不提供） | root 0700、鎖 0600 |
 
 兩種安裝方式擇一：已安裝 .deb 時原始碼安裝會拒絕；.deb 安裝時若發現原始碼安裝的元件會提示移除。
 不安裝任何 polkit 規則（/etc/polkit-1/rules.d）或 setuid 程式，安裝時也不啟用任何服務；
@@ -310,8 +310,11 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
   只以參數清單執行、一行 JSON、結束碼 0／2／3／4、系統日誌只記錄動作名稱）；參數固定為
   install <.deb> <SHA256SUMS> <SHA256SUMS.sig>，檔名必須完全符合。三個檔案以
   O_NOFOLLOW｜O_NONBLOCK 開啟，fstat 必須是呼叫者擁有、不超過上限的一般檔案，經由描述子複製到
-  /var/cache/system-device-monitor/staging/<亂數>/（root 0700，O_EXCL），之後只用這份 root 的複本：
-  以內建公鑰驗證簽章、比對雜湊、dpkg-deb -f 檢查欄位並確認比 dpkg-query 查到的已安裝版本新、
+  /var/cache/system-device-monitor/staging/<亂數>/（root 0700，O_EXCL），之後只用這份 root 的複本。
+  同一時間只有一個 sdm-update 在執行：整段期間持有 staging/.lock（root 0600、O_NOFOLLOW）的獨占
+  flock，別人持有時最多等 10 秒，否則以 busy 結束；之前中斷留下的暫存檔只在持有這個鎖時清理，
+  已安裝的版本也在鎖內讀取。接著以內建公鑰驗證簽章、
+  比對雜湊、dpkg-deb -f 檢查欄位並確認比 dpkg-query 查到的已安裝版本新、
   dpkg-deb -c 確認每一項都只在本套件的位置（/usr/bin/system-device-monitor、
   /usr/share/system-device-monitor/、/usr/share/doc/system-device-monitor/、
   /usr/libexec/system-device-monitor/、/usr/share/applications/system-device-monitor*.desktop、

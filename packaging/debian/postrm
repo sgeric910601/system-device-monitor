@@ -1,8 +1,8 @@
 #!/bin/sh
 # 系統與裝置監看：移除後重新載入 systemd；完全移除（purge）時再刪除本套件的 drop-in
 # （目錄裡沒有其他檔案時連同目錄），並再確認一次 sdm-charge-limit 保留的充電上限已刪除
-# （prerm 移除時已刪；/var/lib/system-device-monitor 空了才刪除目錄），以及更新小程式的暫存目錄
-# （/var/cache/system-device-monitor，只在空的時候刪除）。從不遞迴刪除目錄。
+# （prerm 移除時已刪；/var/lib/system-device-monitor 空了才刪除目錄），以及更新小程式的執行鎖與
+# 暫存目錄（/var/cache/system-device-monitor，只在空的時候刪除）。從不遞迴刪除目錄。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只刪除檔案。
 set -e
 
@@ -21,6 +21,7 @@ if [ "$1" = "purge" ]; then
     rmdir "$UNIT_DIR/$SOCKET.d" 2>/dev/null || true
     rm -f "$STATE_DIR/charge-limit.json"
     rmdir "$STATE_DIR" 2>/dev/null || true
+    rm -f "$CACHE_DIR/staging/.lock"
     rmdir "$CACHE_DIR/staging" 2>/dev/null || true
     rmdir "$CACHE_DIR" 2>/dev/null || true
 fi

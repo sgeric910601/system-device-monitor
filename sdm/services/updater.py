@@ -50,7 +50,7 @@ REASON_TEXT = {
     "package": "下載的套件與這個程式或版本不符",
     "not-newer": "下載的版本沒有比已安裝的版本新",
     "contents": "套件含有不允許的檔案，已拒絕安裝",
-    "busy": "套件管理程式忙碌中（例如正在自動更新），請稍後再試",
+    "busy": "套件管理程式或另一個更新正在進行中（例如系統正在自動更新），請稍後再試",
     "apt": "apt-get 安裝失敗（詳情見 /var/log/apt/term.log）",
     "apt-timeout": ("apt-get 超過 30 分鐘仍未完成，已要求它停止；套件可能只裝了一半，"
                     "請執行 sudo dpkg --configure -a 後再試"),
