@@ -45,7 +45,9 @@ class Workflow(unittest.TestCase):
         for command in ('expect 0 "$update" --protocol', 'expect 2 sudo "$update" install',
                         'fails "$unsigned"', 'fails input "$work/link/$name"',
                         'fails input "$work/big/$name"', 'fails input "$work/root/$name"',
-                        'expect 4 sudo "$update" install', "truncate -s 31M"):
+                        'expect 4 sudo "$update" install', "truncate -s 31M",
+                        'fails channel "$work/beta/$beta"',
+                        'fails "$unsigned" --allow-beta "$work/beta/$beta"'):
             self.assertIn(command, WORKFLOW)
         self.assertNotIn("apt-get install -y \"$work", WORKFLOW)
         self.assertIn("grep -vx .lock", WORKFLOW)       # 暫存目錄只能留下執行鎖

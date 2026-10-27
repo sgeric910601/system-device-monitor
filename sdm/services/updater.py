@@ -9,7 +9,8 @@
 - 安裝只用在 .deb：工作執行緒下載並驗證（update_install.prepare），再以 pkexec 執行 sdm-update；
   一直等到 pkexec 真的結束才決定結果（超過 300 秒改顯示「仍在安裝中…」，按鈕維持停用，因為 root 端
   可能還在安裝）。成功時呼叫 hooks.installed（看板重新啟動），失敗時保留新版本並說明原因。
-  沒有內建公鑰時一律拒絕安裝。暫存目錄在 pkexec 結束後刪除。
+  沒有內建公鑰時一律拒絕安裝。暫存目錄在 pkexec 結束後刪除。只有使用者在手動檢查時選到的測試版，
+  才會傳 --allow-beta 給 sdm-update（它拒絕沒有這個參數的測試版）；正式版與自動檢查從不傳。
 模擬測試與示範模式不建立這個物件（示範模式用 update_demo）。
 """
 from dataclasses import dataclass, replace
@@ -52,6 +53,7 @@ REASON_TEXT = {
     "package": "下載的套件與這個程式或版本不符",
     "not-newer": "下載的版本沒有比已安裝的版本新",
     "contents": "套件含有不允許的檔案，已拒絕安裝",
+    "channel": "這是測試版，只有在手動檢查並選擇測試版時才會安裝",
     "busy": "套件管理程式或另一個更新正在進行中（例如系統正在自動更新），請稍後再試",
     "apt": "apt-get 安裝失敗（詳情見 /var/log/apt/term.log）",
     "apt-timeout": ("apt-get 超過 30 分鐘仍未完成，已要求它停止；套件可能只裝了一半，"
@@ -59,6 +61,8 @@ REASON_TEXT = {
     "timeout": "更新元件執行逾時",
 }
 HELPER_FAILED = "更新元件執行失敗（詳情見系統日誌）"
+BETA_NOT_CHOSEN = "測試版只能在「立即檢查」列出後安裝"
+ALLOW_BETA = "--allow-beta"
 UNAUTHORIZED_CODES = (126, 127)
 LAST_CHECK, LAST_NOTIFIED = "last_check", "last_notified"
 
@@ -148,6 +152,7 @@ class Updater:
         self.memory = memory or UpdateMemory(None)
         self.state = UpdateState(last_check=self.memory.last_check)
         self.generation, self.stopped, self.timers = 0, False, []
+        self.beta_choice = None         # 使用者在手動檢查時看到的測試版（只有它可以傳 --allow-beta）
 
     @property
     def keys_configured(self):
@@ -244,6 +249,7 @@ class Updater:
     def found(self, manual, found, now):
         choice = choose(found, self.current)
         release = choice.beta if manual and choice.beta and not choice.stable else choice.stable
+        self.beta_choice = release if release is not None and release.is_beta else None
         if release is None:
             self.update(phase=LATEST, release=None, last_check=now)
             return
@@ -264,6 +270,9 @@ class Updater:
             return False
         if not self.keys_configured or not release.signed:
             self.update(error=INSTALL_FAILED + (UNSIGNED if self.keys_configured else NO_KEYS))
+            return False
+        if release.is_beta and release != self.beta_choice:
+            self.update(error=INSTALL_FAILED + BETA_NOT_CHOSEN)
             return False
         self.generation += 1
         generation = self.generation
@@ -286,7 +295,8 @@ class Updater:
             self.install_failed(release, NETWORK)
             return False
         self.update(phase=INSTALLING)
-        argv = [Update.PKEXEC, Update.HELPER, "install", str(files.deb), str(files.sums),
+        flags = [ALLOW_BETA] if release.is_beta and release == self.beta_choice else []
+        argv = [Update.PKEXEC, Update.HELPER, "install", *flags, str(files.deb), str(files.sums),
                 str(files.signature)]
         self.services.runner.run(argv, Update.PKEXEC_TIMEOUT,
                                  lambda: self.still_installing(generation),

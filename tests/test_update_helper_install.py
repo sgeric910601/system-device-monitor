@@ -101,8 +101,9 @@ class Base(unittest.TestCase):
     def lock_free(self, path):
         return self.lock_states.pop(0) if self.lock_states else True
 
-    def run_helper(self, keys=None, uid=USER, paths=None):
-        argv = ["install", *(str(path) for path in (paths or (self.deb, self.sums, self.sig)))]
+    def run_helper(self, keys=None, uid=USER, paths=None, flags=()):
+        argv = ["install", *flags,
+                *(str(path) for path in (paths or (self.deb, self.sums, self.sig)))]
         return helper.main(argv, {"PKEXEC_UID": str(uid)}, self.context(keys),
                            emit=self.output.append, report=self.logged.append)
 
@@ -159,13 +160,24 @@ class Success(Base):
         self.assertEqual(self.run_helper(), helper.EXIT_OK)
         self.assertEqual(self.system.staged, PACKAGE)
 
-    def test_beta_packages(self):
+    def beta(self):
         name = "system-device-monitor_9.9.9~beta.2_all.deb"
         self.deb = self.user/name
         self.write_release(PACKAGE, listed=name)
         self.system.fields = self.system.fields.replace("9.9.9", "9.9.9~beta.2")
         self.system.apt_installs = "9.9.9~beta.2"
-        self.assertEqual(self.run_helper(), helper.EXIT_OK)
+
+    def test_beta_packages_need_the_explicit_opt_in(self):
+        self.beta()
+        self.assertEqual(self.run_helper(flags=("--allow-beta",)), helper.EXIT_OK)
+
+    def test_beta_packages_without_the_opt_in_are_refused(self):
+        self.beta()
+        self.failed("channel")
+        self.assertEqual(self.system.tools(), [])       # 在讀取任何檔案或執行任何程式之前
+
+    def test_stable_packages_are_installed_with_or_without_the_opt_in(self):
+        self.assertEqual(self.run_helper(flags=("--allow-beta",)), helper.EXIT_OK)
 
     def test_stale_runs_are_cleaned_and_other_entries_kept(self):
         stale = self.root.directory(STAGING + "/0123456789abcdef")

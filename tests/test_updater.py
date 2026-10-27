@@ -1,5 +1,6 @@
 """一鍵更新的協調：排程（15 秒、6 小時、24 小時的閘門，假時鐘）、每個版本只通知一次、
 Beta 只在手動檢查時列出、檢查失敗，以及安裝流程（pkexec 由假的執行器代替）。"""
+import dataclasses
 import json
 from pathlib import Path
 import unittest
@@ -307,6 +308,31 @@ class Install(Base):
         self.assertEqual(self.hooks.installed, 1)
         self.assertEqual(self.cleaned, [Path("/run/user/1000/sdm-update-x")])
 
+    def test_stable_installs_never_pass_the_beta_opt_in(self):
+        updater = self.available()
+        updater.install()
+        self.assertNotIn("--allow-beta", self.runner.calls[-1][0])
+
+    def test_a_beta_chosen_in_a_manual_check_passes_the_opt_in(self):
+        self.responses = [listing(entry("v0.3.0-beta.1", prerelease=True), entry("v0.2.0"))]
+        updater = self.available()
+        self.assertTrue(updater.state.release.is_beta)
+        updater.install()
+        argv = self.runner.calls[-1][0]
+        self.assertEqual(argv[:4], [Update.PKEXEC, Update.HELPER, "install", "--allow-beta"])
+        self.assertTrue(argv[4].endswith("system-device-monitor_0.3.0~beta.1_all.deb"))
+
+    def test_a_beta_that_was_not_chosen_manually_is_refused(self):
+        self.responses = [listing(entry("v0.3.0-beta.1", prerelease=True), entry("v0.2.0"))]
+        updater = self.make()
+        updater.check_now()
+        beta = updater.state.release
+        other = self.make()                       # 同一個 Release，但沒有經過手動檢查選擇
+        other.state = dataclasses.replace(other.state, phase=AVAILABLE, release=beta)
+        other.install()
+        self.assertTrue(other.state.error.startswith("安裝失敗："))
+        self.assertEqual((self.prepared, self.runner.calls), ([], []))
+
     def test_source_checkouts_never_install(self):
         updater = self.available(kind=KIND_SOURCE)
         self.assertFalse(updater.installable)
@@ -345,6 +371,7 @@ class Install(Base):
                  (3, '{"ok":false,"error":"failed","reason":"apt-timeout"}',
                   "sudo dpkg --configure -a"),
                  (3, '{"ok":false,"error":"failed","reason":"no-keys"}', "簽章金鑰"),
+                 (3, '{"ok":false,"error":"failed","reason":"channel"}', "測試版"),
                  (3, '{"ok":false,"error":"failed","reason":"other"}', "系統日誌"),
                  (2, "", "重新安裝"), (4, "", "沒有權限"),
                  (0, '{"ok":true,"action":"install","version":"0.2.9"}', "版本"),

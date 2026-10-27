@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -IB
 """系統與裝置監看：安裝已簽章更新的管理員小程式（由 pkexec 執行，只隨 .deb 安裝）。
 
-用法：sdm-update install <.deb> <SHA256SUMS> <SHA256SUMS.sig>；sdm-update --protocol（不需要權限）。
+用法：sdm-update install [--allow-beta] <.deb> <SHA256SUMS> <SHA256SUMS.sig>；sdm-update --protocol
+（不需要權限）。測試版（~beta）只有加上 --allow-beta 才安裝。
 完整的檢查順序與威脅模型見 docs/SECURITY.md 的「一鍵更新與發布簽章」。重點：只信任內建的公鑰
 PUBLIC_KEYS（絕不從環境變數或參數讀取）；輸入檔經由描述子複製到 root 0700 的暫存目錄後，只用 root 的
 複本驗證簽章、雜湊與套件內容，再以 apt-get 安裝。固定的 PATH，只以參數清單執行固定路徑的程式，從不經過
@@ -88,8 +89,9 @@ CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEX
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
 LOG_IDENT = "sdm-update"
-REASONS = ("location", "input", "not-deb", "no-keys", "staging", "signature", "checksum",
+REASONS = ("location", "channel", "input", "not-deb", "no-keys", "staging", "signature", "checksum",
            "package", "not-newer", "contents", "busy", "apt", "apt-timeout", "timeout", "system")
+ALLOW_BETA = "--allow-beta"     # 只有使用者在手動檢查時選擇了測試版，看板才會傳這個參數
 
 
 class Usage(Exception):
@@ -117,6 +119,7 @@ class Request(NamedTuple):
     deb: str = ""
     sums: str = ""
     signature: str = ""
+    allow_beta: bool = False
 
     @property
     def name(self):
@@ -233,9 +236,11 @@ def clean_path(path):
 def parse_args(argv):
     if argv == [PROTOCOL_FLAG]:
         return Request(PROTOCOL_FLAG)
-    if len(argv) != 4 or argv[0] != COMMAND or not all(clean_path(path) for path in argv[1:]):
+    allow_beta = argv[1:2] == [ALLOW_BETA]
+    paths = argv[2:] if allow_beta else argv[1:]
+    if argv[:1] != [COMMAND] or len(paths) != 3 or not all(clean_path(path) for path in paths):
         raise Usage()
-    request = Request(COMMAND, *argv[1:])
+    request = Request(COMMAND, *paths, allow_beta=allow_beta)
     if not DEB_PATTERN.fullmatch(request.name) \
             or os.path.basename(request.sums) != CHECKSUMS_NAME \
             or os.path.basename(request.signature) != SIGNATURE_NAME:
@@ -720,6 +725,8 @@ def apt_install(context, stage, request):
 
 
 def install(context, uid, request):
+    if "~beta." in request.version and not request.allow_beta:
+        raise Failed("channel")     # 測試版只在明確選擇時安裝（簽章不含發布管道）
     inputs = open_inputs(request, uid)
     try:
         keys = usable_keys(context.keys)

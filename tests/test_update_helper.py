@@ -87,7 +87,19 @@ class Arguments(Base):
     def test_beta_names_are_accepted(self):
         request = helper.parse_args(["install", "/x/system-device-monitor_1.2.3~beta.4_all.deb",
                                      "/x/SHA256SUMS", "/x/SHA256SUMS.sig"])
-        self.assertEqual(request.version, "1.2.3~beta.4")
+        self.assertEqual((request.version, request.allow_beta), ("1.2.3~beta.4", False))
+
+    def test_beta_opt_in_is_an_explicit_argument(self):
+        request = helper.parse_args(["install", "--allow-beta", DEB, SUMS, SIG])
+        self.assertTrue(request.allow_beta)
+        for argv in (["install", DEB, "--allow-beta", SUMS, SIG], ["install", "--allow-beta"],
+                     ["install", "--allow-beta", "--allow-beta", DEB, SUMS, SIG],
+                     ["install", "--ALLOW-BETA", DEB, SUMS, SIG],
+                     ["install", "--allow-beta=yes", DEB, SUMS, SIG],
+                     ["install", DEB, SUMS, SIG, "--allow-beta"]):
+            with self.subTest(argv=argv):
+                self.output.clear()
+                self.assertEqual(self.main(argv), helper.EXIT_USAGE)
 
     def test_protocol_needs_no_privileges(self):
         self.assertEqual(self.main(["--protocol"], env={}, euid=1000), helper.EXIT_OK)

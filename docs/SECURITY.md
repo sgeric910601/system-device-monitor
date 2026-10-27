@@ -308,7 +308,9 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - sdm-update 以 root 執行時不相信程式端的檢查，自己再做一次：沿用開關小程式的規則
   （#!/usr/bin/python3 -IB、只用標準函式庫、執行路徑一字不差、PKEXEC_UID 是一般帳號、固定的 PATH、
   只以參數清單執行、一行 JSON、結束碼 0／2／3／4、系統日誌只記錄動作名稱）；參數固定為
-  install <.deb> <SHA256SUMS> <SHA256SUMS.sig>，檔名必須完全符合。三個檔案以
+  install [--allow-beta] <.deb> <SHA256SUMS> <SHA256SUMS.sig>，檔名必須完全符合。測試版（~beta）的
+  套件只有加上 --allow-beta 才會往下檢查，否則以 channel 結束；看板只在使用者以「立即檢查」看到並
+  選擇了測試版時才傳這個參數，正式版與自動檢查從不傳。三個檔案以
   O_NOFOLLOW｜O_NONBLOCK 開啟，fstat 必須是呼叫者擁有、不超過上限的一般檔案，經由描述子複製到
   /var/cache/system-device-monitor/staging/<亂數>/（root 0700，O_EXCL），之後只用這份 root 的複本。
   同一時間只有一個 sdm-update 在執行：整段期間持有 staging/.lock（root 0600、O_NOFOLLOW）的獨占

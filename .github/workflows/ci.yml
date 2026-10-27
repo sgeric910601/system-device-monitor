@@ -182,7 +182,7 @@ jobs:
           }
           name=system-device-monitor_9.9.9_all.deb
           work=$(mktemp -d)
-          mkdir "$work/link" "$work/big" "$work/root"
+          mkdir "$work/link" "$work/big" "$work/root" "$work/beta"
           cp dist/*.deb "$work/$name"
           sha256sum "$work/$name" | sed "s|  .*|  $name|" > "$work/SHA256SUMS"
           printf 'AAAA\n' > "$work/SHA256SUMS.sig"
@@ -196,6 +196,11 @@ jobs:
           expect 4 sudo "$update" install "$work/$name" "$sums" "$sig"
           unsigned=$(/usr/bin/python3 -B -c 'from sdm.constants import Update; print("signature" if Update.PUBLIC_KEYS else "no-keys")')
           fails "$unsigned" "$work/$name" "$sums" "$sig"
+          # 測試版只有加上 --allow-beta（使用者在手動檢查時選擇）才會往下檢查
+          beta=system-device-monitor_9.9.9~beta.1_all.deb
+          cp "$work/$name" "$work/beta/$beta"
+          fails channel "$work/beta/$beta" "$sums" "$sig"
+          fails "$unsigned" --allow-beta "$work/beta/$beta" "$sums" "$sig"
           ln -s "$work/$name" "$work/link/$name"
           fails input "$work/link/$name" "$sums" "$sig"
           truncate -s 31M "$work/big/$name"
