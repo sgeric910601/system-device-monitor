@@ -68,6 +68,7 @@ RUN_NAME = re.compile(r"[0-9a-f]{16}", re.ASCII)
 LISTING_LINE = re.compile(r"([-d])(r[-w][-x][-r]-[-x][-r]-[-x]) root/root +[0-9]+ "
                           r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} \./(.*)", re.ASCII)
 SEGMENT = re.compile(r"[A-Za-z0-9._+@-]+", re.ASCII)
+# dpkg-deb -c 的位置清單只是縱深防禦，把關的是簽章（簽過的套件本來就能以 root 執行安裝前後腳本）
 FILE_RULES = tuple(re.compile(rule, re.ASCII) for rule in (
     r"usr/bin/system-device-monitor",
     r"usr/share/applications/system-device-monitor[A-Za-z0-9._-]*\.desktop",

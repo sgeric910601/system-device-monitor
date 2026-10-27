@@ -281,6 +281,8 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 
 做法與 Sparkle（macOS 常見的更新框架）及維護者的 macOS 版相同：維護者以離線保管的 Ed25519 私鑰簽
 每個 Release 的 SHA256SUMS，程式內建對應的公鑰；只有簽章與檢查碼都相符的 .deb 才會安裝。
+格式相同，但金鑰必須是本專案專用：絕不沿用 macOS 版（Sparkle）的金鑰或任何其他產品的金鑰。
+共用金鑰時，別的產品簽過的 SHA256SUMS 也能在這裡通過驗證，任何一邊外洩都會連累另一邊。
 
 - 簽章格式：SHA256SUMS.sig 是一行 base64，內容是對 SHA256SUMS 檔案原始位元組的 64 位元組 Ed25519
   簽章。公鑰是 32 位元組原始公鑰的 base64，放在陣列裡：sdm/constants.py 的 Update.PUBLIC_KEYS 與
@@ -322,7 +324,9 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
   /usr/libexec/system-device-monitor/、/usr/share/applications/system-device-monitor*.desktop、
   /usr/share/polkit-1/actions/tw.local.system-device-monitor*、/usr/lib/systemd/system/system-device-monitor*、
   /usr/share/icons/hicolor/*/apps/system-device-monitor.png），只有一般檔案與目錄、擁有者 root/root、
-  沒有 setuid／setgid／黏著位元、沒有群組或其他人可寫、沒有「..」。接著以 fcntl 等 dpkg 的前端鎖
+  沒有 setuid／setgid／黏著位元、沒有群組或其他人可寫、沒有「..」。這份位置清單只是縱深防禦，把關的是簽章：
+  維護者簽過的套件本來就能在安裝前後腳本以 root 執行任何程式，清單只是在簽章流程出錯時多一道限制。
+  接著以 fcntl 等 dpkg 的前端鎖
   （最多 120 秒，忙碌時乾淨地失敗），以 apt-get install -y --no-install-recommends --no-remove
   （DEBIAN_FRONTEND=noninteractive）安裝暫存的複本，確認已安裝的版本後刪除複本。apt-get 在自己的
   程序群組執行，時限 30 分鐘；超過時只對整個群組送 SIGTERM、再等 60 秒，絕不送 SIGKILL（中途強制結束
@@ -331,9 +335,14 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - 為什麼簽章在小程式裡還要再驗一次：就算你的帳號被入侵、而且你輸入了管理員密碼，root 端也只會
   安裝維護者簽過的 .deb；被竄改的 GitHub 帳號或 Release 檔案同樣無法讓程式安裝沒有簽章的套件。
   不能降級，也不能重裝同一版。
-- 簽章不能防的事：維護者的私鑰外洩；能攔截網路的人讓你一直看不到新版本（看板只會顯示
-  「已是最新版本」或檢查失敗）；新版本本身的程式錯誤。apt-get 會照常從系統設定的套件庫安裝新版本
-  需要的相依套件。
+- 簽章不能防的事：
+  - 維護者的私鑰外洩（換金鑰的方式見上方）；新版本本身的程式錯誤。
+  - 控制了 GitHub（帳號、Release 檔案或 API 回應）或網路、但沒有私鑰的人，可以隱藏比較新的版本，
+    讓你一直停在目前的版本（看板只會顯示「已是最新版本」或檢查失敗）；也可以只提供某個
+    比已安裝的新、但不是最新的已簽章版本（例如還有已知問題的舊版），看板仍會安裝它。簽章不含發布管道或時間，
+    無法分辨這些情況：只保證不能降級、不能重裝同一版，測試版只在加上 --allow-beta（使用者在
+    「立即檢查」選擇了測試版）時才安裝。對新版本有疑問時，請直接到 GitHub 的 Releases 頁面確認。
+  - apt-get 會照常從系統設定的套件庫安裝新版本需要的相依套件，那些套件由 Ubuntu 的套件簽章保護。
 
 ## 永遠不做的事
 

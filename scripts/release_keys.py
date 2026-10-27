@@ -30,7 +30,8 @@ PRIVATE_FILE = 0o600
 PUBLIC_FILE = 0o644
 PEM_HEADER = b"-----BEGIN " + b"PRIVATE KEY-----"
 CREATE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-BACKUP = ("請把整個資料夾備份到離線的位置（例如加密的隨身碟），並記住備份在哪裡。\n"
+BACKUP = ("這把金鑰是本專案專用的：不要拿來簽其他產品，也絕不沿用 macOS 版（Sparkle）的金鑰。\n"
+          "請把整個資料夾備份到離線的位置（例如加密的隨身碟），並記住備份在哪裡。\n"
           "遺失私鑰就無法再發布可以一鍵更新的版本，只能換新金鑰、讓使用者手動安裝一次；\n"
           "私鑰外洩時要立刻換新金鑰並從公鑰陣列移除舊的。私鑰絕不要放進 Git、雲端同步資料夾或專案資料夾。")
 

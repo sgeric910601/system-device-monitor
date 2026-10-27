@@ -142,7 +142,8 @@ CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。
 
 ### 發布簽章金鑰（只做一次）
 
-一鍵更新只安裝以維護者私鑰簽過的版本（Ed25519，與 macOS 版相同的格式）。在自己的電腦上、
+一鍵更新只安裝以維護者私鑰簽過的版本（Ed25519，與 macOS 版相同的格式）。這把金鑰是本專案專用的，
+不要沿用 macOS 版（Sparkle）或其他產品的金鑰。在自己的電腦上、
 任何 git 工作樹以外產生金鑰（腳本會拒絕專案資料夾與 git 工作樹，資料夾 0700、私鑰 0600）：
 
     /usr/bin/python3 -B scripts/release_keys.py generate --out-dir "$HOME/release-keys/system-device-monitor"

@@ -41,6 +41,20 @@ class Documents(unittest.TestCase):
                    "/var/cache/system-device-monitor/staging", "apt-get", "--no-remove",
                    "dpkg-deb -c")
 
+    def test_security_states_the_limits_of_signatures(self):
+        self.check("docs/SECURITY.md", "隱藏比較新的版本", "比已安裝的新、但不是最新",
+                   "簽章不含發布管道或時間", "--allow-beta", "本專案專用",
+                   "絕不沿用 macOS 版（Sparkle）的金鑰", "只是縱深防禦，把關的是簽章")
+
+    def test_key_generation_warns_against_reusing_keys(self):
+        keys = load_script("release_keys")
+        self.assertIn("本專案專用", keys.BACKUP)
+        self.assertIn("Sparkle", keys.BACKUP)
+        self.check("docs/BUILD.md", "本專案專用")
+
+    def test_helper_marks_the_allowlist_as_defence_in_depth(self):
+        self.check("helper/sdm-update", "只是縱深防禦，把關的是簽章")
+
     def test_build(self):
         self.check("docs/BUILD.md", "release_keys.py generate --out-dir", "--signing-key",
                    "SDM_RELEASE_SIGNING_KEY", "SHA256SUMS.sig", "make release-assets SIGNING_KEY=")
