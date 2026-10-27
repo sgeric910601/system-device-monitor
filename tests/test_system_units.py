@@ -159,7 +159,9 @@ class ServiceHelper(unittest.TestCase):
                      "sdm-cpu-power": ("ctypes", "importlib", "shutil", "pickle"),
                      "sdm-charge-limit": ("ctypes", "importlib", "shutil", "pickle"),
                      "sdm-update": ("ctypes", "importlib", "shutil", "pickle", "urllib"),
-                     "sdm-wake": ("subprocess", "ctypes", "importlib", "shutil", "pickle")}
+                     "sdm-wake": ("subprocess", "ctypes", "importlib", "shutil", "pickle"),
+                     "sdm-unattended": ("subprocess", "ctypes", "importlib", "shutil",
+                                        "pickle")}
         self.assertEqual(sorted(path.name for path in HELPERS.glob("sdm-*")), sorted(forbidden))
         for name, refused in forbidden.items():
             with self.subTest(helper=name):

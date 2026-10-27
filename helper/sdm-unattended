@@ -1,0 +1,500 @@
+#!/usr/bin/python3 -IB
+"""系統與裝置監看：開關「允許無人時自動調整」的管理員小程式（由 pkexec 執行，每次都要管理員密碼）。
+
+用法：grant｜revoke｜status｜--protocol。完整的規則見 docs/SECURITY.md「無人授權」，重點：
+- 參數不符時結束碼 2（在檢查權限之前）。grant、revoke、status：root，而且 PKEXEC_UID 是
+  /etc/login.defs 範圍內、存在的一般帳號；否則結束碼 4。
+- 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己與每一層上層目錄都屬於 root
+  且群組與其他人不可寫。一次只執行一個（/run/system-device-monitor/unattended.lock，root 0600）。
+- grant：帳號名稱必須符合 ^[a-z_][a-z0-9_-]{0,31}$，而且以名稱查回的 uid 必須就是 PKEXEC_UID；
+  依固定的範本（只代入帳號名稱）寫入 /etc/polkit-1/rules.d/49-system-device-monitor.rules
+  （root 0644，暫存檔 O_EXCL＋fsync＋改名）；/etc、polkit-1、rules.d 必須已存在，逐層確認屬於 root
+  且群組與其他人不可寫，不跟隨符號連結；既有的同名項目不是一般檔案時拒絕。
+- revoke：只刪除那一個檔案（一般檔案或符號連結，不跟隨）。status：讀那個檔案，與範本比對。
+- 規則只對開啟它的帳號、本機作用中的工作階段，讓充電上限的 set 與喚醒的 set、clear 免密碼
+  （動作 ID 完整比對，再確認 pkexec 傳來的程式路徑、目標帳號 root 與命令列）；其他一律不做決定。
+- 不執行任何外部程式；標準輸出只有一行 JSON；結束碼 0、2、3、4；系統日誌只記錄動作與結果，
+  不記錄帳號。只使用標準函式庫。
+"""
+import fcntl
+import json
+import os
+import pwd
+import re
+import secrets
+import stat
+import sys
+import syslog
+import time
+from typing import Callable, NamedTuple
+
+PROTOCOL = 1
+VERSION = "1.0"
+EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
+HELPER_NAME = "sdm-unattended"
+PROTOCOL_FLAG = "--protocol"
+COMMANDS = ("grant", "revoke", "status")
+LOGGED_ERRORS = ("busy", "unsupported-user", "no-rules-directory")
+SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
+UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
+USER_PATTERN = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+MAX_UID = 4294967294
+NOBODY = 65534
+LOGIN_DEFS = "/etc/login.defs"
+LOGIN_DEFS_MAX_BYTES = 65536
+DEFAULT_UID_RANGE = (1000, 60000)       # login.defs 讀不到時的一般帳號範圍
+RULES_DIR = "etc/polkit-1/rules.d"      # 相對於根目錄
+RULE_NAME = "49-system-device-monitor.rules"
+RULE_MODE = 0o644
+RULE_MAX_BYTES = 16384
+RUN_DIR = "run/system-device-monitor"
+LOCK_NAME = "unattended.lock"
+LOCK_WAIT_S = 10.0
+LOCK_POLL_S = 0.1
+LOCK_MODE = 0o600
+PRIVATE_BITS = 0o077
+DIRECTORY_MODE = 0o755
+UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
+DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+LOG_IDENT = "sdm-unattended"
+USER_MARK = "@USER@"
+USER_LINE = re.compile(r'    var user = "([a-z_][a-z0-9_-]{0,31})";\n')
+# 規則範本：只代入帳號名稱（已驗證，不含引號、反斜線或換行）。polkitd 以 duktape 執行，只用 ES5。
+RULE_TEMPLATE = """\
+// 系統與裝置監看：允許無人時自動調整（由 sdm-unattended grant 建立；revoke 或移除套件時刪除）。
+// 只讓下面這個帳號在本機、作用中的工作階段，不輸入密碼執行充電上限小程式的 set，
+// 以及定時喚醒小程式的 set 與 clear；兩個 status 動作只用來查詢這條規則是否生效，沒有任何作用。
+// 其他帳號、遠端或非作用中的工作階段、其他動作或參數一律不做決定，回到預設（需要管理員密碼）。
+// 請勿修改：這個檔案依固定的範本產生，修改後看板會顯示規則已被修改。
+polkit.addRule(function (action, subject) {
+    var user = "@USER@";
+    var allowed = [
+        ["tw.local.system-device-monitor.unattended.charge-limit",
+         "/usr/libexec/system-device-monitor/sdm-charge-limit", "set"],
+        ["tw.local.system-device-monitor.unattended.local.charge-limit",
+         "/usr/local/libexec/system-device-monitor/sdm-charge-limit", "set"],
+        ["tw.local.system-device-monitor.unattended.wake",
+         "/usr/libexec/system-device-monitor/sdm-wake", "set"],
+        ["tw.local.system-device-monitor.unattended.wake-clear",
+         "/usr/libexec/system-device-monitor/sdm-wake", "clear"],
+        ["tw.local.system-device-monitor.unattended.local.wake",
+         "/usr/local/libexec/system-device-monitor/sdm-wake", "set"],
+        ["tw.local.system-device-monitor.unattended.local.wake-clear",
+         "/usr/local/libexec/system-device-monitor/sdm-wake", "clear"],
+        ["tw.local.system-device-monitor.unattended.status", "", ""],
+        ["tw.local.system-device-monitor.unattended.local.status", "", ""]
+    ];
+    if (subject.user !== user || subject.local !== true || subject.active !== true) {
+        return undefined;
+    }
+    for (var i = 0; i < allowed.length; i++) {
+        var id = allowed[i][0], program = allowed[i][1], command = allowed[i][2];
+        if (action.id !== id) {
+            continue;
+        }
+        if (program === "") {
+            return polkit.Result.YES;
+        }
+        var line = action.lookup("command_line");
+        if (action.lookup("program") !== program || action.lookup("user") !== "root" ||
+                typeof line !== "string") {
+            return undefined;
+        }
+        var prefix = program + " " + command;
+        if (command === "clear" ? line === prefix :
+                line.slice(0, prefix.length + 1) === prefix + " ") {
+            return polkit.Result.YES;
+        }
+        return undefined;
+    }
+    return undefined;
+});
+"""
+
+
+class Usage(Exception):
+    """參數不符合固定的用法。"""
+
+
+class NotPermitted(Exception):
+    """不是經由 pkexec 的一般使用者。"""
+
+
+class Failed(Exception):
+    """無法安全地完成；訊息是固定的英文代號（也是輸出的 error）。"""
+
+
+class Layout(NamedTuple):
+    kind: str
+    helper_dir: str
+
+
+LAYOUTS = (Layout("deb", "/usr/libexec/system-device-monitor"),
+           Layout("local", "/usr/local/libexec/system-device-monitor"))
+
+
+def user_name(uid):
+    return pwd.getpwuid(uid).pw_name
+
+
+def user_uid(name):
+    return pwd.getpwnam(name).pw_uid
+
+
+def user_exists(uid):
+    try:
+        pwd.getpwuid(uid)
+    except KeyError:
+        return False
+    return True
+
+
+class Context(NamedTuple):
+    """執行環境；測試以假根目錄、假的擁有者與假的帳號資料庫代替。"""
+    root: str
+    owner: int
+    euid: int
+    user_exists: Callable
+    user_name: Callable                 # uid → 帳號名稱（找不到時拋出 KeyError）
+    user_uid: Callable                  # 帳號名稱 → uid
+    helper_path: str                    # 實際執行的路徑（sys.argv[0]），不正規化
+    uid_range: tuple = DEFAULT_UID_RANGE
+    sleep: Callable = time.sleep
+    clock: Callable = time.monotonic
+
+
+def log(message):
+    syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
+    syslog.syslog(syslog.LOG_INFO, message)
+
+
+def parse_login_defs(text):
+    """（UID_MIN、UID_MAX）；缺少或不合理的值改用預設。"""
+    values = {}
+    for line in text.splitlines():
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0] in ("UID_MIN", "UID_MAX") \
+                and UID_PATTERN.fullmatch(words[1]):
+            values[words[0]] = int(words[1])
+    low = values.get("UID_MIN", DEFAULT_UID_RANGE[0])
+    high = values.get("UID_MAX", DEFAULT_UID_RANGE[1])
+    return (low, high) if 0 < low <= high <= MAX_UID else DEFAULT_UID_RANGE
+
+
+def login_uid_range(path=LOGIN_DEFS):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return parse_login_defs(handle.read(LOGIN_DEFS_MAX_BYTES))
+    except OSError:
+        return DEFAULT_UID_RANGE
+
+
+def production_context():
+    return Context(root="/", owner=0, euid=os.geteuid(), user_exists=user_exists,
+                   user_name=user_name, user_uid=user_uid, helper_path=sys.argv[0],
+                   uid_range=login_uid_range())
+
+
+# ── 參數、權限與位置 ───────────────────────────────────────
+
+def parse_args(argv):
+    if len(argv) == 1 and argv[0] in COMMANDS + (PROTOCOL_FLAG,):
+        return argv[0]
+    raise Usage()
+
+
+def caller_uid(env, context):
+    """pkexec 設定的 PKEXEC_UID：十進位、在一般帳號的範圍內、不是 root 或 nobody，而且帳號存在。"""
+    if context.euid != 0:
+        raise NotPermitted()
+    text = env.get("PKEXEC_UID", "")
+    if not UID_PATTERN.fullmatch(text):
+        raise NotPermitted()
+    uid = int(text)
+    low, high = context.uid_range
+    if uid in (0, NOBODY) or not low <= uid <= high or not context.user_exists(uid):
+        raise NotPermitted()
+    return uid
+
+
+def layout_for(helper_path):
+    """執行路徑必須與安裝位置一字不差（不接受 //、./、.. 或相對路徑）。"""
+    for layout in LAYOUTS:
+        if helper_path == layout.helper_dir + "/" + HELPER_NAME:
+            return layout
+    raise Failed("unknown-location")
+
+
+def check_directory(fd, owner):
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & UNSAFE_BITS:
+        raise Failed("untrusted-directory")
+
+
+def open_directory(context, relative):
+    """從根目錄逐層開啟（不跟隨符號連結），每一層都必須受信任；回傳描述子。"""
+    fd = os.open(context.root, DIRECTORY_FLAGS)
+    try:
+        check_directory(fd, context.owner)
+        for part in [part for part in relative.split("/") if part]:
+            child = os.open(part, DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def check_location(context, layout):
+    """自己必須是受信任的一般檔案。"""
+    fd = open_directory(context, layout.helper_dir)
+    try:
+        info = os.stat(HELPER_NAME, dir_fd=fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+                or info.st_mode & UNSAFE_BITS:
+            raise Failed("untrusted-file")
+    except FileNotFoundError:
+        raise Failed("untrusted-file") from None
+    finally:
+        os.close(fd)
+
+
+def open_run_directory(context):
+    """/run/system-device-monitor（必要時以 0755 建立）；它與每一層上層都必須受信任。"""
+    parent = open_directory(context, os.path.dirname(RUN_DIR))
+    try:
+        name = os.path.basename(RUN_DIR)
+        try:
+            os.mkdir(name, DIRECTORY_MODE, dir_fd=parent)
+            created = True
+        except FileExistsError:
+            created = False
+        fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    finally:
+        os.close(parent)
+    try:
+        if created:
+            os.fchmod(fd, DIRECTORY_MODE)
+        check_directory(fd, context.owner)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_lock(context):
+    """root 擁有、只有 root 能開啟的鎖檔（0600、一般檔案、不跟隨符號連結）。"""
+    directory = open_run_directory(context)
+    try:
+        fd = os.open(LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+                     | os.O_CLOEXEC, LOCK_MODE, dir_fd=directory)
+    finally:
+        os.close(directory)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+            or info.st_mode & PRIVATE_BITS:
+        os.close(fd)
+        raise Failed("untrusted-file")
+    return fd
+
+
+def acquire_lock(context):
+    """取得獨占鎖並回傳描述子（關閉即釋放）；別人拿著時每 0.1 秒再試，10 秒後放棄。"""
+    fd = open_lock(context)
+    deadline = context.clock() + LOCK_WAIT_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if context.clock() >= deadline:
+                os.close(fd)
+                raise Failed("busy") from None
+            context.sleep(LOCK_POLL_S)
+
+
+# ── 規則 ───────────────────────────────────────────────────
+
+def render_rule(name):
+    """依固定的範本產生規則；名稱不符格式時拋出 Failed。"""
+    if not isinstance(name, str) or not USER_PATTERN.fullmatch(name):
+        raise Failed("unsupported-user")
+    return RULE_TEMPLATE.replace(USER_MARK, name)
+
+
+def account_name(context, uid):
+    """PKEXEC_UID 的帳號名稱：符合格式，而且以名稱查回的 uid 就是同一個。"""
+    try:
+        name = context.user_name(uid)
+        same = isinstance(name, str) and context.user_uid(name) == uid
+    except (KeyError, TypeError, ValueError):
+        raise Failed("unsupported-user") from None
+    if not same or not USER_PATTERN.fullmatch(name):
+        raise Failed("unsupported-user")
+    return name
+
+
+def open_rules(context):
+    """/etc/polkit-1/rules.d 的描述子；不存在時拋出 FileNotFoundError。"""
+    try:
+        return open_directory(context, RULES_DIR)
+    except FileNotFoundError:
+        raise
+    except OSError:
+        raise Failed("untrusted-directory") from None
+
+
+def replace_file(dir_fd, name, data, mode):
+    """先寫同目錄的暫存檔（O_EXCL、O_NOFOLLOW）並 fsync，再整檔取代；只取代一般檔案。"""
+    try:
+        existing = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise Failed("unexpected-file")
+    temporary = f".{name}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 mode, dir_fd=dir_fd)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
+        os.replace(temporary, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+    os.fsync(dir_fd)
+
+
+def read_rule(context, dir_fd):
+    """規則檔的文字；不存在時為 None。必須是 root 擁有、群組與其他人不可寫的一般檔案。"""
+    try:
+        fd = os.open(RULE_NAME, READ_FLAGS, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return ""
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+                or info.st_mode & UNSAFE_BITS:
+            return ""
+        data = handle.read(RULE_MAX_BYTES + 1)
+    return data.decode("utf-8", "replace") if len(data) <= RULE_MAX_BYTES else ""
+
+
+# ── 動作 ───────────────────────────────────────────────────
+
+def grant(context, uid):
+    name = account_name(context, uid)
+    text = render_rule(name)
+    try:
+        fd = open_rules(context)
+    except FileNotFoundError:
+        raise Failed("no-rules-directory") from None
+    try:
+        replace_file(fd, RULE_NAME, text.encode("utf-8"), RULE_MODE)
+    finally:
+        os.close(fd)
+    return {"ok": True, "action": "grant", "user": name}
+
+
+def revoke(context, _uid):
+    """只刪除規則檔本身（一般檔案或符號連結，不跟隨）；不存在時 removed 為 False。"""
+    try:
+        fd = open_rules(context)
+    except FileNotFoundError:
+        return {"ok": True, "action": "revoke", "removed": False}
+    try:
+        try:
+            info = os.stat(RULE_NAME, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return {"ok": True, "action": "revoke", "removed": False}
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+            raise Failed("unexpected-file")
+        os.unlink(RULE_NAME, dir_fd=fd)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return {"ok": True, "action": "revoke", "removed": True}
+
+
+def status(context, _uid):
+    """規則是否存在、給哪個帳號，以及內容是否與範本完全相同。"""
+    try:
+        fd = open_rules(context)
+    except FileNotFoundError:
+        text = None
+    else:
+        try:
+            text = read_rule(context, fd)
+        finally:
+            os.close(fd)
+    match = USER_LINE.search(text or "")
+    granted = match is not None and text == render_rule(match.group(1))
+    return {"ok": True, "action": "status", "granted": granted,
+            "user": match.group(1) if granted else None,
+            "modified": text is not None and not granted}
+
+
+ACTIONS = {"grant": grant, "revoke": revoke, "status": status}
+
+
+def run_action(command, env, context):
+    uid = caller_uid(env, context)
+    check_location(context, layout_for(context.helper_path))
+    lock = acquire_lock(context)
+    try:
+        return ACTIONS[command](context, uid)
+    finally:
+        os.close(lock)
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def outcome_of(command, env, context):
+    """（結束碼、輸出、日誌的結果）。"""
+    try:
+        result = run_action(command, env, context)
+    except NotPermitted:
+        return EXIT_NOT_PERMITTED, {"ok": False, "error": "not-permitted"}, "not-permitted"
+    except Failed as error:
+        logged = str(error) if str(error) in LOGGED_ERRORS else "failed"
+        return EXIT_FAILED, {"ok": False, "error": str(error)}, logged
+    except OSError:
+        return EXIT_FAILED, {"ok": False, "error": "failed"}, "failed"
+    return EXIT_OK, result, "ok"
+
+
+def main(argv, env, context=None, emit=emit_json, report=log):
+    try:
+        command = parse_args(list(argv))
+    except Usage:
+        emit({"ok": False, "error": "usage"})
+        return EXIT_USAGE
+    if command == PROTOCOL_FLAG:
+        emit({"protocol": PROTOCOL, "version": VERSION})
+        return EXIT_OK
+    code, output, result = outcome_of(command, env, context or production_context())
+    report(command + " " + result)
+    emit(output)
+    return code
+
+
+if __name__ == "__main__":
+    ENVIRONMENT = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(SAFE_ENV)
+    sys.exit(main(sys.argv[1:], ENVIRONMENT))

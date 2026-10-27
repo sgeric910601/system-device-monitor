@@ -262,6 +262,32 @@ class Wake:
     PROTOCOL_TIMEOUT = 5
 
 
+class Unattended:
+    """「允許無人時自動調整」：使用者自己選擇加入的 polkit 規則與開關它的小程式 sdm-unattended。
+
+    規則只對開啟它的帳號、本機作用中的工作階段，讓充電上限的 set 與喚醒的 set、clear 免密碼；
+    開關小程式本身每次都要管理員密碼（auth_admin），不在 unattended 前綴底下。
+    CHECK_* 是沒有任何作用的查詢動作（預設一律拒絕），規則生效時才是允許，看板以 pkcheck
+    確認目前是否已授權。helper/sdm-unattended 以 root 執行、不載入本套件，各自保留同樣的值；
+    tests/test_unattended_helper 確認兩邊一致。
+    """
+    PROTOCOL = 1
+    DEB_HELPER = CpuPower.DEB_HELPER_DIR + "/sdm-unattended"
+    LOCAL_HELPER = CpuPower.LOCAL_HELPER_DIR + "/sdm-unattended"
+    ACTION_DEB = "tw.local.system-device-monitor.rules"
+    ACTION_LOCAL = "tw.local.system-device-monitor.local.rules"
+    CHECK_DEB = "tw.local.system-device-monitor.unattended.status"
+    CHECK_LOCAL = "tw.local.system-device-monitor.unattended.local.status"
+    RULE_NAME = "49-system-device-monitor.rules"
+    RULE_FILE = "/etc/polkit-1/rules.d/" + RULE_NAME
+    USER_PATTERN = r"[a-z_][a-z0-9_-]{0,31}"   # 規則裡的帳號名稱（必須對回同一個 uid）
+    LOCK_NAME = "unattended.lock"   # ChargeLimit.RUN_DIR 底下，root 0600
+    PKCHECK = "/usr/bin/pkcheck"
+    CHECK_TIMEOUT = 5           # pkcheck 查詢的逾時（秒）
+    PKEXEC_TIMEOUT = 120
+    PROTOCOL_TIMEOUT = 5
+
+
 class Supply:
     """sysfs power_supply 的類型與範圍名稱（核心定義的固定字串）。"""
     TYPE_BATTERY = "Battery"
