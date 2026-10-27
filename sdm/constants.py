@@ -223,6 +223,10 @@ class SmartCharging:
     WAKE_EARLIEST = 60          # 喚醒時間只能在 60 秒後到 7 天內
     WAKE_LATEST = 7 * 24 * 3600
     WAKE_REPLACE_SECONDS = 5 * 60           # 與已排定的時間相差 5 分鐘以上才重排
+    EXPIRY_SECONDS = 2 * 3600   # 一次性排程完成時間過後多久還沒拔電就結束、還原
+    RETRY_SECONDS = 60          # 寫入失敗後多久再試
+    START_GRACE_SECONDS = 120   # 提高上限後等開始充電的時間（之內不算系統暫停）
+    RESYNC_SECONDS = 60         # 每週排程重新算出的完成時間相差這麼多才更新
     PLAN_FILE = "charging-plan.json"        # XDG 資料目錄
     PLAN_FORMAT = 1
     PLAN_MAX_BYTES = 64 * 1024  # 超過就不讀取，先備份再從沒有排程開始
