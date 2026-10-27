@@ -227,6 +227,11 @@ class SmartCharging:
     RETRY_SECONDS = 60          # 寫入失敗後多久再試
     START_GRACE_SECONDS = 120   # 提高上限後等開始充電的時間（之內不算系統暫停）
     RESYNC_SECONDS = 60         # 每週排程重新算出的完成時間相差這麼多才更新
+    SLEEP_RELEASE_SECONDS = 4.0     # 即將睡眠時最多延後幾秒（logind 的 InhibitDelayMaxSec 通常是 5）
+    INHIBIT_RETRY_SECONDS = 60      # 拿不到延遲鎖時多久後再試
+    INHIBIT_TIMEOUT_MS = 5000       # Inhibit 呼叫的逾時（毫秒）
+    RESUME_SETTLE_SECONDS = 3       # 喚醒後等「開機與喚醒後保留」的服務跑完再判斷
+    SLEEP_GUARD_SECONDS = 120       # 收到即將睡眠後這段（醒著的）時間內不做一般的判斷
     PLAN_FILE = "charging-plan.json"        # XDG 資料目錄
     PLAN_FORMAT = 1
     PLAN_MAX_BYTES = 64 * 1024  # 超過就不讀取，先備份再從沒有排程開始
