@@ -52,6 +52,8 @@ REASON_TEXT = {
     "contents": "套件含有不允許的檔案，已拒絕安裝",
     "busy": "套件管理程式忙碌中（例如正在自動更新），請稍後再試",
     "apt": "apt-get 安裝失敗（詳情見 /var/log/apt/term.log）",
+    "apt-timeout": ("apt-get 超過 30 分鐘仍未完成，已要求它停止；套件可能只裝了一半，"
+                    "請執行 sudo dpkg --configure -a 後再試"),
     "timeout": "更新元件執行逾時",
 }
 HELPER_FAILED = "更新元件執行失敗（詳情見系統日誌）"

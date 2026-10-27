@@ -338,6 +338,8 @@ class Install(Base):
         cases = ((126, "", "未授權"), (127, "", "未授權"), (None, "", "逾時"),
                  (3, '{"ok":false,"error":"failed","reason":"signature"}', "簽章"),
                  (3, '{"ok":false,"error":"failed","reason":"busy"}', "套件管理程式"),
+                 (3, '{"ok":false,"error":"failed","reason":"apt-timeout"}',
+                  "sudo dpkg --configure -a"),
                  (3, '{"ok":false,"error":"failed","reason":"no-keys"}', "簽章金鑰"),
                  (3, '{"ok":false,"error":"failed","reason":"other"}', "系統日誌"),
                  (2, "", "重新安裝"), (4, "", "沒有權限"),

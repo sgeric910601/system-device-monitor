@@ -32,7 +32,7 @@ class FakeSystem:
         self.status, self.installed = "install ok installed", "0.2.0"
         self.fields = "Package: system-device-monitor\nArchitecture: all\nVersion: 9.9.9\n"
         self.listing, self.apt_code, self.apt_installs = LISTING, 0, "9.9.9"
-        self.staged = None
+        self.apt_timed_out, self.staged = False, None
 
     def __call__(self, argv, env=None, timeout=None, capture=False):
         self.calls.append((tuple(argv), dict(env or {}), timeout))
@@ -46,12 +46,15 @@ class FakeSystem:
             return helper.Result(0 if self.status else 1, text.encode() if self.status else b"")
         if tool == helper.DPKG_DEB:
             return helper.Result(0, (self.fields if argv[1] == "-f" else self.listing).encode())
-        if tool == helper.APT_GET:
-            self.staged = Path(argv[-1]).read_bytes()
-            if self.apt_code == 0:
-                self.installed = self.apt_installs
-            return helper.Result(self.apt_code, b"")
         raise AssertionError("unexpected command " + tool)
+
+    def run_apt(self, argv, env, budget):
+        """apt-get 只經由 run_apt 執行（自己的程序群組、長的時限）。"""
+        self.calls.append((tuple(argv), dict(env), budget))
+        self.staged = Path(argv[-1]).read_bytes()
+        if self.apt_code == 0 and not self.apt_timed_out:
+            self.installed = self.apt_installs
+        return helper.AptResult(self.apt_code, self.apt_timed_out)
 
     def tools(self):
         return [argv[0] for argv, _, _ in self.calls]
@@ -90,7 +93,7 @@ class Base(unittest.TestCase):
                               uid_range=(1, 2 ** 31),
                               keys=(self.key.public,) if keys is None else keys,
                               clock=lambda: next(clock), sleep=self.slept.append,
-                              lock_free=self.lock_free)
+                              lock_free=self.lock_free, run_apt=self.system.run_apt)
 
     def lock_free(self, path):
         return self.lock_states.pop(0) if self.lock_states else True
@@ -129,7 +132,8 @@ class Success(Base):
                                      "DPkg::Lock::Timeout=120"))
         self.assertEqual(env["DEBIAN_FRONTEND"], "noninteractive")
         self.assertEqual(env["PATH"], helper.SAFE_PATH)
-        self.assertEqual(timeout, 300)
+        self.assertEqual(timeout, helper.APT_TIMEOUT_S)
+        self.assertEqual(helper.APT_TIMEOUT_S, 30 * 60)
         self.assert_staging_empty()
         self.assertEqual(stat.S_IMODE(os.stat(self.root.path/STAGING).st_mode), 0o700)
 
@@ -299,6 +303,12 @@ class LockAndApt(Base):
         self.system.apt_code = 100
         self.assertEqual(self.run_helper(), helper.EXIT_FAILED)
         self.assertEqual(self.output[-1]["reason"], "apt")
+        self.assert_staging_empty()
+
+    def test_apt_running_past_its_budget_is_reported(self):
+        self.system.apt_timed_out = True
+        self.assertEqual(self.run_helper(), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["reason"], "apt-timeout")
         self.assert_staging_empty()
 
     def test_installed_version_is_checked_after_apt(self):

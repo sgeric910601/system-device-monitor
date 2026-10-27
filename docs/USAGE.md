@@ -566,6 +566,8 @@ system-device-monitor.png。
 
 - 沒有頂端列：確認 GNOME AppIndicator 擴充功能已啟用；必要時登出再登入。
 - 找不到 gi 或 Cairo：使用 /usr/bin/python3，並重跑相依套件安裝腳本。
+- 安裝更新時顯示 apt-get 超過時限：套件可能只裝了一半，請在終端機執行 sudo dpkg --configure -a，
+  完成後再按一次「安裝更新」。
 - GPU 未回報：確認 NVIDIA 驅動與 nvidia-smi 可用；不影響其他功能。
   看板執行期間會常駐一個 nvidia-smi 程序（跟著更新頻率輸出，最快每 2 秒一次），結束時一併停止；
   它意外結束時會在 1 秒到 60 秒之間逐次加倍等待後重新啟動。

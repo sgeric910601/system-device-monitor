@@ -2,20 +2,11 @@
 """系統與裝置監看：安裝已簽章更新的管理員小程式（由 pkexec 執行，只隨 .deb 安裝）。
 
 用法：sdm-update install <.deb> <SHA256SUMS> <SHA256SUMS.sig>；sdm-update --protocol（不需要權限）。
-install 依序：參數（三個已正規化的絕對路徑，檔名固定，否則結束碼 2）→ 權限（root、PKEXEC_UID 是
-login.defs 範圍內存在的一般帳號，否則結束碼 4）→ 位置（sys.argv[0] 一字不差、自己與每一層目錄屬於
-root 且群組與其他人不可寫）→ 輸入檔（O_NOFOLLOW｜O_NONBLOCK 開啟，fstat 是呼叫者擁有、不是空的一般
-檔案，.deb ≤ 30 MB、SHA256SUMS ≤ 64 KB、.sig ≤ 1 KB）→ 套件是以 .deb 安裝的（dpkg-query）→ 內建公鑰
-PUBLIC_KEYS（與 Update.PUBLIC_KEYS 相同，絕不從環境變數或參數讀取）不是空的 → 經由描述子複製到
-/var/cache/system-device-monitor/staging/<亂數>/（root 0700、O_EXCL），之後只用 root 的複本 →
-openssl 驗證 SHA256SUMS 的 Ed25519 簽章（任何一把公鑰通過即可）→ .deb 的 SHA-256 與 SHA256SUMS 中
-完全相同檔名的雜湊一致 → dpkg-deb -f（Package、Architecture all、Version 與檔名相同且比已安裝的新）
-→ dpkg-deb -c（只有允許位置的一般檔案與目錄、root/root、沒有特殊權限位元或群組／其他人可寫）→
-等 dpkg 前端鎖（fcntl，最多 120 秒）→ apt-get install --no-remove（noninteractive，逾時 300 秒）→
-確認已安裝的版本 → 刪除暫存複本。
-固定的 PATH，只以參數清單執行固定路徑的程式，從不經過 shell；標準輸出只有一行 JSON（失敗時附
-REASONS 中固定的英文原因代號）；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）；系統日誌只記錄
-動作名稱與結果。只使用標準函式庫。
+完整的檢查順序與威脅模型見 docs/SECURITY.md 的「一鍵更新與發布簽章」。重點：只信任內建的公鑰
+PUBLIC_KEYS（絕不從環境變數或參數讀取）；輸入檔經由描述子複製到 root 0700 的暫存目錄後，只用 root 的
+複本驗證簽章、雜湊與套件內容，再以 apt-get 安裝。固定的 PATH，只以參數清單執行固定路徑的程式，從不經過
+shell；標準輸出只有一行 JSON（失敗時附 REASONS 中固定的英文原因代號）；結束碼固定（0 成功、2 參數錯誤、
+3 失敗、4 沒有權限）；系統日誌只記錄動作名稱與結果。只使用標準函式庫。
 """
 import base64
 import binascii
@@ -49,35 +40,27 @@ SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 KEY_BYTES, SIGNATURE_BYTES, PEM_LINE = 32, 64, 64
 DEB_PATTERN = re.compile(r"system-device-monitor_([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}"
                          r"(?:~beta\.[0-9]{1,9})?)_all\.deb", re.ASCII)
-CHECKSUMS_NAME = "SHA256SUMS"
-SIGNATURE_NAME = "SHA256SUMS.sig"
-DEB_MAX_BYTES = 30 * 1024 * 1024
-CHECKSUMS_MAX_BYTES = 64 * 1024
-SIGNATURE_MAX_BYTES = 1024
+CHECKSUMS_NAME, SIGNATURE_NAME = "SHA256SUMS", "SHA256SUMS.sig"
+DEB_MAX_BYTES, CHECKSUMS_MAX_BYTES, SIGNATURE_MAX_BYTES = 30 * 1024 * 1024, 64 * 1024, 1024
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
 APT_ENV = dict(SAFE_ENV, DEBIAN_FRONTEND="noninteractive", APT_LISTCHANGES_FRONTEND="none",
                NEEDRESTART_MODE="l")
-OPENSSL = "/usr/bin/openssl"
-DPKG = "/usr/bin/dpkg"
-DPKG_DEB = "/usr/bin/dpkg-deb"
-DPKG_QUERY = "/usr/bin/dpkg-query"
-APT_GET = "/usr/bin/apt-get"
+OPENSSL, DPKG, DPKG_DEB = "/usr/bin/openssl", "/usr/bin/dpkg", "/usr/bin/dpkg-deb"
+DPKG_QUERY, APT_GET = "/usr/bin/dpkg-query", "/usr/bin/apt-get"
 DPKG_LOCK = "var/lib/dpkg/lock-frontend"                    # 相對於根目錄
 STAGING = ("var/cache", "system-device-monitor", "staging")  # 同上；後兩層不存在時建立
-LOCK_TIMEOUT_S = 120
-LOCK_POLL_S = 1
-APT_TIMEOUT_S = 300
+LOCK_TIMEOUT_S, LOCK_POLL_S = 120, 1     # 等 dpkg 前端鎖的上限與間隔（秒）
+APT_TIMEOUT_S = 30 * 60         # apt-get 的時限；超過時只送 SIGTERM 給它的程序群組，絕不送 SIGKILL
+APT_TERM_WAIT_S = 60            # 送出 SIGTERM 後再等的時間；仍未結束就讓它自己完成
 COMMAND_TIMEOUT_S = 60
 PREPARE_TIMEOUT_S = 240         # 從開始到檢查完套件內容的上限；之後是鎖與 apt-get 各自的逾時
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_ENTRIES = 20000
 CHUNK_BYTES = 1024 * 1024
 UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
-MAX_UID = 4294967294
-NOBODY = 65534
-LOGIN_DEFS = "/etc/login.defs"
-LOGIN_DEFS_MAX_BYTES = 65536
+MAX_UID, NOBODY = 4294967294, 65534
+LOGIN_DEFS, LOGIN_DEFS_MAX_BYTES = "/etc/login.defs", 65536
 DEFAULT_UID_RANGE = (1000, 60000)       # login.defs 讀不到時的一般帳號範圍
 INSTALLED = "install ok installed"
 INSTALLED_VERSION = re.compile(r"[0-9][A-Za-z0-9.+~:-]{0,63}", re.ASCII)
@@ -100,9 +83,7 @@ PARENTS = frozenset(("", "usr", "usr/bin", "usr/lib", "usr/lib/systemd", "usr/li
                      "usr/share/icons", "usr/share/icons/hicolor", "usr/share/polkit-1",
                      "usr/share/polkit-1/actions"))
 ICON_DIRECTORY = re.compile(r"usr/share/icons/hicolor/[A-Za-z0-9@.]+(?:/apps)?", re.ASCII)
-DIRECTORY_MODE = 0o755
-PRIVATE_DIRECTORY = 0o700
-PRIVATE_FILE = 0o600
+DIRECTORY_MODE, PRIVATE_DIRECTORY, PRIVATE_FILE = 0o755, 0o700, 0o600
 UNSAFE_BITS = stat.S_IWGRP | stat.S_IWOTH
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 INPUT_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
@@ -111,7 +92,7 @@ READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 LOCK_FLAGS = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
 LOG_IDENT = "sdm-update"
 REASONS = ("location", "input", "not-deb", "no-keys", "staging", "signature", "checksum",
-           "package", "not-newer", "contents", "busy", "apt", "timeout", "system")
+           "package", "not-newer", "contents", "busy", "apt", "apt-timeout", "timeout", "system")
 
 
 class Usage(Exception):
@@ -130,9 +111,8 @@ class Failed(Exception):
         self.reason = reason if reason in REASONS else "system"
 
 
-class Result(NamedTuple):
-    code: int
-    output: bytes
+Result = NamedTuple("Result", [("code", int), ("output", bytes)])
+AptResult = NamedTuple("AptResult", [("code", int), ("timed_out", bool)])
 
 
 class Request(NamedTuple):
@@ -163,6 +143,7 @@ class Context(NamedTuple):
     clock: Callable = time.monotonic
     sleep: Callable = time.sleep
     lock_free: Optional[Callable] = None    # 預設為 lock_free()
+    run_apt: Optional[Callable] = None      # 預設為 run_apt()
     alarm: Optional[Callable] = None        # 預設不設時限（只有正式執行才設）
 
 
@@ -183,6 +164,26 @@ def run_command(argv, env=SAFE_ENV, timeout=COMMAND_TIMEOUT_S, capture=False):
     output = completed.stdout or b""
     return Result(-1, b"") if len(output) > MAX_OUTPUT_BYTES else Result(completed.returncode,
                                                                           output)
+
+
+def run_apt(argv, env=APT_ENV, budget=APT_TIMEOUT_S, grace=APT_TERM_WAIT_S):
+    """在自己的程序群組執行 apt-get。超過時限時對整個群組送 SIGTERM、再等 grace 秒，
+    回報逾時；絕不送 SIGKILL（中途強制結束會讓 dpkg 停在只裝了一半的狀態）。"""
+    try:
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=env, cwd="/",
+                                   start_new_session=True)
+    except OSError:
+        return AptResult(-1, False)
+    try:
+        return AptResult(process.wait(timeout=budget), False)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=grace)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return AptResult(-1, True)
 
 
 def user_exists(uid):
@@ -233,8 +234,6 @@ def production_context():
                    uid_range=login_uid_range(), keys=PUBLIC_KEYS, alarm=set_alarm)
 
 
-# ── 參數與權限 ──────────────────────────────────────────────
-
 def clean_path(path):
     """已正規化的絕對路徑（不接受 //、.、..、結尾斜線或控制字元）。"""
     return path.startswith("/") and not path.startswith("//") and path.isprintable() \
@@ -267,8 +266,6 @@ def caller_uid(env, context):
         raise NotPermitted()
     return uid
 
-
-# ── 受信任的目錄 ──────────────────────────────────────────
 
 def check_directory(fd, owner, reason):
     info = os.fstat(fd)
@@ -308,8 +305,6 @@ def check_location(context):
             or info.st_mode & UNSAFE_BITS:
         raise Failed("location")
 
-
-# ── 輸入檔 ────────────────────────────────────────────────
 
 def open_input(path, uid, limit):
     """呼叫者擁有、不是空的、不超過上限的一般檔案；回傳描述子。"""
@@ -355,8 +350,6 @@ def installed_version(context):
         raise Failed("not-deb")
     return lines[1]
 
-
-# ── 暫存目錄 ──────────────────────────────────────────────
 
 class Stage:
     """root 擁有的私人暫存目錄：描述子與路徑（給外部程式的參數）。"""
@@ -415,17 +408,13 @@ class Stage:
             pass
 
 
-def make_directory(parent, name, mode):
-    try:
-        os.mkdir(name, mode, dir_fd=parent)
-    except FileExistsError:
-        return False
-    return True
-
-
 def open_child(parent, name, owner, mode):
     """開啟（不存在時以 mode 建立，不受 umask 影響）受信任的子目錄。"""
-    created = make_directory(parent, name, mode)
+    try:
+        os.mkdir(name, mode, dir_fd=parent)
+        created = True
+    except FileExistsError:
+        created = False
     fd = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
     try:
         if created:
@@ -515,8 +504,6 @@ class Workspace:
         return False
 
 
-# ── 簽章與 SHA256SUMS（與 sdm/services/update_verify.py、sdm/core/update_logic.py 相同）──
-
 def strict_base64(text):
     try:
         return base64.b64decode(text, validate=True)
@@ -602,8 +589,6 @@ def verify_release(context, stage, request, keys):
         raise Failed("checksum")
 
 
-# ── 套件內容 ──────────────────────────────────────────────
-
 def parse_fields(data):
     """dpkg-deb -f 的「欄位: 值」→ 字典；格式不對或重複時回傳 None。"""
     try:
@@ -680,8 +665,6 @@ def check_package(context, stage, request, installed):
         raise Failed("contents")
 
 
-# ── dpkg 鎖與 apt-get ─────────────────────────────────────
-
 def lock_free(path):
     """沒有人持有 dpkg 的前端鎖（fcntl 記錄鎖）時為 True；只測試，不保留鎖。"""
     try:
@@ -712,7 +695,10 @@ def wait_for_lock(context):
 def apt_install(context, stage, request):
     argv = [APT_GET, "install", "-y", "-q", "--no-install-recommends", "--no-remove",
             "-o", f"DPkg::Lock::Timeout={LOCK_TIMEOUT_S}", stage.path_of(request.name)]
-    if context.run(argv, APT_ENV, APT_TIMEOUT_S, False).code != 0:
+    result = (context.run_apt or run_apt)(argv, APT_ENV, APT_TIMEOUT_S)
+    if result.timed_out:
+        raise Failed("apt-timeout")
+    if result.code != 0:
         raise Failed("apt")
     try:
         version = installed_version(context)
@@ -721,8 +707,6 @@ def apt_install(context, stage, request):
     if version != request.version:
         raise Failed("apt")
 
-
-# ── 動作 ───────────────────────────────────────────────────
 
 def install(context, uid, request):
     inputs = open_inputs(request, uid)

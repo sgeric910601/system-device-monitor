@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -150,6 +151,59 @@ class RealDpkgDeb(unittest.TestCase):
         self.assertIsNotNone(entries)
         refused = [path for kind, path in entries if not helper.path_allowed(kind, path)]
         self.assertEqual(refused, [])
+
+
+class RunApt(unittest.TestCase):
+    """apt-get 的執行器：自己的程序群組；超過時限只送 SIGTERM 給整個群組，絕不送 SIGKILL。"""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def child_pid(self):
+        path = self.dir/"child.pid"
+        for _ in range(100):
+            if path.exists() and path.read_text().strip():
+                return int(path.read_text())
+            time.sleep(0.02)
+        raise AssertionError("child did not start")
+
+    def test_exit_code_within_the_budget(self):
+        result = helper.run_apt(["/bin/sh", "-c", "exit 7"], helper.APT_ENV, 5)
+        self.assertEqual(result, helper.AptResult(7, False))
+
+    def test_budget_sends_sigterm_to_the_whole_group(self):
+        script = f"sleep 30 & echo $! > {self.dir}/child.pid; wait"
+        started = time.monotonic()
+        result = helper.run_apt(["/bin/sh", "-c", script], helper.APT_ENV, 0.5, grace=5)
+        self.assertEqual(result, helper.AptResult(-1, True))
+        child = self.child_pid()
+        for _ in range(100):
+            if not self.alive(child):
+                break
+            time.sleep(0.02)
+        self.assertFalse(self.alive(child))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_process_ignoring_sigterm_is_never_killed(self):
+        script = f"trap '' TERM; echo $$ > {self.dir}/child.pid; sleep 3; exit 0"
+        result = helper.run_apt(["/bin/sh", "-c", script], helper.APT_ENV, 0.3, grace=0.3)
+        self.assertEqual(result, helper.AptResult(-1, True))
+        pid = self.child_pid()
+        self.assertTrue(self.alive(pid))        # 沒有被強制結束
+        os.killpg(pid, signal.SIGKILL)          # 測試自己清理
+
+    def test_missing_program(self):
+        self.assertEqual(helper.run_apt(["/nonexistent/apt-get"], helper.APT_ENV, 1),
+                         helper.AptResult(-1, False))
 
 
 class DpkgLock(unittest.TestCase):

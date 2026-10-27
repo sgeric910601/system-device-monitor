@@ -319,7 +319,9 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
   /usr/share/icons/hicolor/*/apps/system-device-monitor.png），只有一般檔案與目錄、擁有者 root/root、
   沒有 setuid／setgid／黏著位元、沒有群組或其他人可寫、沒有「..」。接著以 fcntl 等 dpkg 的前端鎖
   （最多 120 秒，忙碌時乾淨地失敗），以 apt-get install -y --no-install-recommends --no-remove
-  （DEBIAN_FRONTEND=noninteractive，逾時 300 秒）安裝暫存的複本，確認已安裝的版本後刪除複本。
+  （DEBIAN_FRONTEND=noninteractive）安裝暫存的複本，確認已安裝的版本後刪除複本。apt-get 在自己的
+  程序群組執行，時限 30 分鐘；超過時只對整個群組送 SIGTERM、再等 60 秒，絕不送 SIGKILL（中途強制結束
+  會讓 dpkg 停在只裝了一半的狀態），並回報 apt-timeout，設定頁提示執行 sudo dpkg --configure -a。
   套件不是以 .deb 安裝時直接拒絕。
 - 為什麼簽章在小程式裡還要再驗一次：就算你的帳號被入侵、而且你輸入了管理員密碼，root 端也只會
   安裝維護者簽過的 .deb；被竄改的 GitHub 帳號或 Release 檔案同樣無法讓程式安裝沒有簽章的套件。

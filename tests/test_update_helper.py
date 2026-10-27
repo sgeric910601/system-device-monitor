@@ -186,7 +186,7 @@ class Constants(unittest.TestCase):
         self.assertEqual(helper.SPKI_PREFIX, update_verify.SPKI_PREFIX)
         self.assertEqual((helper.EXIT_OK, helper.EXIT_USAGE, helper.EXIT_FAILED,
                           helper.EXIT_NOT_PERMITTED), CpuPower.EXIT_CODES)
-        self.assertEqual(helper.APT_TIMEOUT_S, 300)
+        self.assertEqual(helper.APT_TIMEOUT_S, 1800)
         self.assertEqual(helper.LOCK_TIMEOUT_S, 120)
 
     def test_reasons_are_fixed_words(self):
