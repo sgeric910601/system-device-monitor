@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!-- 系統與裝置監看：開關「允許無人時自動調整」（安裝或刪除只給開啟它的帳號的 polkit 規則）。
+     只有本機作用中的使用者，每次都要輸入管理員密碼（auth_admin，不是 auth_admin_keep）；
+     不在 unattended 前綴底下，規則本身也不會讓它免密碼。第二個動作只用來查詢規則是否生效：
+     沒有對應的程式，預設一律拒絕，規則生效時才允許，所以允許了也不會做任何事。 -->
+<policyconfig>
+  <vendor>System Device Monitor</vendor>
+  <vendor_url>https://github.com/sgeric910601/system-device-monitor</vendor_url>
+
+  <action id="tw.local.system-device-monitor.rules">
+    <description>Allow or stop unattended charging adjustments for System Device Monitor</description>
+    <description xml:lang="zh_TW">開關系統與裝置監看的「允許無人時自動調整」（套件）</description>
+    <message>Authentication is required to change unattended charging permissions</message>
+    <message xml:lang="zh_TW">變更「允許無人時自動調整」需要管理員授權</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/system-device-monitor/sdm-unattended</annotate>
+  </action>
+
+  <action id="tw.local.system-device-monitor.unattended.status">
+    <description>Check whether unattended charging adjustments are allowed</description>
+    <description xml:lang="zh_TW">查詢系統與裝置監看是否允許無人時自動調整（套件）</description>
+    <message>Unattended charging adjustments are not allowed</message>
+    <message xml:lang="zh_TW">尚未允許無人時自動調整</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>no</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<!-- 系統與裝置監看：智慧充電的精準喚醒。只有本機作用中的使用者，輸入管理員密碼後才能設定
+     或取消 RTC 喚醒鬧鐘；授權後短時間內不必重新輸入（auth_admin_keep）。set 與 clear 各有一個
+     動作（exec.argv1），status 沒有自己的動作（改用一般的 org.freedesktop.policykit.exec，
+     每次都要密碼）。動作 ID 使用保留的 unattended 前綴：只有使用者自己選擇加入的 polkit 規則
+     （允許無人時自動調整）能讓它們免密碼。 -->
+<policyconfig>
+  <vendor>System Device Monitor</vendor>
+  <vendor_url>https://github.com/sgeric910601/system-device-monitor</vendor_url>
+
+  <action id="tw.local.system-device-monitor.unattended.wake">
+    <description>Set the charging wake alarm for System Device Monitor</description>
+    <description xml:lang="zh_TW">設定系統與裝置監看的智慧充電喚醒時間（套件）</description>
+    <message>Authentication is required to set the charging wake alarm</message>
+    <message xml:lang="zh_TW">設定智慧充電的喚醒時間需要管理員授權</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/system-device-monitor/sdm-wake</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">set</annotate>
+  </action>
+
+  <action id="tw.local.system-device-monitor.unattended.wake-clear">
+    <description>Cancel the charging wake alarm for System Device Monitor</description>
+    <description xml:lang="zh_TW">取消系統與裝置監看的智慧充電喚醒時間（套件）</description>
+    <message>Authentication is required to cancel the charging wake alarm</message>
+    <message xml:lang="zh_TW">取消智慧充電的喚醒時間需要管理員授權</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/system-device-monitor/sdm-wake</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">clear</annotate>
+  </action>
+</policyconfig>

@@ -235,6 +235,26 @@
       "mode": "0644"
     },
     {
+      "source": "helper/sdm-wake",
+      "target": "/usr/libexec/system-device-monitor/sdm-wake",
+      "mode": "0755"
+    },
+    {
+      "source": "helper/policy/tw.local.system-device-monitor.unattended.wake.policy",
+      "target": "/usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.wake.policy",
+      "mode": "0644"
+    },
+    {
+      "source": "helper/sdm-unattended",
+      "target": "/usr/libexec/system-device-monitor/sdm-unattended",
+      "mode": "0755"
+    },
+    {
+      "source": "helper/policy/tw.local.system-device-monitor.rules.policy",
+      "target": "/usr/share/polkit-1/actions/tw.local.system-device-monitor.rules.policy",
+      "mode": "0644"
+    },
+    {
       "source": "assets/app/mint-128.png",
       "target": "/usr/share/icons/hicolor/128x128/apps/system-device-monitor.png",
       "mode": "0644"
@@ -286,9 +306,13 @@
     "docs/SECURITY.md",
     "docs/USAGE.md",
     "helper/policy/tw.local.system-device-monitor.local.policy",
+    "helper/policy/tw.local.system-device-monitor.local.rules.policy",
     "helper/policy/tw.local.system-device-monitor.policy",
+    "helper/policy/tw.local.system-device-monitor.rules.policy",
     "helper/policy/tw.local.system-device-monitor.unattended.charge-limit.policy",
     "helper/policy/tw.local.system-device-monitor.unattended.local.charge-limit.policy",
+    "helper/policy/tw.local.system-device-monitor.unattended.local.wake.policy",
+    "helper/policy/tw.local.system-device-monitor.unattended.wake.policy",
     "helper/policy/tw.local.system-device-monitor.update.policy",
     "helper/sdm-charge-limit",
     "helper/sdm-cpu-power",

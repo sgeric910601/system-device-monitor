@@ -23,6 +23,10 @@ SOCKET = "system-device-monitor-cpu-power.socket"
 SERVICE = "system-device-monitor-cpu-power.service"
 LIMIT_UNIT = "system-device-monitor-charge-limit.service"
 LIMIT_POLICY = "tw.local.system-device-monitor.unattended.charge-limit.policy"
+WAKE_POLICY = "tw.local.system-device-monitor.unattended.wake.policy"
+RULES_POLICY = "tw.local.system-device-monitor.rules.policy"
+ACTIONS = "/usr/share/polkit-1/actions/"
+RULE = "etc/polkit-1/rules.d/49-system-device-monitor.rules"
 LIBEXEC = "/usr/libexec/system-device-monitor/"
 UNITS = "/usr/lib/systemd/system/"
 SYSTEM = [
@@ -38,6 +42,10 @@ SYSTEM = [
     {"source": "helper/policy/" + LIMIT_POLICY,
      "target": "/usr/share/polkit-1/actions/" + LIMIT_POLICY, "mode": "0644"},
     {"source": "helper/systemd/" + LIMIT_UNIT, "target": UNITS + LIMIT_UNIT, "mode": "0644"},
+    {"source": "helper/sdm-wake", "target": LIBEXEC + "sdm-wake", "mode": "0755"},
+    {"source": "helper/policy/" + WAKE_POLICY, "target": ACTIONS + WAKE_POLICY, "mode": "0644"},
+    {"source": "helper/sdm-unattended", "target": LIBEXEC + "sdm-unattended", "mode": "0755"},
+    {"source": "helper/policy/" + RULES_POLICY, "target": ACTIONS + RULES_POLICY, "mode": "0644"},
 ] + [{"source": f"assets/app/mint-{size}.png",
       "target": f"/usr/share/icons/hicolor/{size}x{size}/apps/system-device-monitor.png",
       "mode": "0644"} for size in (128, 512)] + [  # 預設的程式圖示（薄荷綠）
@@ -77,11 +85,13 @@ class Manifest(unittest.TestCase):
                           "system-device-monitor-local-cpu-power.socket", "owner.conf",
                           "tw.local.system-device-monitor.unattended.local.charge-limit.policy",
                           "system-device-monitor-local-charge-limit.service",
-                          "charge-limit.json"):
+                          "tw.local.system-device-monitor.unattended.local.wake.policy",
+                          "tw.local.system-device-monitor.local.rules.policy",
+                          "49-system-device-monitor.rules", "charge-limit.json"):
                 self.assertNotIn(local, names)
             self.assertEqual(sorted(path.name for path in (stage/LIBEXEC.strip("/")).iterdir()),
                              ["sdm-charge-limit", "sdm-cpu-power", "sdm-cpu-power-service",
-                              "sdm-update"])
+                              "sdm-unattended", "sdm-update", "sdm-wake"])
 
 
 class ScriptText(unittest.TestCase):
@@ -300,6 +310,63 @@ class ScriptRuns(unittest.TestCase):
             with self.subTest(script=name, args=args):
                 self.run_script(name, *args)
         self.assertEqual(sorted(path.name for path in self.root.rglob("*")), [])
+
+    def populate_wake(self, alarm, record):
+        rtc = self.root/"sys/class/rtc/rtc0"
+        rtc.mkdir(parents=True)
+        (rtc/"wakealarm").write_text(alarm)
+        run = self.root/"run/system-device-monitor"
+        run.mkdir(parents=True)
+        (run/"wake").write_text(record)
+        for name in ("wake.lock", "wake.times", "unattended.lock"):
+            (run/name).write_text("")
+        return rtc/"wakealarm", run
+
+    def test_prerm_remove_clears_only_the_recorded_alarm(self):
+        alarm, run = self.populate_wake("1800000600\n", "1800000600\n")
+        self.run_script("prerm", "remove")
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse(run.exists())
+
+    def test_prerm_remove_leaves_another_alarm(self):
+        for record in ("1800000600\n", "garbage\n", "", "0\n"):
+            with self.subTest(record=record):
+                shutil.rmtree(self.root, ignore_errors=True)
+                alarm, run = self.populate_wake("1800009999\n", record)
+                self.run_script("prerm", "remove")
+                self.assertEqual(alarm.read_text(), "1800009999\n")
+                self.assertFalse(run.exists())
+
+    def test_prerm_upgrade_keeps_the_alarm_and_the_rule(self):
+        alarm, run = self.populate_wake("1800000600\n", "1800000600\n")
+        rule = self.root/RULE
+        rule.parent.mkdir(parents=True)
+        rule.write_text("// rule\n")
+        self.run_script("prerm", "upgrade", "1.0")
+        self.assertEqual(alarm.read_text(), "1800000600\n")
+        self.assertTrue((run/"wake").exists() and rule.exists())
+
+    def test_remove_and_purge_delete_only_the_unattended_rule(self):
+        rules = self.root/RULE
+        rules.parent.mkdir(parents=True)
+        other = rules.parent/"50-other.rules"
+        other.write_text("// other\n")
+        for script, args in (("prerm", ("remove",)), ("postrm", ("purge",))):
+            with self.subTest(script=script):
+                rules.write_text("// rule\n")
+                self.run_script(script, *args)
+                self.assertFalse(rules.exists())
+                self.assertTrue(other.exists())
+        rules.write_text("// rule\n")
+        self.run_script("postrm", "remove")
+        self.assertTrue(rules.exists())
+
+    def test_rule_name_that_is_a_directory_is_left_alone(self):
+        rules = self.root/RULE
+        rules.mkdir(parents=True)
+        self.run_script("prerm", "remove")
+        self.run_script("postrm", "purge")
+        self.assertTrue(rules.is_dir())
 
     def test_postinst_warns_about_a_source_install(self):
         helper = self.root/"usr/local/libexec/system-device-monitor/sdm-cpu-power"

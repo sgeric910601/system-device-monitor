@@ -96,8 +96,9 @@ class Policies(unittest.TestCase):
         action = action_of(POLICIES/(action_id + ".policy"))
         self.assertEqual(action.get("id"), action_id)
         self.assertEqual({child.tag: child.text for child in action.find("defaults")}, DEFAULTS)
+        # 只有 set 使用這個動作（exec.argv1）；status 改用一般的 policykit.exec（每次都要密碼）
         self.assertEqual({item.get("key"): item.text for item in action.findall("annotate")},
-                         {EXEC_PATH: helper_path})
+                         {EXEC_PATH: helper_path, "org.freedesktop.policykit.exec.argv1": "set"})
         for tag in ("description", "message"):
             texts = {element.get(LANG): element.text for element in action.findall(tag)}
             self.assertEqual(set(texts), {None, "zh_TW"})
@@ -128,7 +129,8 @@ class Policies(unittest.TestCase):
             self.assertIn(words, text)
 
     def test_no_polkit_rules_are_shipped(self):
-        # 只有 polkit 動作（.policy），沒有任何規則檔；動作的清單由 test_polkit_policy 確認
+        # 只有 polkit 動作（.policy），沒有任何規則檔：「允許無人時自動調整」的規則只在使用者
+        # 開啟時由 sdm-unattended 產生，不隨套件安裝；動作的清單由 test_polkit_policy 確認
         self.assertEqual({path.suffix for path in POLICIES.iterdir()}, {".policy"})
 
 

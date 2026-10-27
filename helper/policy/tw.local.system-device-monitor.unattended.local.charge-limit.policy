@@ -4,8 +4,9 @@
  "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <!-- 系統與裝置監看：只有本機作用中的使用者，輸入管理員密碼後才能變更筆電電池的充電上限；
      授權後短時間內不必重新輸入（auth_admin_keep）。pkexec 只在執行下方 exec.path 指定的
-     小程式時使用這個動作。動作 ID 使用保留的 unattended 前綴：之後只有使用者自己選擇加入的
-     polkit 規則能讓它免密碼；套件與原始碼安裝都不安裝任何規則。 -->
+     小程式、而且第一個參數是 set（exec.argv1）時使用這個動作；status 沒有自己的動作，
+     改用一般的 org.freedesktop.policykit.exec（每次都要密碼）。動作 ID 使用保留的 unattended
+     前綴：只有使用者自己選擇加入的 polkit 規則（允許無人時自動調整）能讓它免密碼。 -->
 <policyconfig>
   <vendor>System Device Monitor</vendor>
   <vendor_url>https://github.com/sgeric910601/system-device-monitor</vendor_url>
@@ -21,5 +22,6 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/local/libexec/system-device-monitor/sdm-charge-limit</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">set</annotate>
   </action>
 </policyconfig>

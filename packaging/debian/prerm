@@ -2,8 +2,10 @@
 # 系統與裝置監看：移除套件前停用並停止 CPU 功耗取樣的 socket 與服務，
 # 並刪除 sdm-cpu-power enable 寫入的 drop-in；也停用「開機與喚醒後保留充電上限」的單元，
 # 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）、小程式的鎖檔與寫入時間
-# （/run/system-device-monitor 空了才刪除目錄）。升級時（upgrade）不動任何東西。
-# DPKG_ROOT 不是空的時不碰執行中的 systemd，只刪除檔案。
+# （/run/system-device-monitor 空了才刪除目錄）。
+# 智慧充電：取消 sdm-wake 排定的喚醒鬧鐘（只有目前的鬧鐘等於它記下的時間時才寫 0，別人的鬧鐘不動），
+# 並撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個檔案）。升級時（upgrade）不動任何東西。
+# DPKG_ROOT 不是空的時不碰執行中的 systemd，只處理該目錄底下的檔案。
 set -e
 
 SOCKET=system-device-monitor-cpu-power.socket
@@ -12,6 +14,25 @@ LIMIT_UNIT=system-device-monitor-charge-limit.service
 UNIT_DIR="${DPKG_ROOT:-}/etc/systemd/system"
 STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"
 RUN_DIR="${DPKG_ROOT:-}/run/system-device-monitor"
+RTC_ALARM="${DPKG_ROOT:-}/sys/class/rtc/rtc0/wakealarm"
+RULE="${DPKG_ROOT:-}/etc/polkit-1/rules.d/49-system-device-monitor.rules"
+
+clear_wake() {
+    record="$RUN_DIR/wake"
+    if [ ! -f "$record" ] || [ -L "$record" ] || [ ! -f "$RTC_ALARM" ]; then
+        return 0
+    fi
+    recorded=""
+    current=""
+    read -r recorded < "$record" || true
+    read -r current < "$RTC_ALARM" || true
+    case "$recorded" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$current" = "$recorded" ]; then
+        printf '0' > "$RTC_ALARM" 2>/dev/null || true
+    fi
+}
 
 if [ "$1" = "remove" ]; then
     if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
@@ -26,7 +47,12 @@ if [ "$1" = "remove" ]; then
     rm -f "$UNIT_DIR/sleep.target.wants/$LIMIT_UNIT"
     rm -f "$STATE_DIR/charge-limit.json"
     rmdir "$STATE_DIR" 2>/dev/null || true
+    clear_wake
+    if [ -f "$RULE" ] || [ -L "$RULE" ]; then
+        rm -f "$RULE"
+    fi
     rm -f "$RUN_DIR/charge-limit.lock" "$RUN_DIR/charge-limit.times"
+    rm -f "$RUN_DIR/wake" "$RUN_DIR/wake.lock" "$RUN_DIR/wake.times" "$RUN_DIR/unattended.lock"
     rmdir "$RUN_DIR" 2>/dev/null || true
 fi
 
