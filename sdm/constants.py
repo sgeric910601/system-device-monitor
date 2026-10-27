@@ -223,6 +223,14 @@ class SmartCharging:
     WAKE_EARLIEST = 60          # 喚醒時間只能在 60 秒後到 7 天內
     WAKE_LATEST = 7 * 24 * 3600
     WAKE_REPLACE_SECONDS = 5 * 60           # 與已排定的時間相差 5 分鐘以上才重排
+    PLAN_FILE = "charging-plan.json"        # XDG 資料目錄
+    PLAN_FORMAT = 1
+    PLAN_MAX_BYTES = 64 * 1024  # 超過就不讀取，先備份再從沒有排程開始
+    LOG_FILE = "charging-plan.log"          # XDG 狀態目錄
+    LOG_MAX_BYTES = 256 * 1024  # 超過時只留後半
+    LOG_TAIL_LINES = 20         # --charging-plan-status 顯示的行數
+    FILE_MODE = 0o600           # 排程檔、紀錄檔與備份只有本人可讀寫
+    DIRECTORY_MODE = 0o700      # 本程式建立的資料夾
 
 
 class Supply:
