@@ -7,6 +7,7 @@ from unittest import mock
 
 from sdm.constants import Update
 from sdm.services.update_demo import DemoUpdater
+from sdm.services.update_runner import PatientRunner
 from sdm.services.updater import KIND_DEB, KIND_SOURCE, Updater
 from sdm.ui import settings_window, smoke, update_wiring
 from sdm.ui.alert_wiring import AlertMixin
@@ -48,6 +49,7 @@ class NoNetwork(unittest.TestCase):
         with mock.patch.object(Updater, "start") as start:
             app.start_updates()
         self.assertIsInstance(app.updater, Updater)
+        self.assertIsInstance(app.updater.services.runner, PatientRunner)   # 從不放棄等待 pkexec
         start.assert_called_once()
         app.stop_updates()
 

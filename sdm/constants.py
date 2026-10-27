@@ -190,7 +190,7 @@ class Update:
     ACTION = "tw.local.system-device-monitor.update"            # polkit 動作（每次都要管理員密碼）
     PROTOCOL = 1
     PKEXEC = "/usr/bin/pkexec"
-    PKEXEC_TIMEOUT = 300                        # 等待授權、驗證與 apt-get 的上限（秒）
+    PKEXEC_TIMEOUT = 300                        # 超過這麼久改顯示「仍在安裝中…」（仍等到結束）
     PROTOCOL_TIMEOUT = 5                        # 「sdm-update --protocol」的逾時（秒）
     DPKG = "/usr/bin/dpkg"
     DPKG_DEB = "/usr/bin/dpkg-deb"

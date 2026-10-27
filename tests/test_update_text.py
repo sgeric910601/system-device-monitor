@@ -7,7 +7,8 @@ import unittest
 from sdm.core.update_logic import AppVersion, ReleaseInfo
 from sdm.services import update_demo
 from sdm.services.updater import (AVAILABLE, CHECKING, DOWNLOADING, FAILED, IDLE, INSTALLING,
-                                  KIND_DEB, KIND_SOURCE, LATEST, RESTARTING, UpdateState)
+                                  KIND_DEB, KIND_SOURCE, LATEST, RESTARTING, STILL_INSTALLING,
+                                  UpdateState)
 from sdm.ui import update_text as text
 
 RELEASE = ReleaseInfo(tag="v0.3.0", numbers=(0, 3, 0), page_url="https://github.com/x",
@@ -22,7 +23,8 @@ class Status(unittest.TestCase):
     def test_every_phase_has_a_status(self):
         cases = {IDLE: "尚未檢查", CHECKING: "檢查中…", LATEST: "已是最新版本",
                  AVAILABLE: "有新版本 0.3.0", DOWNLOADING: "正在下載並驗證 0.3.0…",
-                 INSTALLING: "等待管理員授權並安裝…", RESTARTING: "已安裝，正在重新啟動…"}
+                 INSTALLING: "等待管理員授權並安裝…", STILL_INSTALLING: "仍在安裝中…",
+                 RESTARTING: "已安裝，正在重新啟動…"}
         for phase, expected in cases.items():
             with self.subTest(phase=phase):
                 self.assertEqual(text.status_text(UpdateState(phase=phase, release=RELEASE)),
@@ -56,6 +58,7 @@ class Status(unittest.TestCase):
     def test_release_details_and_notes(self):
         self.assertTrue(text.show_release(UpdateState(phase=AVAILABLE, release=RELEASE)))
         self.assertTrue(text.show_release(UpdateState(phase=INSTALLING, release=RELEASE)))
+        self.assertTrue(text.show_release(UpdateState(phase=STILL_INSTALLING, release=RELEASE)))
         self.assertFalse(text.show_release(UpdateState(phase=LATEST)))
         self.assertEqual(text.notes_text(UpdateState(phase=AVAILABLE, release=RELEASE)),
                          "新增\n・一鍵更新[0m")

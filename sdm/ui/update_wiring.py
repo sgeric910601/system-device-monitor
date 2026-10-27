@@ -25,8 +25,8 @@ from sdm.constants import Update
 from sdm.core.update_logic import AppVersion
 from sdm.data.github import GitHubClient
 from sdm.services import update_install
-from sdm.services.privileged import HelperRunner
 from sdm.services.update_demo import demo_updater
+from sdm.services.update_runner import PatientRunner
 from sdm.services.updater import (KIND_DEB, KIND_SOURCE, Hooks, Services, Updater,
                                   UpdateMemory, remove_directory)
 from sdm.ui.update_text import update_alert
@@ -99,7 +99,7 @@ class UpdateMixin:
         services = Services(fetch=lambda: client.get(Update.RELEASES_API, Update.API_MAX_BYTES),
                             prepare=prepare, submit=self.update_pool.submit, on_main=idle,
                             schedule=schedule_seconds, cancel=remove_source,
-                            runner=HelperRunner(), clock=time.time, cleanup=remove_directory)
+                            runner=PatientRunner(), clock=time.time, cleanup=remove_directory)
         hooks = Hooks(on_change=self.update_changed, notify=self.update_notify,
                       installed=self.update_installed, preferences=lambda: self.preferences)
         return Updater(services, hooks, AppVersion.current(paths.VERSION), install_kind(paths.ROOT),

@@ -10,13 +10,13 @@ from sdm.core.update_logic import notes_excerpt
 from sdm.services import system_components
 from sdm.services.privileged import KIND_LOCAL
 from sdm.services.updater import (AVAILABLE, CHECKING, DOWNLOADING, FAILED, IDLE, INSTALLING,
-                                  KIND_DEB, KIND_SOURCE, LATEST, RESTARTING)
+                                  KIND_DEB, KIND_SOURCE, LATEST, RESTARTING, STILL_INSTALLING)
 
 SETTINGS_PAGE = "settings:update"       # 點通知時開啟「設定 → 更新」
 UPDATE_ALERT = "update_available"
 ALERT_ICON = "software-update-available-symbolic"
 KINDS = {KIND_DEB: ".deb 套件", KIND_SOURCE: "原始碼資料夾"}
-RELEASE_PHASES = (AVAILABLE, DOWNLOADING, INSTALLING, RESTARTING)
+RELEASE_PHASES = (AVAILABLE, DOWNLOADING, INSTALLING, STILL_INSTALLING, RESTARTING)
 DISABLED = "模擬測試不會檢查更新，也不會連線到網路。"
 AUTO_TITLE = "自動檢查更新"
 NOTIFY_TITLE = "有新版本時通知"
@@ -37,7 +37,8 @@ HELPER_MISMATCH = ("管理員元件的版本與目前的程式不符（例如 gi
 PAGE_LINK = "在 GitHub 查看這個版本"
 NOTES_TITLE = "更新內容"
 STATUS = {IDLE: "尚未檢查", CHECKING: "檢查中…", LATEST: "已是最新版本",
-          INSTALLING: "等待管理員授權並安裝…", RESTARTING: "已安裝，正在重新啟動…"}
+          INSTALLING: "等待管理員授權並安裝…", STILL_INSTALLING: "仍在安裝中…",
+          RESTARTING: "已安裝，正在重新啟動…"}
 
 
 def version_line(current, kind):

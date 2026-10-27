@@ -6,8 +6,9 @@
 - 自動檢查只看正式版，同一個版本只通知一次（「有新版本時通知」關閉時不通知）；手動「立即檢查」
   也列出比較新的 Beta、從不通知，但看過的正式版算已通知。自動檢查失敗不顯示錯誤，手動才顯示。
 - 網路與驗證都在工作執行緒（services.submit），結果經由 services.on_main 回到主執行緒。
-- 安裝只用在 .deb：工作執行緒下載並驗證（update_install.prepare），再以 pkexec 執行 sdm-update
-  （逾時 300 秒）；成功時呼叫 hooks.installed（看板重新啟動），失敗時保留新版本並說明原因。
+- 安裝只用在 .deb：工作執行緒下載並驗證（update_install.prepare），再以 pkexec 執行 sdm-update；
+  一直等到 pkexec 真的結束才決定結果（超過 300 秒改顯示「仍在安裝中…」，按鈕維持停用，因為 root 端
+  可能還在安裝）。成功時呼叫 hooks.installed（看板重新啟動），失敗時保留新版本並說明原因。
   沒有內建公鑰時一律拒絕安裝。暫存目錄在 pkexec 結束後刪除。
 模擬測試與示範模式不建立這個物件（示範模式用 update_demo）。
 """
@@ -30,11 +31,12 @@ LOG = logging.getLogger(__name__)
 KIND_DEB, KIND_SOURCE = "deb", "source"
 IDLE, CHECKING, LATEST, AVAILABLE = "idle", "checking", "latest", "available"
 DOWNLOADING, INSTALLING, RESTARTING, FAILED = "downloading", "installing", "restarting", "failed"
-BUSY = (CHECKING, DOWNLOADING, INSTALLING, RESTARTING)
+STILL_INSTALLING = "still-installing"       # 超過 300 秒仍在等 pkexec（不放棄）
+BUSY = (CHECKING, DOWNLOADING, INSTALLING, STILL_INSTALLING, RESTARTING)
 CHECK_FAILED = "檢查失敗："
 INSTALL_FAILED = "安裝失敗："
 NOTHING = "GitHub 上找不到可以下載的版本"
-TIMEOUT = "逾時：授權或安裝超過 5 分鐘沒有完成；若仍在進行，完成後請重新開啟看板"
+NO_RESULT = "無法執行 pkexec，或取不到更新元件的結果"
 UNAUTHORIZED = "未授權：已取消授權或密碼不正確"
 WRONG_RESULT = "更新元件回報的版本不符，請重新開啟看板確認目前的版本"
 EXIT_TEXT = {2: "更新元件不接受這些參數，請重新安裝 .deb 套件",
@@ -77,7 +79,7 @@ class Services(NamedTuple):
     on_main: Callable       # on_main(function, *args)：回到主執行緒
     schedule: Callable      # schedule(秒, callback) → 代號；callback 回傳 True 時重複
     cancel: Callable
-    runner: object          # sdm.services.privileged.HelperRunner
+    runner: object          # sdm.services.update_runner.PatientRunner
     clock: Callable = time.time
     cleanup: Callable = None    # cleanup(暫存目錄)
 
@@ -128,7 +130,7 @@ def single_json(text):
 def failure_text(status, output):
     """pkexec 或 sdm-update 失敗時給使用者看的說明。"""
     if status is None:
-        return TIMEOUT
+        return NO_RESULT
     if status in UNAUTHORIZED_CODES:
         return UNAUTHORIZED
     if status == 3:
@@ -286,9 +288,15 @@ class Updater:
         self.update(phase=INSTALLING)
         argv = [Update.PKEXEC, Update.HELPER, "install", str(files.deb), str(files.sums),
                 str(files.signature)]
-        self.services.runner.run(argv, Update.PKEXEC_TIMEOUT, lambda status, output:
+        self.services.runner.run(argv, Update.PKEXEC_TIMEOUT,
+                                 lambda: self.still_installing(generation),
+                                 lambda status, output:
                                  self.finished(generation, release, files, status, output))
         return False
+
+    def still_installing(self, generation):
+        if not self.stopped and generation == self.generation and self.state.phase == INSTALLING:
+            self.update(phase=STILL_INSTALLING)
 
     def finished(self, generation, release, files, status, output):
         (self.services.cleanup or remove_directory)(files.directory)

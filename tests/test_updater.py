@@ -10,7 +10,8 @@ from sdm.data.github import FetchError
 from sdm.services import updater as module
 from sdm.services.update_install import Prepared, UpdateError
 from sdm.services.updater import (AVAILABLE, CHECKING, DOWNLOADING, FAILED, IDLE, INSTALLING,
-                                  KIND_DEB, KIND_SOURCE, LATEST, RESTARTING, UpdateMemory)
+                                  KIND_DEB, KIND_SOURCE, LATEST, RESTARTING, STILL_INSTALLING,
+                                  UpdateMemory)
 from tests.fixtures.signing import private_dir
 from tests.test_update_logic import entry, listing
 
@@ -60,11 +61,14 @@ class Runner:
     def __init__(self):
         self.calls = []
 
-    def run(self, argv, timeout, done):
-        self.calls.append((argv, timeout, done))
+    def run(self, argv, slow_after, on_slow, done):
+        self.calls.append((argv, slow_after, done, on_slow))
 
     def finish(self, status, output):
         self.calls[-1][2](status, output)
+
+    def slow(self):
+        self.calls[-1][3]()
 
 
 class Hooks:
@@ -292,7 +296,7 @@ class Install(Base):
         self.assertTrue(updater.installable)
         updater.install()
         self.assertEqual(updater.state.phase, INSTALLING)
-        argv, timeout, _ = self.runner.calls[-1]
+        argv, timeout, _, _ = self.runner.calls[-1]
         base = "/run/user/1000/sdm-update-x/"
         self.assertEqual(argv, [Update.PKEXEC, Update.HELPER, "install",
                                 base + "system-device-monitor_0.3.0_all.deb",
@@ -335,7 +339,7 @@ class Install(Base):
         self.assertEqual(self.runner.calls, [])
 
     def test_helper_failures(self):
-        cases = ((126, "", "未授權"), (127, "", "未授權"), (None, "", "逾時"),
+        cases = ((126, "", "未授權"), (127, "", "未授權"), (None, "", "pkexec"),
                  (3, '{"ok":false,"error":"failed","reason":"signature"}', "簽章"),
                  (3, '{"ok":false,"error":"failed","reason":"busy"}', "套件管理程式"),
                  (3, '{"ok":false,"error":"failed","reason":"apt-timeout"}',
@@ -354,6 +358,28 @@ class Install(Base):
                 self.assertIn(words, updater.state.error)
                 self.assertEqual(self.hooks.installed, 0)
         self.assertEqual(len(self.cleaned), len(cases))
+
+    def test_slow_installs_keep_everything_disabled_until_pkexec_exits(self):
+        updater = self.available()
+        updater.install()
+        self.runner.slow()
+        self.assertEqual(updater.state.phase, STILL_INSTALLING)
+        self.assertTrue(updater.busy)
+        self.assertFalse(updater.installable)
+        calls = len(self.runner.calls)
+        updater.install()
+        updater.check_now()
+        self.assertEqual((len(self.runner.calls), self.fetched), (calls, 1))
+        self.runner.finish(0, '{"ok":true,"action":"install","version":"0.3.0"}')
+        self.assertEqual(updater.state.phase, RESTARTING)
+
+    def test_a_late_failure_reenables_installing(self):
+        updater = self.available()
+        updater.install()
+        self.runner.slow()
+        self.runner.finish(126, "")
+        self.assertEqual(updater.state.phase, AVAILABLE)
+        self.assertTrue(updater.installable)
 
     def test_busy_states_block_checks_and_installs(self):
         pending = []
