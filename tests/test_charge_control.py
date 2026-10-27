@@ -499,6 +499,46 @@ class Automatic(Base):
         self.control.apply_automatically(90, self.done)
         self.assertEqual(self.results, [(False, None)])
 
+    def test_exact_value_outside_the_options_for_restoring(self):
+        """智慧充電還原使用者原本的上限（例如其他程式設的 67%）：不必是滑桿的選項。"""
+        self.control.apply_automatically(67, self.done, exact=True)
+        self.assertEqual(self.runner.writes(), [[PKEXEC, HELPER, "set", "BAT0", "67"]])
+        for value in (49, 101, True, 67.5):
+            self.control.apply_automatically(value, self.done, exact=True)
+        self.assertEqual(self.results, [(False, None)] * 4)
+
+    def test_user_commit_wins_over_queued_automatic_writes(self):
+        """使用者放開滑桿時通知智慧充電；它結束排程並取消還在排隊的自動寫入。"""
+        commits = []
+
+        def user_commit(value):
+            commits.append(value)
+            self.control.cancel_automatic()
+        self.control.user_commit = user_commit
+        self.control.drag(85)
+        self.control.apply_automatically(95, self.done)
+        self.timers.advance(0.6)
+        self.assertEqual(commits, [85])
+        self.assertEqual(self.results, [(False, 80)])
+        self.sysfs(85)
+        self.runner.finish(0, ok_output(85))
+        self.timers.advance(ChargeLimit.MIN_WRITE_GAP + 1)
+        self.assertEqual([argv[4] for argv in self.runner.writes()], ["85"])
+
+    def test_persist_switch_counts_as_a_user_change(self):
+        commits = []
+        self.control.user_commit = commits.append
+        self.control.set_persist(True)
+        self.assertEqual(commits, [80])
+
+    def test_automatic_writes_do_not_count_as_user_changes(self):
+        commits = []
+        self.control.user_commit = commits.append
+        self.control.apply_automatically(90, self.done)
+        self.sysfs(90)
+        self.runner.finish(0, ok_output(90))
+        self.assertEqual(commits, [])
+
 
 class Observe(Base):
     def setUp(self):

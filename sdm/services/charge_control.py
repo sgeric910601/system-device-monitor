@@ -11,8 +11,11 @@
   （最多 3 次、間隔 0.3 秒）。驅動不接受某個值時改用實際套用的值，並從選項移除被拒絕的值。
 - 小程式要求同一顆電池兩次寫入至少相隔 10 秒：距離上次執行小程式不到 10 秒時，先等到滿 10 秒
   （狀態維持「套用中」）再執行，正常操作不會被拒絕。
-- 自動寫入（之後的智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
+- 自動寫入（智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
   每 0.1 秒確認一次，最多等 10 秒；不帶 --persist，不改變使用者保留的值與重新套用的單元。
+  只接受滑桿的選項；還原使用者原本的上限時（exact）接受小程式的整個範圍 50–100。
+  使用者送出自己的值（放開滑桿或切換保留）時呼叫 user_commit(值)：智慧充電以使用者為準、
+  結束排程，並以 cancel_automatic() 取消還在排隊的自動寫入。
 不需要授權就能知道的事（是否支援、目前的上限、是否保留）都以一般權限讀取，
 開啟程式時不會要求密碼。「開機與喚醒後保留」要狀態檔屬於這顆電池、而且單元已啟用
 （以一般權限執行 systemctl is-enabled）才算開啟；兩者不一致時 persist_mismatch 為 True。
@@ -109,6 +112,12 @@ class ChargeState:
         return self.limit if self.draft is None else self.draft
 
 
+def allowed_target(target, options, exact):
+    if exact:
+        return type(target) is int and ChargeLimit.MIN_LIMIT <= target <= ChargeLimit.MAX_LIMIT
+    return target in options
+
+
 def glib_schedule(seconds, callback):
     return GLib.timeout_add(int(seconds * 1000), callback)
 
@@ -132,6 +141,7 @@ class ChargeControl:
         self.queue, self.automatic, self.poll_timer, self.read_timer = [], False, None, None
         self.written_at = None
         self.saved, self.unit_enabled, self.unit_generation = False, None, 0
+        self.user_commit = None         # user_commit(值)：使用者自己送出上限時呼叫
 
     def update(self, **changes):
         state = replace(self.state, **changes)
@@ -231,6 +241,7 @@ class ChargeControl:
             self.debouncer.clear()
             self.update(draft=None)
             return
+        self.user_wins(value)
         self.write(value, self.state.persist, lambda ok: self.user_done(value, ok))
 
     def user_done(self, value, ok):
@@ -247,6 +258,7 @@ class ChargeControl:
             self.on_change()                # 讓開關回到實際的狀態
             return
         self.debouncer.busy = True
+        self.user_wins(state.limit)
         self.write(state.limit, bool(wanted), lambda ok: self.other_done())
 
     def other_done(self):
@@ -259,9 +271,24 @@ class ChargeControl:
     def user_active(self):
         return self.state.busy or self.debouncer.editing or self.debouncer.draft is not None
 
-    def apply_automatically(self, target, done):
-        """done(成功, 讀回的上限)；排在使用者的調整與其他自動寫入後面。"""
-        if not self.state.ready or target not in self.state.options:
+    def user_wins(self, value):
+        """使用者送出自己的值：通知智慧充電（它會結束排程並取消排隊中的自動寫入）。"""
+        if self.user_commit is not None:
+            self.user_commit(value)
+
+    def cancel_automatic(self):
+        """取消還在排隊（還沒開始執行小程式）的自動寫入；各自回報失敗。"""
+        queued, self.queue = self.queue, []
+        if self.poll_timer is not None:
+            self.cancel(self.poll_timer)
+            self.poll_timer = None
+        for _, done, _ in queued:
+            done(False, self.state.limit)
+
+    def apply_automatically(self, target, done, exact=False):
+        """done(成功, 讀回的上限)；排在使用者的調整與其他自動寫入後面。
+        exact 時（還原原本的上限）接受 50–100 的任何整數，否則只接受滑桿的選項。"""
+        if not self.state.ready or not allowed_target(target, self.state.options, exact):
             done(False, None)
             return
         polls = round(ChargeLimit.AUTOMATIC_WAIT / ChargeLimit.AUTOMATIC_POLL)
@@ -422,9 +449,12 @@ class DemoChargeControl:
     def set_persist(self, wanted):
         self.update(persist=bool(wanted))
 
-    def apply_automatically(self, target, done):
+    def apply_automatically(self, target, done, exact=False):
         self.update(limit=target)
         done(True, target)
+
+    def cancel_automatic(self):
+        return None
 
     def set_conflicts(self, conflicts):
         self.update(conflicts=tuple(conflicts))
