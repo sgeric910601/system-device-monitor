@@ -12,18 +12,24 @@ import threading
 from types import SimpleNamespace
 import unittest
 
-from sdm.constants import ChargeLimit, CpuPower
+from sdm.constants import ChargeLimit, CpuPower, Unattended, Wake
 from tests.fixtures.fakeroot import FakeRoot
 from tests.fixtures.helpers import ROOT, load_helper, load_script
 
 installer = load_script("install_system")
 control = load_helper("sdm-cpu-power")
 limit = load_helper("sdm-charge-limit")
+wake = load_helper("sdm-wake")
+unattended = load_helper("sdm-unattended")
 SOCKET = "system-device-monitor-local-cpu-power.socket"
 SERVICE = "system-device-monitor-local-cpu-power.service"
 LIMIT_UNIT = "system-device-monitor-local-charge-limit.service"
 LIMIT_POLICY = "tw.local.system-device-monitor.unattended.local.charge-limit.policy"
 LIMIT_STATE = "var/lib/system-device-monitor/charge-limit-local.json"
+WAKE_POLICY = "tw.local.system-device-monitor.unattended.local.wake.policy"
+RULES_POLICY = "tw.local.system-device-monitor.local.rules.policy"
+RULE = "etc/polkit-1/rules.d/49-system-device-monitor.rules"
+ALARM = "sys/devices/pnp0/00:00/rtc/rtc0/wakealarm"
 TARGETS = {
     "usr/local/libexec/system-device-monitor/sdm-cpu-power": 0o755,
     "usr/local/libexec/system-device-monitor/sdm-cpu-power-service": 0o755,
@@ -33,6 +39,10 @@ TARGETS = {
     "usr/local/libexec/system-device-monitor/sdm-charge-limit": 0o755,
     "usr/local/share/polkit-1/actions/" + LIMIT_POLICY: 0o644,
     "etc/systemd/system/" + LIMIT_UNIT: 0o644,
+    "usr/local/libexec/system-device-monitor/sdm-wake": 0o755,
+    "usr/local/share/polkit-1/actions/" + WAKE_POLICY: 0o644,
+    "usr/local/libexec/system-device-monitor/sdm-unattended": 0o755,
+    "usr/local/share/polkit-1/actions/" + RULES_POLICY: 0o644,
 }
 SYSTEMCTL = "/usr/bin/systemctl"
 DPKG_QUERY = "/usr/bin/dpkg-query"
@@ -354,6 +364,42 @@ class Remove(Base):
         self.assertEqual(self.main("remove"), installer.EXIT_OK)
         self.assertEqual(self.installed(), [])
 
+    def wake(self, alarm, record, record_mode=0o600):
+        """假的 RTC（rtc0 是指向 sys/devices 的符號連結）與 sdm-wake 記下的時間。"""
+        path = self.root.file(ALARM, alarm)
+        link = self.root.directory("sys/class/rtc")/"rtc0"
+        link.symlink_to(os.path.relpath(path.parent, link.parent))
+        self.root.file("run/system-device-monitor/wake", record, mode=record_mode)
+        return path
+
+    def test_clears_only_the_alarm_the_wake_helper_recorded(self):
+        alarm = self.wake("1800000600\n", "1800000600\n")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse((self.root.path/"run/system-device-monitor").exists())
+
+    def test_leaves_another_alarm(self):
+        alarm = self.wake("1800009999\n", "1800000600\n")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual(alarm.read_text(), "1800009999\n")
+
+    def test_record_writable_by_others_is_not_trusted(self):
+        alarm = self.wake("1800000600\n", "1800000600\n", record_mode=0o666)
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual(alarm.read_text(), "1800000600\n")
+
+    def test_removes_the_unattended_rule_and_the_helper_locks(self):
+        rules = self.root.directory("etc/polkit-1/rules.d")
+        os.chmod(rules, 0o750)
+        self.root.file(RULE, "// rule\n")
+        other = self.root.file("etc/polkit-1/rules.d/50-other.rules", "// other\n")
+        for name in ("wake", "wake.lock", "wake.times", "unattended.lock"):
+            self.root.file("run/system-device-monitor/" + name, "", mode=0o600)
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertFalse((self.root.path/RULE).exists())
+        self.assertTrue(other.exists())
+        self.assertFalse((self.root.path/"run/system-device-monitor").exists())
+
     def test_wants_entry_that_is_not_a_symlink_is_left_alone(self):
         entry = self.root.file("etc/systemd/system/sockets.target.wants/" + SOCKET)
         self.main("remove")
@@ -400,6 +446,14 @@ class Consistency(unittest.TestCase):
         self.assertEqual(installer.LIMIT_STATE, limit.STATE_DIR + "/" + local_limit.state)
         self.assertEqual(installer.LIMIT_LOCK, limit.RUN_DIR + "/" + limit.LOCK_NAME)
         self.assertEqual(installer.LIMIT_TIMES, limit.RUN_DIR + "/" + limit.TIMES_NAME)
+        self.assertEqual("/" + installer.HELPER_DIR + "/sdm-wake", Wake.LOCAL_HELPER)
+        self.assertEqual("/" + installer.HELPER_DIR + "/sdm-unattended", Unattended.LOCAL_HELPER)
+        self.assertEqual(installer.WAKE_FILES, tuple(wake.RUN_DIR + "/" + name for name in (
+            wake.RECORD_NAME, wake.LOCK_NAME, wake.TIMES_NAME)))
+        self.assertEqual(installer.WAKE_RECORD, wake.RUN_DIR + "/" + wake.RECORD_NAME)
+        self.assertEqual(installer.RTC_ALARM, wake.RTC_DIR + "/" + wake.ALARM_FILE)
+        self.assertEqual(installer.UNATTENDED_LOCK, unattended.RUN_DIR + "/" + unattended.LOCK_NAME)
+        self.assertEqual("/" + installer.UNATTENDED_RULE, Unattended.RULE_FILE)
 
     def test_sources_exist_and_are_public(self):
         manifest = json.loads((ROOT/"package-files.json").read_text(encoding="utf-8"))

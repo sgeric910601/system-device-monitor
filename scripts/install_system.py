@@ -1,5 +1,6 @@
 #!/usr/bin/python3
-"""安裝或移除原始碼資料夾的管理員元件：CPU 功耗取樣與充電上限（由 install.py 經 pkexec 以 root 執行）。
+"""安裝或移除原始碼資料夾的管理員元件：CPU 功耗取樣、充電上限、定時喚醒與無人授權開關
+（由 install.py 經 pkexec 以 root 執行）。
 
 用法：pkexec /usr/bin/python3 -I -B -c <啟動碼> <暫存>/scripts/install_system.py <本檔的 SHA-256>
       install｜remove --stage <暫存> --manifest-sha256 <64 位小寫十六進位>
@@ -19,6 +20,8 @@
   sockets.target.wants 與 multi-user／sleep.target.wants 的符號連結、原始碼版保留的
   充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）與充電上限小程式的鎖檔、
   寫入時間（/run/system-device-monitor/charge-limit.lock、.times）；目錄裡還有其他檔案時保留目錄。
+  也取消 sdm-wake 記下的喚醒鬧鐘（只有目前的鬧鐘等於 root 擁有、其他人不可寫的紀錄時才寫 0），
+  刪除喚醒與無人授權的紀錄、鎖檔，以及「允許無人時自動調整」的 polkit 規則（只刪那一個檔案）。
 標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）。
 只使用標準函式庫，不載入專案裡的任何模組。
 """
@@ -48,6 +51,8 @@ SOCKET = "system-device-monitor-local-cpu-power.socket"
 SERVICE = "system-device-monitor-local-cpu-power.service"
 LIMIT_UNIT = "system-device-monitor-local-charge-limit.service"
 LIMIT_POLICY = "tw.local.system-device-monitor.unattended.local.charge-limit.policy"
+WAKE_POLICY = "tw.local.system-device-monitor.unattended.local.wake.policy"
+RULES_POLICY = "tw.local.system-device-monitor.local.rules.policy"
 POLICY_DIR = "usr/local/share/polkit-1/actions"
 FILES = (           # （暫存目錄中的來源、相對於根目錄的位置、權限）
     ("helper/sdm-cpu-power", HELPER_DIR + "/sdm-cpu-power", 0o755),
@@ -59,6 +64,10 @@ FILES = (           # （暫存目錄中的來源、相對於根目錄的位置�
     ("helper/sdm-charge-limit", HELPER_DIR + "/sdm-charge-limit", 0o755),
     ("helper/policy/" + LIMIT_POLICY, POLICY_DIR + "/" + LIMIT_POLICY, 0o644),
     ("helper/systemd/" + LIMIT_UNIT, UNIT_DIR + "/" + LIMIT_UNIT, 0o644),
+    ("helper/sdm-wake", HELPER_DIR + "/sdm-wake", 0o755),
+    ("helper/policy/" + WAKE_POLICY, POLICY_DIR + "/" + WAKE_POLICY, 0o644),
+    ("helper/sdm-unattended", HELPER_DIR + "/sdm-unattended", 0o755),
+    ("helper/policy/" + RULES_POLICY, POLICY_DIR + "/" + RULES_POLICY, 0o644),
 )
 DROPIN_DIR = UNIT_DIR + "/" + SOCKET + ".d"
 DROPIN_NAME = "owner.conf"
@@ -70,6 +79,13 @@ LIMIT_STATE = STATE_DIR + "/charge-limit-local.json"     # 只刪除原始碼版
 RUN_DIR = "run/system-device-monitor"
 LIMIT_LOCK = RUN_DIR + "/charge-limit.lock"     # sdm-charge-limit 的鎖檔（執行期，重開機就消失）
 LIMIT_TIMES = RUN_DIR + "/charge-limit.times"   # 各電池上次寫入的時間（執行期）
+WAKE_RECORD = RUN_DIR + "/wake"                 # sdm-wake 排定的時間（root 0600）
+WAKE_FILES = (WAKE_RECORD, RUN_DIR + "/wake.lock", RUN_DIR + "/wake.times")
+UNATTENDED_LOCK = RUN_DIR + "/unattended.lock"
+UNATTENDED_RULE = "etc/polkit-1/rules.d/49-system-device-monitor.rules"
+RTC_ALARM = "sys/class/rtc/rtc0/wakealarm"      # rtc0 是指向 /sys/devices 的符號連結
+NUMBER = re.compile(r"[1-9][0-9]{0,11}")
+NUMBER_MAX_BYTES = 64
 PACKAGE = "system-device-monitor"
 NOT_INSTALLED = ("not-installed", "config-files")
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -327,6 +343,56 @@ def remove_empty_directory(context, relative):
         os.close(fd)
 
 
+def read_number(fd):
+    text = os.read(fd, NUMBER_MAX_BYTES).decode("ascii", "replace").strip()
+    return text if NUMBER.fullmatch(text) else None
+
+
+def recorded_wake(context):
+    """sdm-wake 記下的時間；紀錄必須是 root 擁有、其他人不可寫的一般檔案，否則不採信。"""
+    parent, name = WAKE_RECORD.rsplit("/", 1)
+    try:
+        directory = open_directory(context, parent)
+    except (OSError, Failed):
+        return None
+    try:
+        fd = os.open(name, FILE_FLAGS, dir_fd=directory)
+    except OSError:
+        return None
+    finally:
+        os.close(directory)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner \
+                or info.st_mode & PRIVATE_BITS:
+            return None
+        return read_number(fd)
+    finally:
+        os.close(fd)
+
+
+def clear_wake(context):
+    """目前的喚醒鬧鐘等於 sdm-wake 記下的時間時才寫 0；別人的鬧鐘一律不動。"""
+    recorded = recorded_wake(context)
+    if recorded is None:
+        return
+    alarm = os.path.join(context.root, RTC_ALARM)
+    try:
+        fd = os.open(alarm, FILE_FLAGS)
+        try:
+            current = read_number(fd)
+        finally:
+            os.close(fd)
+        if current == recorded:
+            fd = os.open(alarm, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                os.write(fd, b"0")
+            finally:
+                os.close(fd)
+    except OSError:
+        pass
+
+
 # ── 動作 ───────────────────────────────────────────────────
 
 def deb_installed(context):
@@ -372,6 +438,9 @@ def remove(context, stage, digest, uid):
     remove_empty_directory(context, STATE_DIR)
     remove_entry(context, LIMIT_LOCK)
     remove_entry(context, LIMIT_TIMES)
+    clear_wake(context)
+    for name in (*WAKE_FILES, UNATTENDED_LOCK, UNATTENDED_RULE):
+        remove_entry(context, name)
     remove_empty_directory(context, RUN_DIR)
     remove_empty_directory(context, HELPER_DIR)
     systemctl(context, "daemon-reload")

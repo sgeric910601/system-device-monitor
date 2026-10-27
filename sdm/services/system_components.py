@@ -1,5 +1,5 @@
-"""原始碼資料夾的管理員元件（CPU 功耗取樣與充電上限）：install.py --system-components
-install｜remove 的使用者端。
+"""原始碼資料夾的管理員元件（CPU 功耗取樣、充電上限、定時喚醒與無人授權開關）：
+install.py --system-components install｜remove 的使用者端。
 
 以一般使用者執行（不需要、也不接受 sudo）：
 1. 原始碼資料夾與 git 目錄（含上層）只能由使用者或 root 寫入（見 install_guard）；
@@ -41,6 +41,10 @@ SOURCES = (
     "helper/sdm-charge-limit",
     "helper/policy/tw.local.system-device-monitor.unattended.local.charge-limit.policy",
     "helper/systemd/system-device-monitor-local-charge-limit.service",
+    "helper/sdm-wake",
+    "helper/policy/tw.local.system-device-monitor.unattended.local.wake.policy",
+    "helper/sdm-unattended",
+    "helper/policy/tw.local.system-device-monitor.local.rules.policy",
 )
 INSTALLER = "scripts/install_system.py"
 STAGED = SOURCES + (INSTALLER,)
