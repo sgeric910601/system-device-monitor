@@ -1,6 +1,7 @@
 """通知文字（純邏輯）：測試通知、圖示、緊急程度，以及名稱不含位址。"""
 import unittest
 
+from sdm.constants import Alerts, AppIcon
 from sdm.core import alert_messages as messages
 from sdm.core.fmt import clean_text, mask_addresses
 from sdm.data import sources
@@ -11,7 +12,13 @@ class Messages(unittest.TestCase):
         alert = messages.test_alert()
         self.assertEqual((alert.title, alert.body), ("系統與裝置監看", "通知功能正常。"))
         self.assertEqual((alert.kind, alert.icon, alert.critical),
-                         (messages.TEST, "utilities-system-monitor", False))
+                         (messages.TEST, "system-device-monitor", False))
+
+    def test_test_notification_uses_the_app_icon(self):
+        """測試通知代表程式本身：用程式自己的圖示名稱（與桌面入口、通知的 desktop-entry 相同）。"""
+        icon = messages.test_alert().icon
+        self.assertEqual(icon, AppIcon.NAME)
+        self.assertEqual(icon, Alerts.DESKTOP_ENTRY)
 
     def test_key_separates_kinds_and_devices(self):
         first = messages.Alert(kind="a", title="", body="", icon="", device="1")

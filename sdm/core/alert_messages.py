@@ -1,13 +1,13 @@
 """通知的內容（純邏輯，不載入 GTK）：標題、內文、圖示、緊急程度與點通知時開啟的頁面。
 
-用詞沿用參考專案 Notifier；圖示名稱取自系統圖示主題。
+用詞沿用參考專案 Notifier；圖示名稱取自系統圖示主題，測試通知用程式自己的圖示。
 隱私：內文只有百分比、瓦數、分鐘數、時刻與設備名稱；設備名稱先清理控制字元，
 再把像 MAC 或 IPv4 位址的部分換成 x，絕不放序號、位址或裝置路徑。
 """
 from dataclasses import dataclass
 import math
 
-from sdm.constants import Alerts
+from sdm.constants import Alerts, AppIcon
 from sdm.core.fmt import clean_text, mask_addresses
 
 LOW_BATTERY = "low_battery"
@@ -139,4 +139,5 @@ def charging_late(target, reachable, deadline_text):
 
 
 def test_alert():
-    return Alert(TEST, Alerts.APP_NAME, "通知功能正常。", "utilities-system-monitor")
+    """測試通知代表程式本身，所以用程式的圖示（.deb 裝在系統圖示主題，原始碼安裝寫進使用者的）。"""
+    return Alert(TEST, Alerts.APP_NAME, "通知功能正常。", AppIcon.NAME)

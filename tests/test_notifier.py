@@ -110,7 +110,7 @@ class Sending(unittest.TestCase):
         self.assertEqual(module.inits, ["系統與裝置監看"])
         created = module.created[0]
         self.assertEqual((created.title, created.body, created.icon),
-                         ("系統與裝置監看", "通知功能正常。", "utilities-system-monitor"))
+                         ("系統與裝置監看", "通知功能正常。", "system-device-monitor"))
         self.assertEqual(created.hints, {"desktop-entry": "system-device-monitor"})
         self.assertEqual((created.urgency, created.shown), ("normal", 1))
         self.assertEqual(notifier.status, AVAILABLE)
