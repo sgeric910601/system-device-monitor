@@ -20,11 +20,13 @@
   sockets.target.wants 與 multi-user／sleep.target.wants 的符號連結、原始碼版保留的
   充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）與充電上限小程式的鎖檔、
   寫入時間（/run/system-device-monitor/charge-limit.lock、.times）；目錄裡還有其他檔案時保留目錄。
-  也取消 sdm-wake 記下的喚醒鬧鐘（只有目前的鬧鐘等於 root 擁有、其他人不可寫的紀錄時才寫 0），
-  刪除喚醒與無人授權的紀錄、鎖檔，以及「允許無人時自動調整」的 polkit 規則（只刪那一個檔案）。
+  智慧充電：最先撤銷「允許無人時自動調整」的 polkit 規則（只刪那一個檔案），再取得 sdm-wake 的鎖
+  （等正在執行的 sdm-wake 結束，最多 15 秒），才取消它記下的喚醒鬧鐘（只有目前的鬧鐘等於 root
+  擁有、其他人不可寫的紀錄時才寫 0）；最後刪除喚醒與無人授權的紀錄、鎖檔。
 標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）。
 只使用標準函式庫，不載入專案裡的任何模組。
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -34,6 +36,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 from typing import Callable, NamedTuple
 
 EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
@@ -80,7 +83,10 @@ RUN_DIR = "run/system-device-monitor"
 LIMIT_LOCK = RUN_DIR + "/charge-limit.lock"     # sdm-charge-limit 的鎖檔（執行期，重開機就消失）
 LIMIT_TIMES = RUN_DIR + "/charge-limit.times"   # 各電池上次寫入的時間（執行期）
 WAKE_RECORD = RUN_DIR + "/wake"                 # sdm-wake 排定的時間（root 0600）
-WAKE_FILES = (WAKE_RECORD, RUN_DIR + "/wake.lock", RUN_DIR + "/wake.times")
+WAKE_LOCK = RUN_DIR + "/wake.lock"             # 與 sdm-wake 共用的鎖
+WAKE_FILES = (WAKE_RECORD, WAKE_LOCK, RUN_DIR + "/wake.times")
+WAKE_LOCK_WAIT_S = 15.0                         # 等正在執行的 sdm-wake（它自己最多等鎖 10 秒）
+LOCK_POLL_S = 0.1
 UNATTENDED_LOCK = RUN_DIR + "/unattended.lock"
 UNATTENDED_RULE = "etc/polkit-1/rules.d/49-system-device-monitor.rules"
 RTC_ALARM = "sys/class/rtc/rtc0/wakealarm"      # rtc0 是指向 /sys/devices 的符號連結
@@ -119,6 +125,8 @@ class Context(NamedTuple):
     euid: int
     user_exists: Callable
     lstat: Callable = os.lstat
+    sleep: Callable = time.sleep
+    clock: Callable = time.monotonic
 
 
 def run_command(argv):
@@ -393,6 +401,55 @@ def clear_wake(context):
         pass
 
 
+def open_wake_lock(context):
+    """sdm-wake 的鎖檔（root 擁有的一般檔案；不建立、不跟隨符號連結）；沒有或不可信時為 None。"""
+    parent, name = WAKE_LOCK.rsplit("/", 1)
+    try:
+        directory = open_directory(context, parent)
+    except (OSError, Failed):
+        return None
+    try:
+        fd = os.open(name, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=directory)
+    except OSError:
+        return None
+    finally:
+        os.close(directory)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != context.owner:
+        os.close(fd)
+        return None
+    return fd
+
+
+def lock_wake(context):
+    """等正在執行的 sdm-wake 放開鎖（最多 15 秒；逾時仍繼續，與沒有鎖時相同）；回傳描述子或 None。"""
+    fd = open_wake_lock(context)
+    if fd is None:
+        return None
+    deadline = context.clock() + WAKE_LOCK_WAIT_S
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if context.clock() >= deadline:
+                return fd
+            context.sleep(LOCK_POLL_S)
+
+
+def remove_smart_charging(context):
+    """先撤銷規則（之後不會再有免密碼的 sdm-wake 開始），拿到 sdm-wake 的鎖才取消鬧鐘並刪除紀錄。"""
+    remove_entry(context, UNATTENDED_RULE)
+    lock = lock_wake(context)
+    try:
+        clear_wake(context)
+        remove_entry(context, WAKE_RECORD)
+    finally:
+        if lock is not None:
+            os.close(lock)
+
+
 # ── 動作 ───────────────────────────────────────────────────
 
 def deb_installed(context):
@@ -425,6 +482,7 @@ def install(context, stage, digest, uid):
 
 def remove(context, stage, digest, uid):
     read_stage(stage, digest, uid, context.lstat)
+    remove_smart_charging(context)
     systemctl(context, "disable", "--now", SOCKET)      # 尚未安裝或已移除時失敗也沒關係
     systemctl(context, "stop", SERVICE)
     systemctl(context, "disable", LIMIT_UNIT)
@@ -438,8 +496,7 @@ def remove(context, stage, digest, uid):
     remove_empty_directory(context, STATE_DIR)
     remove_entry(context, LIMIT_LOCK)
     remove_entry(context, LIMIT_TIMES)
-    clear_wake(context)
-    for name in (*WAKE_FILES, UNATTENDED_LOCK, UNATTENDED_RULE):
+    for name in (*WAKE_FILES, UNATTENDED_LOCK):
         remove_entry(context, name)
     remove_empty_directory(context, RUN_DIR)
     remove_empty_directory(context, HELPER_DIR)

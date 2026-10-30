@@ -3,6 +3,7 @@
 以假根目錄（擁有者＝執行測試的使用者）代替 /，dpkg-query 與 systemctl 以假函式代替；
 暫存目錄的內容與雜湊和 install.py 產生的格式相同。
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -86,6 +87,13 @@ class Base(unittest.TestCase):
         self.runner = Runner()
         self.output = []
         self.uid = os.getuid()
+        self.now, self.sleeps, self.on_sleep = 0.0, [], None
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep()
 
     def write_manifest(self, files, extra=None):
         body = {"format": 1, "files": files, **(extra or {})}
@@ -95,7 +103,8 @@ class Base(unittest.TestCase):
 
     def context(self, euid=0, lstat=os.lstat):
         return installer.Context(root=str(self.root.path), owner=os.getuid(), run=self.runner,
-                                 euid=euid, user_exists=lambda uid: True, lstat=lstat)
+                                 euid=euid, user_exists=lambda uid: True, lstat=lstat,
+                                 sleep=self.sleep, clock=lambda: self.now)
 
     def main(self, action="install", digest=None, env=None, euid=0, argv=None, lstat=os.lstat):
         argv = argv if argv is not None else [action, "--stage", str(self.stage),
@@ -399,6 +408,46 @@ class Remove(Base):
         self.assertFalse((self.root.path/RULE).exists())
         self.assertTrue(other.exists())
         self.assertFalse((self.root.path/"run/system-device-monitor").exists())
+
+    def hold_wake_lock(self):
+        lock = self.root.file("run/system-device-monitor/wake.lock", "", mode=0o600)
+        fd = os.open(lock, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+
+    def test_revokes_the_rule_then_waits_for_a_running_wake_helper(self):
+        """先撤銷規則（不會再有免密碼的 sdm-wake 開始），等正在執行的 sdm-wake 放開鎖才取消鬧鐘。"""
+        self.root.file(RULE, "// rule\n")
+        alarm = self.wake("1800000600\n", "1800000600\n")
+        fd = self.hold_wake_lock()
+        seen = []
+
+        def released_later():
+            seen.append(((self.root.path/RULE).exists(), alarm.read_text()))
+            if len(seen) == 3:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        self.on_sleep = released_later
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual(seen, [(False, "1800000600\n")] * 3)
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse((self.root.path/"run/system-device-monitor").exists())
+
+    def test_stuck_wake_lock_still_lets_removal_finish(self):
+        alarm = self.wake("1800000600\n", "1800000600\n")
+        self.hold_wake_lock()
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertGreaterEqual(sum(self.sleeps), installer.WAKE_LOCK_WAIT_S)
+        self.assertLess(sum(self.sleeps), installer.WAKE_LOCK_WAIT_S + 1)
+        self.assertEqual(alarm.read_text(), "0")
+
+    def test_untrusted_wake_lock_is_not_waited_for(self):
+        alarm = self.wake("1800000600\n", "1800000600\n")
+        target = self.root.file("run/elsewhere.lock", "", mode=0o600)
+        (self.root.path/"run/system-device-monitor/wake.lock").symlink_to(target)
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual((self.sleeps, alarm.read_text()), ([], "0"))
+        self.assertTrue(target.exists())
 
     def test_wants_entry_that_is_not_a_symlink_is_left_alone(self):
         entry = self.root.file("etc/systemd/system/sockets.target.wants/" + SOCKET)

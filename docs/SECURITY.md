@@ -351,11 +351,13 @@
 - install_system.py（root 端）再確認暫存目錄與每一層上層、manifest 的雜湊、內容與每個檔案的
   雜湊（暫存檔一律 O_NOFOLLOW｜O_NONBLOCK 開啟），全部通過後才開始寫入；目的地與權限寫死在
   程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
-  remove 只刪除它安裝的檔案、drop-in、sockets.target.wants 與充電上限單元在
-  multi-user.target.wants／sleep.target.wants 的符號連結、原始碼版保留的充電上限
-  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限小程式的鎖檔、寫入時間；
-  也取消 sdm-wake 記下的喚醒鬧鐘（紀錄必須是 root 擁有、其他人不可寫，而且目前的鬧鐘等於它），
-  刪除喚醒與無人授權的紀錄、鎖檔，以及無人授權的規則檔（只有那一個檔案）。
+  remove 最先撤銷無人授權的規則檔（只有那一個檔案），之後不會再有免密碼的 sdm-wake 開始；
+  再以 fcntl 取得 sdm-wake 的鎖（wake.lock，root 擁有的一般檔案，不建立、不跟隨符號連結；最多等
+  15 秒，逾時仍繼續），等正在執行的 sdm-wake 結束才取消它記下的喚醒鬧鐘（紀錄必須是 root 擁有、
+  其他人不可寫，而且目前的鬧鐘等於它）並刪除紀錄。接著只刪除它安裝的檔案、drop-in、
+  sockets.target.wants 與充電上限單元在 multi-user.target.wants／sleep.target.wants 的符號連結、
+  原始碼版保留的充電上限（charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限
+  小程式的鎖檔、寫入時間，以及喚醒與無人授權的鎖檔。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
   Python 與它的參數；只在你自己執行這個指令時出現。
 
@@ -365,9 +367,10 @@
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
   也停用充電上限的單元（刪除它的 wants 連結），並刪除 /var/lib/system-device-monitor/charge-limit.json
   （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）與 /run/system-device-monitor 的
-  charge-limit.lock、charge-limit.times（目錄空了才刪目錄）。也取消 sdm-wake 記下的喚醒鬧鐘
-  （只有紀錄是一般檔案、內容是數字、而且目前的鬧鐘等於它時才寫 0，別人的鬧鐘不動），刪除 wake、
-  wake.lock、wake.times、unattended.lock，以及無人授權的規則檔（只刪那一個一般檔案或符號連結）。
+  charge-limit.lock、charge-limit.times（目錄空了才刪目錄）。智慧充電依序：先刪除無人授權的規則檔
+  （只刪那一個一般檔案或符號連結），再以 flock 取得 sdm-wake 的鎖（wake.lock 是一般檔案時；最多等
+  15 秒，逾時仍繼續），才取消 sdm-wake 記下的喚醒鬧鐘（只有紀錄是一般檔案、內容是數字、而且目前的
+  鬧鐘等於它時才寫 0，別人的鬧鐘不動）並刪除紀錄；最後刪除 wake.lock、wake.times、unattended.lock。
 - prerm（upgrade 時）不動任何東西，只有降級到沒有智慧充電的版本（`dpkg --compare-versions` 比
   0.3.0~ 舊；結尾的 ~ 讓 0.3.0~beta.N 也算有）時撤銷無人授權的規則、取消記下的喚醒鬧鐘並刪除紀錄，
   因為舊版不會再管理或撤銷它們。

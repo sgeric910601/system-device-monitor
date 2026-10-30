@@ -3,8 +3,9 @@
 # 並刪除 sdm-cpu-power enable 寫入的 drop-in；也停用「開機與喚醒後保留充電上限」的單元，
 # 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）、小程式的鎖檔與寫入時間
 # （/run/system-device-monitor 空了才刪除目錄）。
-# 智慧充電：取消 sdm-wake 排定的喚醒鬧鐘（只有目前的鬧鐘等於它記下的時間時才寫 0，別人的鬧鐘不動），
-# 並撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個檔案）。升級時（upgrade）不動任何東西；
+# 智慧充電：先撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個檔案），再取得 sdm-wake 的鎖
+# （等正在執行的 sdm-wake 結束），才取消它排定的喚醒鬧鐘（只有目前的鬧鐘等於它記下的時間時才寫 0，
+# 別人的鬧鐘不動）並刪除紀錄。升級時（upgrade）不動任何東西；
 # 只有降級到沒有智慧充電的版本時，撤銷規則並取消鬧鐘（那個版本不會再管理它們）。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只處理該目錄底下的檔案。
 set -e
@@ -19,6 +20,8 @@ RTC_ALARM="${DPKG_ROOT:-}/sys/class/rtc/rtc0/wakealarm"
 RULE="${DPKG_ROOT:-}/etc/polkit-1/rules.d/49-system-device-monitor.rules"
 # 第一個附有 sdm-wake 與 sdm-unattended 的版本；結尾的「~」讓 0.3.0~beta.N 也算在內。
 SMART_CHARGING_SINCE="0.3.0~"
+# 等正在執行的 sdm-wake 放開鎖的最長秒數（它自己最多等鎖 10 秒）；逾時仍照常取消
+WAKE_LOCK_WAIT=15
 
 clear_wake() {
     record="$RUN_DIR/wake"
@@ -37,12 +40,26 @@ clear_wake() {
     fi
 }
 
-remove_smart_charging() {
+clear_wake_and_record() {
     clear_wake
+    rm -f "$RUN_DIR/wake"
+}
+
+remove_smart_charging() {
+    # 先撤銷規則：之後不會再有免密碼的 sdm-wake 開始
     if [ -f "$RULE" ] || [ -L "$RULE" ]; then
         rm -f "$RULE"
     fi
-    rm -f "$RUN_DIR/wake"
+    # 再拿 sdm-wake 的鎖（不建立、不跟隨符號連結），不會在它寫入的中途讀到舊的紀錄
+    lock="$RUN_DIR/wake.lock"
+    if [ -f "$lock" ] && [ ! -L "$lock" ] && command -v flock >/dev/null 2>&1; then
+        (
+            flock -w "$WAKE_LOCK_WAIT" 9 || true
+            clear_wake_and_record
+        ) 9<"$lock" || clear_wake_and_record
+    else
+        clear_wake_and_record
+    fi
 }
 
 if [ "$1" = "upgrade" ] && dpkg --compare-versions "${2:-}" lt "$SMART_CHARGING_SINCE"; then

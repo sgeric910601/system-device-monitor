@@ -4,6 +4,7 @@
 這時腳本不會呼叫 systemctl；PATH 裡放一個記錄呼叫的假 systemctl 確認這一點。
 線上（有 systemd）的分支只做靜態檢查，實際行為由 CI 安裝、移除與清除套件時驗證。
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 from tests.fixtures.helpers import ROOT, load_script
@@ -376,6 +378,29 @@ class ScriptRuns(unittest.TestCase):
                 self.assertTrue(rule.exists())
                 self.assertEqual(alarm.read_text(), "1800000600\n")
                 self.assertTrue((run/"wake").exists())
+
+    def test_prerm_revokes_the_rule_then_waits_for_the_wake_lock(self):
+        """先撤銷規則，再等正在執行的 sdm-wake 放開鎖（flock），才取消鬧鐘並刪除紀錄。"""
+        alarm, run, rule = self.populate_smart_charging()
+        fd = os.open(run/"wake.lock", os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "DPKG_ROOT": str(self.root)}
+        process = subprocess.Popen(["/bin/sh", str(SCRIPTS/"prerm"), "remove"], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(process.wait, 30)
+        deadline = time.monotonic() + 10
+        while rule.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertFalse(rule.exists())
+        time.sleep(0.3)
+        self.assertIsNone(process.poll())
+        self.assertEqual((alarm.read_text(), (run/"wake").exists()), ("1800000600\n", True))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        self.assertEqual(process.wait(timeout=20), 0, process.stderr.read())
+        process.stderr.close()
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse(run.exists())
 
     def test_remove_and_purge_delete_only_the_unattended_rule(self):
         rules = self.root/RULE
