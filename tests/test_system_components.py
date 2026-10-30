@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -481,6 +483,18 @@ class InstallScript(unittest.TestCase):
         text = (ROOT/"install.py").read_text(encoding="utf-8")
         self.assertIn('"--system-components"', text)
         self.assertIn("system_components.run(", text)
+
+    def test_help_names_every_admin_component(self):
+        """install.py --help 列出這個指令安裝的每一種元件（CPU 功耗、充電上限、喚醒與無人授權）。"""
+        result = subprocess.run([sys.executable, "-B", str(ROOT/"install.py"), "--help"],
+                                capture_output=True, text=True, timeout=60, check=True,
+                                env={**os.environ, "COLUMNS": "100"})
+        text = " ".join(result.stdout.split())
+        for words in ("CPU power sampling", "charge limit", "wake alarm", "unattended",
+                      "smart charging", "pkexec"):
+            with self.subTest(words=words):
+                self.assertIn(words, text)
+        self.assertIn(" ".join(components.HELP.split()), text)
 
 
 if __name__ == "__main__":

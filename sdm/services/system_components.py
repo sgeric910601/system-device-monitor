@@ -56,6 +56,11 @@ FORBIDDEN_CONFIG_KEYS = ("core.attributesfile",)
 TRUE_VALUES = ("true", "yes", "on", "1", "")    # git 的布林真值（只寫鍵名也算真）
 HEX = re.compile(r"[0-9a-f]+")
 ACTIONS = ("install", "remove")
+# install.py --help 的說明（英文，與 install.py 其他選項一致）：列出這個指令安裝或移除的每一種元件
+HELP = ("Install or remove the optional admin components: CPU power sampling, the charge limit, "
+        "and the wake alarm and unattended-grant helpers used by smart charging (asks for "
+        "administrator authentication through pkexec; not needed with the .deb, which already "
+        "includes them)")
 GIT = "/usr/bin/git"
 # 使用者端 git 指令的固定選項與環境：不執行 hooks、不用 fsmonitor、不連任何遠端，
 # 不讀系統與使用者的設定檔、不套用 replace 物件與系統的屬性檔，也不繼承任何 GIT_* 變數。
