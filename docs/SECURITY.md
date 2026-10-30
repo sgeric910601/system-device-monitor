@@ -1,10 +1,12 @@
-# 安全說明：管理員元件與一鍵更新
+# 安全說明：管理員元件、智慧充電與一鍵更新
 
 看板本身一律以一般使用者執行，不需要也不接受 sudo。需要管理員權限的功能有三個：選用的
 「CPU 功耗取樣」（Linux 的 RAPL 能量計數器 /sys/class/powercap/intel-rapl:0/energy_uj 只有 root 能讀）、
 筆電的「充電上限」（/sys/class/power_supply/<電池>/charge_control_*_threshold 只有 root 能寫），
-以及 .deb 安裝的一鍵更新（以 apt-get 安裝已簽章的新版本）。這份文件說明為了這些功能安裝了什麼、
-每個元件能做什麼，以及刻意不做的事。
+以及 .deb 安裝的一鍵更新（以 apt-get 安裝已簽章的新版本）。筆電的智慧充電另外用到兩個小程式：
+設定 RTC 喚醒鬧鐘的 sdm-wake（「精準喚醒」，/sys/class/rtc/rtc0/wakealarm 只有 root 能寫），
+以及只在你開啟「允許無人時自動調整」時才寫入一個 polkit 規則的 sdm-unattended。
+這份文件說明為了這些功能安裝了什麼、每個元件能做什麼，以及刻意不做的事。
 
 ## 要保護的東西與威脅
 
@@ -27,13 +29,20 @@
 | polkit 動作（充電上限） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.unattended.local.charge-limit.policy | root 0644 |
 | 重新套用充電上限的單元 | /usr/lib/systemd/system/system-device-monitor-charge-limit.service | /etc/systemd/system/system-device-monitor-local-charge-limit.service | root 0644 |
 | 保留的充電上限（開啟保留時才建立） | /var/lib/system-device-monitor/charge-limit.json | /var/lib/system-device-monitor/charge-limit-local.json | root 0644（目錄 0755） |
+| 定時喚醒小程式 sdm-wake | /usr/libexec/system-device-monitor/ | /usr/local/libexec/system-device-monitor/ | root 0755 |
+| polkit 動作（喚醒的 set、clear） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.wake.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.unattended.local.wake.policy | root 0644 |
+| 無人授權開關小程式 sdm-unattended | /usr/libexec/system-device-monitor/ | /usr/local/libexec/system-device-monitor/ | root 0755 |
+| polkit 動作（無人授權開關與查詢） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.rules.policy | /usr/local/share/polkit-1/actions/tw.local.system-device-monitor.local.rules.policy | root 0644 |
+| 無人授權的 polkit 規則（只在你開啟時建立） | /etc/polkit-1/rules.d/49-system-device-monitor.rules | 同左 | root 0644 |
+| 喚醒的紀錄、鎖與寫入時間（執行期） | /run/system-device-monitor/wake、wake.lock、wake.times、unattended.lock | 同左 | root 0600 |
 | 更新小程式 sdm-update | /usr/libexec/system-device-monitor/ | （不提供） | root 0755 |
 | polkit 動作（更新） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy | （不提供） | root 0644 |
 | 更新的暫存目錄與執行鎖（安裝更新時才建立，用完清空，只留 .lock） | /var/cache/system-device-monitor/staging、staging/.lock | （不提供） | root 0700、鎖 0600 |
 
 兩種安裝方式擇一：已安裝 .deb 時原始碼安裝會拒絕；.deb 安裝時若發現原始碼安裝的元件會提示移除。
-不安裝任何 polkit 規則（/etc/polkit-1/rules.d）或 setuid 程式，安裝時也不啟用任何服務；
-充電上限的單元只有在你開啟「開機與喚醒後保留」並授權後，才由小程式啟用。
+套件與原始碼安裝都不安裝任何 polkit 規則或 setuid 程式，安裝時也不啟用任何服務；
+充電上限的單元只有在你開啟「開機與喚醒後保留」並授權後，才由小程式啟用；
+無人授權的規則只有在你開啟「允許無人時自動調整」並輸入管理員密碼後，才由 sdm-unattended 寫入。
 
 ## polkit 動作
 
@@ -43,7 +52,13 @@
 - 充電上限：.deb 為 tw.local.system-device-monitor.unattended.charge-limit，原始碼安裝為
   tw.local.system-device-monitor.unattended.local.charge-limit。同樣只有本機作用中的工作階段可以授權，
   預設是 auth_admin_keep：輸入管理員密碼後，polkit 的暫時授權只屬於執行 pkexec 的那個程序
-  （看板），約 5 分鐘內同一個看板再次調整不必重新輸入，其他程式不能沿用。
+  （看板），約 5 分鐘內同一個看板再次調整不必重新輸入，其他程式不能沿用。只有 set 使用這個動作
+  （exec.argv1＝set）；`pkexec sdm-charge-limit status` 改用一般的 org.freedesktop.policykit.exec。
+- 定時喚醒：set 為 tw.local.system-device-monitor.unattended.wake（argv1＝set），clear 為
+  tw.local.system-device-monitor.unattended.wake-clear（argv1＝clear），原始碼安裝為
+  …unattended.local.wake 與 …unattended.local.wake-clear；auth_admin_keep。
+- 無人授權開關：tw.local.system-device-monitor.rules（原始碼安裝 …local.rules），auth_admin，每次都要密碼；
+  查詢用的 …unattended.status（…unattended.local.status）預設一律拒絕（allow_active＝no）。
 - 一鍵更新（只有 .deb）：tw.local.system-device-monitor.update，allow_active＝auth_admin，
   每次都要輸入管理員密碼（見下方「一鍵更新與發布簽章」）。
 - 非作用中的工作階段與遠端一律拒絕（allow_any、allow_inactive＝no）。
@@ -55,19 +70,19 @@
   - 管理員若要寫 polkit 規則（/etc/polkit-1/rules.d）放寬或收緊這些動作，請比對完整的動作 ID
     （例如 `action.id == "tw.local.system-device-monitor.cpu-power"`），不要用
     `indexOf("tw.local.system-device-monitor")` 之類的前綴比對，以免同時套用到之後新增的動作。
-  - `tw.local.system-device-monitor.unattended.*` 這個前綴只用在「之後可以由使用者自己選擇加入的
-    polkit 規則改成免密碼」的動作：目前是充電上限，之後還有智慧充電的定時喚醒。它們的預設仍然
-    需要管理員密碼（auth_admin_keep），套件與原始碼安裝都不安裝任何規則。必須每次都輸入密碼的動作
-    （例如本文件的 CPU 功耗取樣、之後的安裝更新）絕不使用這個前綴。
-  - 之後可選的免密碼規則（只在使用者自己開啟時安裝）必須同時符合：
+  - `tw.local.system-device-monitor.unattended.*` 這個前綴只用在「可以由使用者自己選擇加入的
+    polkit 規則改成免密碼」的動作：充電上限的 set、定時喚醒的 set 與 clear，以及沒有作用的查詢動作。
+    它們的預設仍然需要管理員密碼（auth_admin_keep；查詢動作一律拒絕），套件與原始碼安裝都不安裝任何
+    規則。必須每次都輸入密碼的動作（CPU 功耗取樣、安裝更新、無人授權開關本身）絕不使用這個前綴。
+  - 使用者自己開啟的免密碼規則（見下方「無人授權」）同時符合：
     - 只對本機、作用中的工作階段生效（`subject.local && subject.active`），而且只對開啟它的那個帳號
       （比對 `subject.user`）；遠端、非作用中或其他帳號一律回到預設（要密碼）。
     - 比對完整的動作 ID，例如 `action.id == "tw.local.system-device-monitor.unattended.charge-limit"`
       （原始碼安裝為 `...unattended.local.charge-limit`），不使用前綴比對。
-    - 只涵蓋 set：pkexec 124 支援 `org.freedesktop.policykit.exec.argv1` 註記，可以讓 set 使用自己的
-      動作（argv1＝set），status 留在另一個要密碼的動作；做不到時，規則必須檢查
-      `action.lookup("command_line")` 以「小程式的完整路徑＋空白＋set＋空白」開頭。restore 本來就
-      無法經由 pkexec 執行。
+    - 只涵蓋 set（與喚醒的 clear）：以 `org.freedesktop.policykit.exec.argv1` 註記讓 set 使用自己的
+      動作（argv1＝set），status 改用一般的 org.freedesktop.policykit.exec（每次都要密碼）；規則另外確認
+      `action.lookup("command_line")` 以「小程式的完整路徑＋空白＋set＋空白」開頭（clear 必須完全是
+      「路徑＋空白＋clear」）。restore 本來就無法經由 pkexec 執行。
     - 免密碼不放寬小程式的任何檢查：參數驗證、一次只執行一個與同一顆電池 10 秒的寫入間隔都照常生效，
       而且不接受起點，只能寫 50–100% 的上限與開關保留。
 
@@ -196,6 +211,80 @@
   可寫的路徑依 systemd 的規則巢狀在裡面；/sys/class/power_supply 底下只是指向 /sys/devices 的
   符號連結）。systemd-analyze security 的曝險分數為 0.7（以 root 執行是主要的扣分）。
 
+## 定時喚醒小程式（sdm-wake）
+
+智慧充電選「精準喚醒」時，在該開始充電前一分鐘以 RTC 喚醒鬧鐘叫醒電腦提高上限。
+
+- 以 #!/usr/bin/python3 -IB 執行，只用標準函式庫，不執行任何外部程式。
+- 用法固定：`set <Unix 時間>`、`clear`、`status`，或不需要權限的 `--protocol`。時間只接受 1–12 位
+  ASCII 十進位數字（不接受前導 0、正負號、空白、小數、指數或其他語言的數字），不符一律結束碼 2
+  （在檢查權限之前）。
+- set、clear、status 都必須以 root 執行，PKEXEC_UID 的規則與其他小程式相同，否則結束碼 4；
+  執行路徑必須與兩個安裝位置之一一字不差，自己與路徑上每一層目錄都屬於 root 且群組與其他人不可寫。
+- 一次只執行一個（/run/system-device-monitor/wake.lock，root 0600，最多等 10 秒）；set 與 clear
+  至少相隔 10 秒（開機後的時鐘記在 wake.times，root 0600；太快時結束碼 3、rate-limited）。
+- RTC：/sys/class/rtc/rtc0 的實際位置必須在 /sys/devices 之下，wakealarm 必須是一般檔案（no-rtc）；
+  硬體時鐘（since_epoch）與系統時間相差超過 5 分鐘時拒絕（rtc-offset：核心把 RTC 當成 UTC，
+  硬體時鐘存本地時間的雙系統電腦會差好幾個小時）。
+- set：時間（系統時鐘 CLOCK_REALTIME）必須在 60 秒後到 7 天內（out-of-range，在取得鎖之後檢查）；
+  目前已經有不是這個小程式記下的鬧鐘時拒絕（alarm-in-use），絕不覆寫別人（例如 rtcwake）的鬧鐘。
+  先寫 "0" 再寫時間（O_WRONLY｜O_NOFOLLOW，不建立），讀回不符時寫 "0" 取消（not-applied）；
+  成功後把時間記在 /run/system-device-monitor/wake（root 0600，O_EXCL 暫存檔＋fsync＋改名）。
+- clear：只有目前的鬧鐘等於記下的時間時才寫 "0"；鬧鐘已經響過或被別人換掉時只刪除紀錄。
+- 標準輸出只有一行 JSON；結束碼固定（0、2、3、4）；系統日誌只記錄動作與結果（例如 set ok），
+  不記錄時間或使用者。
+- 看板只在排程選了精準喚醒、喚醒元件可用而且已允許無人時自動調整時才執行它（否則睡眠前改用準備優先，
+  並在電源頁說明原因）；與已排定的時間相差 5 分鐘以上才重排，不需要時取消，關機前也取消
+  （部分電腦在關機狀態也會被 RTC 鬧鐘開機）。
+
+## 無人授權（sdm-unattended 與規則檔）
+
+「允許無人時自動調整」讓排程在你不在電腦前（例如半夜）也能調整充電上限與喚醒時間，不必輸入密碼。
+你決定的範圍：只限你本人、只在這台電腦登入而且正在使用時、只限充電上限與定時喚醒，可以隨時撤銷。
+
+- 開關小程式 sdm-unattended（以 #!/usr/bin/python3 -IB 執行，只用標準函式庫，不執行外部程式）：
+  用法固定 `grant`、`revoke`、`status` 或 `--protocol`。它的動作 tw.local.system-device-monitor.rules
+  （原始碼安裝為 tw.local.system-device-monitor.local.rules）是 allow_active＝auth_admin：每次都要
+  管理員密碼、不記住，也不在 unattended 前綴底下，規則本身不會讓它免密碼。PKEXEC_UID、執行路徑、
+  一次只執行一個（unattended.lock）的規則與其他小程式相同。
+- grant：帳號名稱必須符合 `^[a-z_][a-z0-9_-]{0,31}$`，而且以名稱查回的 uid 必須就是 PKEXEC_UID
+  （不符時 unsupported-user）。依固定的範本寫入 /etc/polkit-1/rules.d/49-system-device-monitor.rules
+  （root 0644，O_EXCL 暫存檔＋fsync＋改名）：範本只代入這個帳號名稱（不可能含引號、反斜線或換行），
+  其他內容一律固定。/etc、polkit-1、rules.d 必須已存在，逐層以 O_NOFOLLOW 開啟並確認屬於 root、
+  群組與其他人不可寫（Ubuntu 的 rules.d 是 root:polkitd 0750）；既有的同名項目不是一般檔案時拒絕。
+  同一時間只有一個帳號：另一個帳號（也要管理員密碼）grant 時取代。
+- revoke 只刪除那一個檔案（一般檔案或符號連結，不跟隨）；status 與範本逐字比對，被改過時回報 modified。
+- 規則的內容（ES5，polkitd 124 以 duktape 執行）：
+  - `subject.user !== user || subject.local !== true || subject.active !== true` 時不做任何決定
+    （回到預設：需要密碼）；遠端、非作用中、其他帳號一律如此。
+  - 只比對完整的動作 ID（逐一 `action.id !== id`，沒有前綴比對）：
+    `action.id == "tw.local.system-device-monitor.unattended.charge-limit"` 與
+    tw.local.system-device-monitor.unattended.wake、…unattended.wake-clear，以及原始碼安裝的
+    …unattended.local.charge-limit、…unattended.local.wake、…unattended.local.wake-clear。
+  - 對這些動作再確認 pkexec 傳來的細節：`action.lookup("program")` 必須是對應小程式的完整路徑、
+    `action.lookup("user")` 必須是 root、`action.lookup("command_line")` 必須以「路徑 set 」開頭
+    （clear 則必須完全等於「路徑 clear」）。全部相符才回傳 polkit.Result.YES，其他情況不回傳任何值
+    （不是 NO，所以仍可依預設輸入密碼）。
+  - 兩個 unattended.status 動作（…unattended.status、…unattended.local.status）沒有任何對應的程式，
+    預設一律拒絕；規則生效時才允許，看板以一般權限的 pkcheck 查詢它，知道目前是否已授權
+    （規則檔所在的目錄只有 root 與 polkitd 能讀）。
+  - 測試以 polkitd 實際使用的 libduktape 執行規則，逐一確認上述每個條件。
+- 只涵蓋 set（與喚醒的 clear）：pkexec 124 支援 `org.freedesktop.policykit.exec.argv1` 註記
+  （這台 Ubuntu 24.04 的 pkexec 124 已確認：字串與說明文件都有），所以充電上限的動作加上 argv1＝set、
+  喚醒的 set 與 clear 各有一個動作；pkexec 依路徑找動作，第一個參數不符時改用一般的
+  org.freedesktop.policykit.exec（每次都要密碼）。所以充電上限與喚醒的 status 不在免密碼的範圍。
+  pkexec 也確實把 command_line（完整路徑＋以空白連接的參數）放進動作細節，但 pkexec 的說明文件提醒
+  它不能單獨當成安全檢查（參數以空白連接，界線不明確）；這裡主要靠 argv1 與完整的動作 ID，
+  command_line 只是多一層：就算有人把「set BAT0 80」包成一個參數，小程式的參數檢查也會以結束碼 2 拒絕。
+- 為什麼規則不能被放寬：規則檔由 root 依固定範本產生，看板與一般使用者都無法改寫（rules.d 只有 root
+  能寫）；範本只有帳號名稱一個變數而且經過格式與 uid 的雙重確認；免密碼只對上面列出的完整動作 ID，
+  每個動作又綁定固定的程式路徑與第一個參數，CPU 功耗取樣、安裝更新與規則開關本身都不在其中。
+  免密碼也不放寬小程式的任何檢查：參數驗證、一次只執行一個與 10 秒的寫入間隔都照常生效，充電上限
+  只能寫 50–100% 並開關保留（不接受起點），喚醒只能設定 60 秒後到 7 天內、不覆寫別人的鬧鐘。
+- 移除套件（prerm remove，與 postrm purge 再確認一次）或原始碼安裝的 remove 都會刪除這個規則檔。
+- 剩下的風險：已允許時，你的帳號底下任何沒有被沙箱隔離的程式，在你登入而且正在使用電腦時，都能
+  免密碼把充電上限改成 50–100% 之間的值或設定 7 天內的喚醒時間（不能做別的事）。不需要時請關閉。
+
 ## 原始碼安裝（install.py --system-components）
 
 - 以一般使用者執行。原始碼資料夾、.git、實際的 git 目錄與共用 git 目錄，以及它們的每一層
@@ -238,7 +327,9 @@
   程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
   remove 只刪除它安裝的檔案、drop-in、sockets.target.wants 與充電上限單元在
   multi-user.target.wants／sleep.target.wants 的符號連結、原始碼版保留的充電上限
-  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限小程式的鎖檔、寫入時間。
+  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限小程式的鎖檔、寫入時間；
+  也取消 sdm-wake 記下的喚醒鬧鐘（紀錄必須是 root 擁有、其他人不可寫，而且目前的鬧鐘等於它），
+  刪除喚醒與無人授權的紀錄、鎖檔，以及無人授權的規則檔（只有那一個檔案）。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
   Python 與它的參數；只在你自己執行這個指令時出現。
 
@@ -248,9 +339,11 @@
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
   也停用充電上限的單元（刪除它的 wants 連結），並刪除 /var/lib/system-device-monitor/charge-limit.json
   （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）與 /run/system-device-monitor 的
-  charge-limit.lock、charge-limit.times（目錄空了才刪目錄）。
+  charge-limit.lock、charge-limit.times（目錄空了才刪目錄）。也取消 sdm-wake 記下的喚醒鬧鐘
+  （只有紀錄是一般檔案、內容是數字、而且目前的鬧鐘等於它時才寫 0，別人的鬧鐘不動），刪除 wake、
+  wake.lock、wake.times、unattended.lock，以及無人授權的規則檔（只刪那一個一般檔案或符號連結）。
 - postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），並再確認一次
-  charge-limit.json 已刪除；從不遞迴刪除目錄。
+  charge-limit.json 與無人授權的規則檔已刪除；從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。
 
 ## RAPL 旁路
@@ -346,11 +439,12 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 
 ## 永遠不做的事
 
-- 不安裝 setuid 程式或 polkit 規則；不在安裝時啟用任何東西（充電上限的單元只在你開啟保留時啟用）。
+- 不安裝 setuid 程式，也不隨套件安裝 polkit 規則（無人授權的規則只在你開啟時寫入，只給你的帳號）；
+  不在安裝時啟用任何東西（充電上限的單元只在你開啟保留時啟用）。
 - 不在開啟程式時要求授權，也不記住或傳遞密碼。
 - 不經過 shell 執行任何命令；不從使用者可寫的位置以 root 載入程式碼（原始碼安裝的暫存檔先驗證雜湊）。
 - 取樣服務不連網路、不寫檔、不執行外部程式；小程式不寫入上表以外的位置，充電上限小程式在 sysfs
-  只寫電池的兩個充電門檻。
+  只寫電池的兩個充電門檻，喚醒小程式只寫 rtc0 的 wakealarm，無人授權小程式只寫一個規則檔。
 - 更新小程式不連網路，只安裝簽章與檢查碼都相符、比已安裝版本新的 .deb；看板不在背景自動安裝，
   一定是你按「安裝更新」並輸入管理員密碼。
 - 不讀取或回傳 RAPL 以外的硬體資訊；不把 CPU 功耗寫進日誌或歷史檔。
@@ -360,6 +454,11 @@ CVE-2020-8694／8695），所以核心預設只讓 root 讀取。這個功能的
 - 充電上限只以合成的 /sys 目錄驗證，尚未在真正的筆電上測試；重新套用的單元在 CI 中只確認能在
   真正的 systemd 下啟動（執行器沒有電池），/sys/devices 是否可寫依 systemd 文件的巢狀規則，
   還沒有在筆電上實測。
+- 智慧充電（排程、睡眠延遲、精準喚醒、無人授權）只以合成的資料、假的 logind 與私人匯流排驗證，
+  尚未在真正的筆電上測試；RTC 喚醒在這台桌機與 CI 只做到參數與權限檢查（CI 的虛擬機有 RTC 時才
+  實際排定再取消）。看板在即將睡眠時最多延後 4 秒；寫入沒完成就放開，喚醒後再補。
+- 部分電腦關機後也會在 RTC 鬧鐘的時間開機：看板在關機前取消它，但看板沒有執行（或沒有允許無人時
+  自動調整）時做不到，下一次開機或喚醒後看板會依排程重新判斷。
 - 有些驅動只接受固定的值或會四捨五入，看板只能從讀回的值得知並說明；TLP、asusd 或 UPower 的
   充電門檻也可能在開機、喚醒或插拔電源時改回它們的值，看板只提醒、不阻止。
 
