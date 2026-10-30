@@ -150,7 +150,7 @@ class Sections(unittest.TestCase):
         self.assertEqual(smoke.SETTINGS_SECTIONS, tuple(key for key, _, _ in SECTIONS))
         self.assertEqual([title for _, title, _ in SECTIONS],
                          ["一般", "頂端列", "監控模組", "顯示項目", "通知", "周邊設備", "夥伴",
-                          "桌面寵物", "外觀", "管理員功能", "更新", "關於"])
+                          "桌面寵物", "外觀", "充電", "管理員功能", "更新", "關於"])
 
     def test_context_defaults(self):
         context = SettingsContext(laptop=False, root=None, version="0", external_power=bool)

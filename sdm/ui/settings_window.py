@@ -20,7 +20,7 @@ from sdm.ui.main_window import install_css
 from sdm.ui.navigation import NavigationShell
 from sdm.ui.settings import (about, admin, display, general, monitors, notifications,
                              peripherals, topbar)
-from sdm.ui.settings import appearance, companion, pet
+from sdm.ui.settings import appearance, charging, companion, pet
 from sdm.ui.settings import update
 from sdm.ui.settings.controls import Controls, wrapped
 from sdm.ui.widgets import box
@@ -29,7 +29,7 @@ SECTIONS = (("general", "一般", general), ("tray", "頂端列", topbar),
             ("monitors", "監控模組", monitors), ("display", "顯示項目", display),
             ("notifications", "通知", notifications), ("peripherals", "周邊設備", peripherals),
             ("companion", "夥伴", companion), ("pet", "桌面寵物", pet),
-            ("appearance", "外觀", appearance),
+            ("appearance", "外觀", appearance), ("charging", "充電", charging),
             ("admin", "管理員功能", admin), ("update", "更新", update), ("about", "關於", about))
 
 
@@ -54,6 +54,7 @@ class SettingsContext:
     charge_limit: object = None         # 充電上限（sdm.services.charge_control.ChargeControl）
     companion: object = None            # 夥伴、桌面寵物與圖示（settings.companion.CompanionContext）
     updater: object = None              # 一鍵更新（sdm.services.updater.Updater 或示範模式的假狀態）
+    charging: object = None             # 智慧充電（sdm.ui.charging_plan_wiring.PlanActions；只有筆電）
 
 
 def section_page(content):
@@ -92,6 +93,8 @@ class SettingsWindow:
             scroll = section_page(module.build(self.controls, context))
             self.shell.add(key, title, scroll)
             self.scrolls[key] = scroll
+        # 「充電」只有筆電才有（智慧充電需要可調整充電上限的電池）
+        self.shell.set_visible("charging", context.charging is not None)
         self.controls.bind({STATUS}, self.show_problem)
         self.devices_shown = peripherals.composition(context.peripherals())
 
@@ -125,6 +128,9 @@ class SettingsWindow:
             self.controls.changed(frozenset({peripherals.DEVICES}))
     def admin_changed(self):
         self.controls.changed(frozenset({admin.ADMIN}))
+
+    def charging_changed(self):
+        self.controls.changed(frozenset({charging.CHARGING}))
 
     def update_changed(self):
         self.controls.changed(frozenset({update.UPDATE}))

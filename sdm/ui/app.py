@@ -29,6 +29,7 @@ from sdm.ui.alert_wiring import AlertMixin
 from sdm.ui.app_names import AppNames
 from sdm.ui.appearance_wiring import AppearanceMixin
 from sdm.ui.charge_limit_wiring import ChargeLimitMixin
+from sdm.ui.charging_plan_wiring import ChargingPlanMixin
 from sdm.ui.companion_wiring import CompanionMixin
 from sdm.ui.cpu_power_wiring import CpuPowerMixin
 from sdm.ui.main_window import PAGES, MainWindow
@@ -63,7 +64,7 @@ class RunResult(NamedTuple):
 
 class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
               AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin, ChargeLimitMixin,
-              UpdateMixin, Gtk.Application):
+              ChargingPlanMixin, UpdateMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -146,6 +147,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.start_profiles()
         self.start_admin()          # 只尋找元件、確認版本，不要求授權
         self.start_charge_limit()   # 同上：只讀取充電上限與確認小程式，不要求授權
+        self.start_plan_components()    # 只有筆電：尋找喚醒與授權元件、訂閱 logind，不要求授權
         self.start_updates()        # 模擬測試不建立、示範模式只用假狀態（都不連網路）
         GLib.idle_add(self.ask_first_run)
         self.create_scheduler()
@@ -228,6 +230,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         if kind in ("slow", POWER_REFRESH):
             self.power_received(kind)
             self.power_alerts()
+            self.plan_tick()        # 智慧充電：看不到視窗時也判斷
         if kind == "devices":
             self.device_alerts()
         if kind == "system":
@@ -247,6 +250,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.build_power()
         self.build_companion()
         self.build_charge_limit()
+        self.build_charging_plan()
         overview = OverviewPage(self.series, self.clickable)
         self.overview = overview
         self.graphs = overview.graphs
@@ -352,6 +356,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
                                  ("profiles", self.stop_profiles),
                                  ("cpu_power", self.stop_cpu_power),
                                  ("charge_limit", self.stop_charge_limit),
+                                 ("charging_plan", self.stop_charging_plan),
                                  ("updates", self.stop_updates),
                                  ("workers", lambda: self.pool.shutdown(wait=False,
                                                                        cancel_futures=True)),

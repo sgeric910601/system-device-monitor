@@ -52,6 +52,7 @@ class SettingsMixin:
         if ADMIN_KEY in changed:
             self.cpu_power_preference_changed()
         self.appearance_changed(changed)
+        self.plan_preferences_changed(changed)
 
     def set_peripheral_threshold(self, device_id, value):
         """連線設備頁的鈴鐺：寫入門檻；被拒絕時由 peripheral_problem_changed() 恢復鈴鐺並說明原因。"""
@@ -99,7 +100,8 @@ class SettingsMixin:
                 probe=self.probe_notifications, notifications_enabled=self.notifier is not None,
                 admin=self.admin, companion=self.companion_context(),
                 charge_limit=self.charge_control,
-                updater=getattr(self, "updater", None))
+                updater=getattr(self, "updater", None),
+                charging=self.plan_actions() if self.plan_running else None)
             self.settings_window = SettingsWindow(self, self.store, context)
         if self.admin is not None:
             self.admin.update_socket()

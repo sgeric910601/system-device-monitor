@@ -20,7 +20,7 @@ SETTINGS_SECTIONS = tuple(key for key, _, _ in SECTIONS)
 STEPS = tuple(("page", name) for name in SMOKE_PAGES) + tuple(
     ("settings", name) for name in SETTINGS_SECTIONS)
 LOWER_CAPTURES = ("power", "cpu", "memory", "disk", "general", "tray", "display",
-                  "notifications", "companion", "admin", "update")
+                  "notifications", "companion", "admin", "update", "charging")
 
 
 def settle():
@@ -63,12 +63,13 @@ class SmokeMixin:
         """確認頁面已切換並顯示，選用時截圖，再排下一頁或結束。"""
         kind, name = STEPS[index]
         stack, scrolls, window = self.smoke_target(kind)
-        if stack.get_visible_child_name() == name and scrolls[name].get_mapped():
+        shown = stack.get_visible_child_name() == name and scrolls[name].get_mapped()
+        if shown:       # 隱藏的分類（例如桌機的「充電」）不列入、也不截圖
             self.smoke_pages.append(name if kind == "page" else "settings:" + name)
-        file_name = name if kind == "page" else "settings-" + name
-        self.capture(file_name, scrolls[name], window)
-        if name in LOWER_CAPTURES:
-            self.capture(file_name + "-lower", scrolls[name], window, bottom=True)
+            file_name = name if kind == "page" else "settings-" + name
+            self.capture(file_name, scrolls[name], window)
+            if name in LOWER_CAPTURES:
+                self.capture(file_name + "-lower", scrolls[name], window, bottom=True)
         if index + 1 < len(STEPS):
             GLib.timeout_add(Smoke.PAGE_DELAY_MS, self.smoke_show, index + 1)
         else:

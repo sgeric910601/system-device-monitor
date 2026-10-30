@@ -21,7 +21,8 @@ XDG = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME")
 
 @unittest.skipUnless(DBUS_RUN_SESSION and XVFB_RUN, "needs dbus-run-session and xvfb-run")
 class PreviewRun(unittest.TestCase):
-    def test_preview_writes_nothing_outside_the_output_directory(self):
+    def run_preview(self, scenario):
+        """在私人匯流排與暫存 XDG 目錄中執行一次；回傳（報告、寫進 XDG 目錄的檔案、輸出目錄的檔案）。"""
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             directories = {name: base/"xdg"/name.lower() for name in XDG}
@@ -34,25 +35,35 @@ class PreviewRun(unittest.TestCase):
             result = subprocess.run(
                 [DBUS_RUN_SESSION, f"--config-file={config}", "--", XVFB_RUN, "-a",
                  sys.executable, "-B", str(ROOT/"device_monitor.py"), "--preview",
-                 "laptop-battery", "--smoke-test", "--output-dir", str(output)],
+                 scenario, "--smoke-test", "--output-dir", str(output)],
                 env=env, cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])
             report = json.loads(result.stdout.strip().splitlines()[-1])
-            self.assertEqual((report["ok"], report["indicator_count"]), (True, 0))
-            self.assertEqual(report["pages"], ["power", "overview", "cpu", "memory", "disk",
-                                               "network", "devices", "settings:general",
-                                               "settings:tray", "settings:monitors",
-                                               "settings:display",
-                                               "settings:notifications",
-                                               "settings:peripherals", "settings:companion",
-                                               "settings:pet", "settings:appearance",
-                                               "settings:admin", "settings:update",
-                                               "settings:about"])
             written = sorted(str(path.relative_to(base)) for directory in directories.values()
                              for path in directory.rglob("*"))
-            self.assertEqual(written, [])
-            self.assertEqual([path.name for path in output.iterdir()], ["smoke.json"])
+            return report, written, [path.name for path in output.iterdir()]
 
+    def test_preview_writes_nothing_outside_the_output_directory(self):
+        report, written, output = self.run_preview("laptop-battery")
+        self.assertEqual((report["ok"], report["indicator_count"]), (True, 0))
+        self.assertEqual(report["pages"], ["power", "overview", "cpu", "memory", "disk",
+                                           "network", "devices", "settings:general",
+                                           "settings:tray", "settings:monitors",
+                                           "settings:display", "settings:notifications",
+                                           "settings:peripherals", "settings:companion",
+                                           "settings:pet", "settings:appearance",
+                                           "settings:charging", "settings:admin",
+                                           "settings:update", "settings:about"])
+        self.assertEqual(written, [])
+        self.assertEqual(output, ["smoke.json"])
+
+    def test_desktop_preview_has_no_charging_section(self):
+        """桌機沒有可調整的電池：設定視窗不顯示「充電」，也不寫入任何檔案。"""
+        report, written, _ = self.run_preview("desktop")
+        self.assertTrue(report["ok"])
+        self.assertNotIn("settings:charging", report["pages"])
+        self.assertIn("settings:appearance", report["pages"])
+        self.assertEqual(written, [])
 
 if __name__ == "__main__":
     unittest.main()
