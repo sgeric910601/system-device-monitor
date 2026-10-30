@@ -7,6 +7,7 @@ from dataclasses import replace
 import unittest
 from zoneinfo import ZoneInfo
 
+from sdm.constants import SmartCharging
 from sdm.core.charging_plan import (CHARGING, LATE, PRECISE_WAKE, READINESS_FIRST, READY,
                                     STARTING, SYSTEM_PAUSED, WAITING, Once, Weekly)
 from sdm.services.plan_controller import (DID_WAKE, NOTE_LATE, NOTE_READY, WILL_SLEEP,
@@ -127,6 +128,27 @@ class Retries(Base):
         self.assertIsNone(self.evaluate(EVENING + 1, 70, limit=100))     # 仍在等 80
 
 
+class ClockSteps(Base):
+    """時鐘往回調（手動、NTP 校正）時：重試與剛提高後的寬限不會被拉長。"""
+
+    def test_clock_set_back_does_not_delay_the_retry(self):
+        self.start(current=100)
+        self.assertEqual(self.evaluate(EVENING, 70, limit=100), 80)
+        self.finished(80, success=False)
+        self.assertIsNone(self.evaluate(EVENING + 30, 70, limit=100))
+        self.assertEqual(self.evaluate(EVENING - 3600, 70, limit=100), 80)
+
+    def test_clock_set_back_does_not_extend_the_start_grace(self):
+        self.start()
+        start = date("2026-10-14 07:00")
+        self.assertEqual(self.evaluate(start, 75, limit=80), 100)
+        self.finished(100, now=start)
+        self.evaluate(start + 10, 75, limit=100, estimate=20, paused=True)
+        self.assertEqual(self.phase, STARTING)
+        self.evaluate(start - 3600, 75, limit=100, estimate=20, paused=True)
+        self.assertEqual(self.phase, SYSTEM_PAUSED)
+
+
 class UserChanges(Base):
     def test_user_changes_end_the_plan_without_restoring(self):
         self.start(current=100)
@@ -164,6 +186,30 @@ class UserChanges(Base):
         self.assertIsNone(self.evaluate(EVENING + 3602, 70, connected=False, limit=90))
         self.assertIsNotNone(self.controller.plan)
         self.assertIsNone(self.evaluate(EVENING + 3604, 70, connected=False, limit=85))
+        self.assertIsNone(self.controller.plan)
+
+    def test_restore_unit_that_runs_late_after_wake_does_not_end_the_plan(self):
+        """喚醒後判斷時上限還沒被改回：30 秒內第一次改變仍視為保留的服務，第二次才是使用者。"""
+        self.start(current=90)
+        self.assertEqual(self.evaluate(EVENING, 70, limit=90), 80)
+        self.finished(80)
+        wake = EVENING + 3600
+        self.assertIsNone(self.evaluate(wake, 70, DID_WAKE, limit=80))
+        self.assertEqual(self.evaluate(wake + 8, 70, limit=90), 80)
+        self.assertIsNotNone(self.controller.plan)
+        self.assertTrue(any("喚醒後" in line for line in self.lines))
+        self.finished(80, now=wake + 8)
+        self.assertIsNone(self.evaluate(wake + 12, 70, limit=95))
+        self.assertIsNone(self.controller.plan)
+
+    def test_change_long_after_waking_is_the_user(self):
+        self.start(current=90)
+        self.evaluate(EVENING, 70, limit=90)
+        self.finished(80)
+        wake = EVENING + 3600
+        self.assertIsNone(self.evaluate(wake, 70, DID_WAKE, limit=80))
+        self.assertIsNone(self.evaluate(wake + SmartCharging.WAKE_RESTORE_SECONDS + 1, 70,
+                                        limit=90))
         self.assertIsNone(self.controller.plan)
 
     def test_pending_write_is_not_a_user_change(self):

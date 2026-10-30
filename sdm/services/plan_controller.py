@@ -5,7 +5,10 @@
 成功是指讀回的上限等於要求的值。同一時間只有一個寫入；失敗後 60 秒內不重試。
 - 使用者自己調整上限（拖動滑桿，或被其他程式改成別的值）時以使用者為準：結束排程、不還原。
   例外：剛從睡眠喚醒（did_wake）時，「開機與喚醒後保留」的服務會把上限改回使用者保留的值；
-  排程進行中以排程為準，把那個值當成新的基準並重新寫入排程的上限。
+  排程進行中以排程為準，把那個值當成新的基準並重新寫入排程的上限。服務比喚醒後的判斷晚跑完時，
+  喚醒後 30 秒內第一次的改變也這樣處理；之後的改變才是使用者。
+- 失敗後的重試與剛提高後的寬限以牆上時鐘計時（寬限要跨重開程式），時鐘往回調時不會被拉長：
+  剩下的等待比 1 分鐘還久就視為已過，經過的時間是負的就不再寬限。
 - 一次性排程：完成時間過後 2 小時，或已達目標並拔掉電源時，還原原本的上限；還原寫入失敗時
   保留 restoring 並在 1 分鐘後重試，成功才結束。
 - 每週排程：完成或過期就換到下一次；還沒到的完成時間也重新算一次，相差 60 秒以上就改
@@ -58,6 +61,7 @@ class PlanController:
         self.pending_raise = False      # 這次寫入是把上限提高到目標
         self.retry_at = None            # 寫入失敗後，這個時間之前不再重試
         self.options = None             # 上次判斷時驅動接受的上限（None：還沒判斷過這個排程）
+        self.resume_until = None        # 喚醒後這個時間之前第一次的上限改變是保留的服務
 
     @property
     def active(self):
@@ -121,6 +125,8 @@ class PlanController:
             self.decision = engine.evaluate(self.plan, data)
             return None
         self.note_options(self.plan, data.options)
+        if event == DID_WAKE:
+            self.resume_until = data.now + Limits.WAKE_RESTORE_SECONDS
         if self.plan.restoring:
             return self.restore(self.plan, data)
         if self.overridden(self.plan, data, event):
@@ -156,7 +162,8 @@ class PlanController:
         applied = plan.applied
         if applied is None or self.pending is not None or data.current_limit == applied:
             return False
-        if event == DID_WAKE:
+        until, self.resume_until = self.resume_until, None     # 只有第一次改變算保留的服務
+        if until is not None and 0 <= until - data.now <= Limits.WAKE_RESTORE_SECONDS:
             self.log(f"喚醒後上限是 {data.current_limit}%（排程設的是 {applied}%），"
                      "排程進行中，改回排程的上限")
             self.save(replace(plan, applied=data.current_limit))
@@ -186,9 +193,9 @@ class PlanController:
 
     def observe(self, plan, data, event):
         result = engine.evaluate(plan, data)
-        # 剛提高上限、還沒開始充：仍是「準備充電」，不是系統暫停
+        # 剛提高上限、還沒開始充：仍是「準備充電」，不是系統暫停（時鐘往回調時不再寬限）
         if result.phase == SYSTEM_PAUSED and plan.raised_at is not None \
-                and data.now - plan.raised_at < START_GRACE_SECONDS:
+                and 0 <= data.now - plan.raised_at < START_GRACE_SECONDS:
             result = replace(result, phase=STARTING)
         if self.decision is None or result.phase != self.decision.phase:
             self.log(f"狀態：{PHASE_TITLES[result.phase]}（電量 {data.percent}%，"
@@ -211,7 +218,7 @@ class PlanController:
         """要求寫入 value（判斷時已經取成驅動接受的值；還原時是原本的上限）。"""
         if value == data.current_limit or self.pending is not None:
             return None
-        if self.retry_at is not None and data.now < self.retry_at:
+        if self.retry_at is not None and 0 < self.retry_at - data.now <= RETRY_SECONDS:
             return None
         plan = self.plan
         self.pending = value
@@ -278,6 +285,7 @@ class PlanController:
 
     def reset(self, plan):
         self.decision = self.pending = self.retry_at = self.write_error = None
+        self.resume_until = None
         self.pending_raise = False
         self.save(plan)
 

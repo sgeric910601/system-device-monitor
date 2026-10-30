@@ -349,6 +349,22 @@ class SleepAndWake(Base):
         self.host.advance(SmartCharging.RESUME_SETTLE_SECONDS)
         self.assertEqual(self.charge.reloads, 1)
 
+    def test_late_resume_timer_keeps_ticks_paused_until_it_runs(self):
+        """喚醒 3 秒的計時器晚執行（主迴圈忙）時，在它執行之前的一般判斷仍然暫停。"""
+        timers = []
+        self.host.schedule = lambda seconds, callback: timers.append(callback)
+        writes = len(self.charge.writes)
+        self.host.plan_did_wake()
+        self.host.timers.now += SmartCharging.RESUME_SETTLE_SECONDS + 5
+        self.charge.state = ChargeState(supply="BAT0", limit=90, protocol=True, demo=True)
+        self.host.plan_tick()
+        self.assertEqual((len(self.charge.writes), self.charge.reloads), (writes, 0))
+        self.assertIsNotNone(self.controller.plan)
+        timers[-1]()
+        self.assertEqual(self.charge.reloads, 1)
+        self.assertIsNotNone(self.controller.plan)
+        self.assertEqual(self.charge.writes[-1][:2], [80, False])
+
     def test_restore_unit_value_after_waking_is_replaced_by_the_plan(self):
         self.charge.state = ChargeState(supply="BAT0", limit=90, protocol=True, demo=True)
         self.host.plan_did_wake()

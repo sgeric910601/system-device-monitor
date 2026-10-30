@@ -236,6 +236,7 @@ class SmartCharging:
     INHIBIT_RETRY_SECONDS = 60      # 拿不到延遲鎖時多久後再試
     INHIBIT_TIMEOUT_MS = 5000       # Inhibit 呼叫的逾時（毫秒）
     RESUME_SETTLE_SECONDS = 3       # 喚醒後等「開機與喚醒後保留」的服務跑完再判斷
+    WAKE_RESTORE_SECONDS = 30       # 喚醒後這段時間內第一次上限改變仍視為保留的服務（不是使用者）
     SLEEP_GUARD_SECONDS = 120       # 收到即將睡眠後這段（醒著的）時間內不做一般的判斷
     PLAN_FILE = "charging-plan.json"        # XDG 資料目錄
     PLAN_FORMAT = 1

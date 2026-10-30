@@ -4,9 +4,9 @@
   經由 ChargeControl.apply_automatically（從不帶 --persist），還原原本的上限時接受任何 50–100 的值。
 - 只有筆電（有可調整的電池）才啟動；桌機不尋找元件、不連 logind、不執行任何程式。
 - 有排程時才向 logind 要睡眠延遲鎖；即將睡眠時以 will_sleep 判斷（準備優先或喚醒沒排好就先
-  提高到目標），寫完或 4 秒後放開。收到即將睡眠後到喚醒後 3 秒之間不做一般的判斷：喚醒後
-  「開機與喚醒後保留」的服務可能把上限改回使用者的值，3 秒後重新讀取門檻再以 did_wake 判斷，
-  排程進行中以排程為準。關機前取消精準喚醒的鬧鐘（避免關機後在那個時間自動開機）。
+  提高到目標），寫完或 4 秒後放開。收到即將睡眠後，到喚醒後 3 秒的計時器真正執行為止都不做一般的
+  判斷（計時器可能因為主迴圈忙而晚一點）：喚醒後「開機與喚醒後保留」的服務可能把上限改回使用者
+  的值，3 秒後重新讀取門檻再以 did_wake 判斷，排程進行中以排程為準。關機前取消精準喚醒的鬧鐘（避免關機後在那個時間自動開機）。
 - 使用者自己調整充電上限（放開滑桿或切換保留）時以使用者為準：結束排程、不還原，
   並取消排隊中的自動寫入。
 - 「已準備好」與「可能趕不上」經由通知協調層送出，每一輪只送一次。
@@ -227,13 +227,16 @@ class ChargingPlanMixin:
     # ── 睡眠、喚醒與關機 ───────────────────────────────────
 
     def plan_paused(self):
-        """收到即將睡眠到喚醒後 3 秒之間（醒著超過 2 分鐘還沒收到喚醒就不再等）。"""
+        """收到即將睡眠，到喚醒後的判斷（plan_resumed）真正執行為止；醒著超過 2 分鐘還沒收到
+        喚醒或計時器還沒執行就不再等。"""
         now = self.plan_monotonic()
-        if self.plan_sleep_at is not None:
-            if now - self.plan_sleep_at < SmartCharging.SLEEP_GUARD_SECONDS:
-                return True
-            self.plan_sleep_at = None
-        return self.plan_resume_at is not None and now < self.plan_resume_at
+        for name in ("plan_sleep_at", "plan_resume_at"):
+            since = getattr(self, name)
+            if since is not None:
+                if 0 <= now - since < SmartCharging.SLEEP_GUARD_SECONDS:
+                    return True
+                setattr(self, name, None)
+        return False
 
     def plan_will_sleep(self, done):
         self.plan_sleep_at = self.plan_monotonic()
@@ -245,7 +248,7 @@ class ChargingPlanMixin:
         self.plan_sleep_at = None
         if self.plan_controller.active:
             self.plan_log.write("系統已喚醒")
-        self.plan_resume_at = self.plan_monotonic() + SmartCharging.RESUME_SETTLE_SECONDS
+        self.plan_resume_at = self.plan_monotonic()
         self.schedule(SmartCharging.RESUME_SETTLE_SECONDS, self.plan_resumed)
 
     def plan_resumed(self):
