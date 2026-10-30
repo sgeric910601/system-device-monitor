@@ -134,8 +134,11 @@ class ChargeLimit:
     LOCK_NAME = "charge-limit.lock"
     LOCK_WAIT = 10.0            # 另一個小程式正在執行時最多等幾秒，之後結束碼 3（busy）
     LOCK_POLL = 0.1
-    TIMES_NAME = "charge-limit.times"   # 各電池上次寫入的時間（root 0600，與鎖檔同一目錄）
+    TIMES_NAME = "charge-limit.times"   # 各電池最近一小時寫入的時間（root 0600，與鎖檔同一目錄）
     MIN_WRITE_GAP = 10.0        # 同一顆電池兩次寫入至少相隔幾秒；看板自己等，太快時小程式拒絕
+    HOURLY_WRITES = 30          # 所有電池合計，最近一小時最多開始寫入幾次（防止頻繁寫入控制晶片）
+    HOURLY_WINDOW = 3600.0
+    HOURLY_LIMIT = "hourly-limit"       # 超過時小程式的 error（結束碼 3）
     SUPPLY_PATTERN = r"[A-Za-z0-9_]{1,32}"     # 電池名稱：BAT0、BATT、CMB0…
     MIN_LIMIT = 50              # 小程式接受的上限範圍（含）
     MAX_LIMIT = 100             # 100＝不限制
@@ -261,9 +264,12 @@ class Wake:
     RTC_ALARM = "/sys/class/rtc/rtc0/wakealarm"     # 所有人可讀；空的代表沒有鬧鐘
     RECORD_NAME = "wake"        # 小程式排定的時間（ChargeLimit.RUN_DIR 底下，root 0600）
     LOCK_NAME = "wake.lock"
-    TIMES_NAME = "wake.times"
+    TIMES_NAME = "wake.times"   # 最近一小時 set 的時間
     LOCK_WAIT = 10.0
-    MIN_WRITE_GAP = 10.0        # set 與 clear 至少相隔幾秒；看板自己等，太快時小程式拒絕
+    MIN_WRITE_GAP = 10.0        # 兩次 set 至少相隔幾秒（clear 不受限）；看板自己等，太快時小程式拒絕
+    HOURLY_SETS = 30            # 最近一小時最多 set 幾次
+    HOURLY_WINDOW = 3600.0
+    HOURLY_LIMIT = "hourly-limit"
     RTC_TOLERANCE = 300         # 硬體時鐘與系統時間相差超過 5 分鐘（例如存的是本地時間）就拒絕
     PKEXEC_TIMEOUT = 120
     PROTOCOL_TIMEOUT = 5

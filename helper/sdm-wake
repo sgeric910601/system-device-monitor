@@ -8,7 +8,8 @@
 - 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己與每一層上層目錄都屬於 root
   且群組與其他人不可寫。
 - 一次只執行一個：flock /run/system-device-monitor/wake.lock（root 0600），最多等 10 秒（busy）；
-  兩次 set 至少相隔 10 秒（rate-limited，開機後的時鐘記在 wake.times）；clear 不受限，
+  兩次 set 至少相隔 10 秒（rate-limited），最近一小時最多 30 次（hourly-limit），開機後的時鐘記在
+  wake.times；clear 不受限，
   才能在關機、撤銷或移除前立即取消（clear 只會寫一次 "0"，次數受 set 限制）。
 - RTC：/sys/class/rtc/rtc0 的實際位置必須在 /sys/devices 之下，wakealarm 是一般檔案（no-rtc）；
   硬體時鐘（since_epoch）與系統時間相差超過 5 分鐘時拒絕（rtc-offset，例如硬體時鐘存本地時間）。
@@ -42,9 +43,10 @@ VERSION = "1.0"
 EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
 HELPER_NAME = "sdm-wake"
 PROTOCOL_FLAG = "--protocol"
-RATE_LIMITED = "rate-limited"
+RATE_LIMITED, HOURLY_LIMIT = "rate-limited", "hourly-limit"
 INTERRUPTED = "interrupted"
-LOGGED_ERRORS = ("busy", "no-rtc", "rtc-offset", "out-of-range", "alarm-in-use", "not-applied")
+LOGGED_ERRORS = ("busy", "no-rtc", "rtc-offset", "out-of-range", "alarm-in-use", "not-applied",
+                 HOURLY_LIMIT)
 TERMINAL_SIGNALS = (signal.SIGINT, signal.SIGTSTP, signal.SIGQUIT, signal.SIGHUP)
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
@@ -73,6 +75,7 @@ TIMES_MAX_BYTES = 4096
 LOCK_WAIT_S = 10.0
 LOCK_POLL_S = 0.1
 MIN_WRITE_GAP_S = 10.0
+HOURLY_SETS, HOUR_S = 30, 3600.0
 PRIVATE_BITS = 0o077
 PRIVATE_MODE = 0o600
 DIRECTORY_MODE = 0o755
@@ -322,8 +325,8 @@ def read_small(context, directory, name, limit):
     return data if len(data) <= limit else b""
 
 
-def last_write(context):
-    """上次 set 或 clear 的開機後秒數；沒有或格式不符時為 None。"""
+def recent_sets(context, now):
+    """最近一小時 set 的開機後秒數（舊格式是一個數字）；沒有或格式不符時為空的。"""
     directory = open_run_directory(context)
     try:
         data = read_small(context, directory, TIMES_NAME, TIMES_MAX_BYTES)
@@ -332,15 +335,20 @@ def last_write(context):
     try:
         value = json.loads((data or b"").decode("utf-8")).get(TIMES_KEY)
     except (ValueError, AttributeError, RecursionError):
-        return None
-    return value if type(value) in (int, float) and math.isfinite(value) else None
+        return []
+    return [stamp for stamp in (value if isinstance(value, list) else [value])
+            if type(stamp) in (int, float) and math.isfinite(stamp) and 0 <= now - stamp < HOUR_S]
 
 
 def check_rate(context):
-    last = last_write(context)
-    elapsed = None if last is None else context.boottime() - last
-    if elapsed is not None and 0 <= elapsed < MIN_WRITE_GAP_S:
+    """兩次 set 至少相隔 10 秒；最近一小時最多 30 次。"""
+    now = context.boottime()
+    stamps = recent_sets(context, now)
+    elapsed = now - max(stamps, default=-math.inf)
+    if elapsed < MIN_WRITE_GAP_S:
         raise RateLimited(math.ceil(MIN_WRITE_GAP_S - elapsed))
+    if len(stamps) >= HOURLY_SETS:
+        raise Failed(HOURLY_LIMIT)
 
 
 def replace_file(dir_fd, name, data, mode):
@@ -379,7 +387,9 @@ def write_run_file(context, name, data):
 
 
 def record_time(context):
-    data = json.dumps({TIMES_KEY: context.boottime()}) + "\n"
+    """記下這次 set 開始寫入的時間，只留最近一小時。"""
+    now = context.boottime()
+    data = json.dumps({TIMES_KEY: recent_sets(context, now) + [now]}) + "\n"
     write_run_file(context, TIMES_NAME, data.encode("utf-8"))
 
 

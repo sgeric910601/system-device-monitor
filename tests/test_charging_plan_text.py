@@ -119,6 +119,8 @@ class Notes(unittest.TestCase):
                                              PRECISE_WAKE))
         self.assertIn("另一個程式", text.wake_note(WakeState(note=FAILED, error="alarm-in-use"),
                                               PRECISE_WAKE))
+        self.assertTrue(text.wake_note(WakeState(note=FAILED, error="hourly-limit"), PRECISE_WAKE)
+                        .startswith("這一小時內已設定喚醒時間 30 次，先暫停"))
         scheduled = WakeState(note=SCHEDULED, scheduled=int(date("2026-10-14 05:56")))
         self.assertEqual(text.wake_note(scheduled, PRECISE_WAKE, NOW, TAIPEI),
                          "已排定明天 05:56 喚醒")

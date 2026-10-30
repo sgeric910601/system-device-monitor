@@ -299,6 +299,9 @@ class Helper(unittest.TestCase):
                           ChargeLimit.LOCK_POLL))
         self.assertEqual((helper.TIMES_NAME, helper.MIN_WRITE_GAP_S),
                          (ChargeLimit.TIMES_NAME, ChargeLimit.MIN_WRITE_GAP))
+        self.assertEqual((helper.HOURLY_WRITES, helper.HOUR_S, helper.HOURLY_LIMIT),
+                         (ChargeLimit.HOURLY_WRITES, ChargeLimit.HOURLY_WINDOW,
+                          ChargeLimit.HOURLY_LIMIT))
 
     def test_systemctl_runs_without_a_shell_and_with_a_fixed_path(self):
         seen = {}

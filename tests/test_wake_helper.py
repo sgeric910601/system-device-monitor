@@ -374,6 +374,38 @@ class Interruptions(Base):
         self.addCleanup(setattr, owner, name, original)
 
 
+class HourlyLimit(Base):
+    """最近一小時最多 30 次 set（hourly-limit，結束碼 3）；clear 不計也不受限。"""
+
+    def setUp(self):
+        super().setUp()
+        self.boot_step = 0.0
+
+    def set_many(self, count):
+        codes = []
+        for index in range(count):
+            codes.append(self.main(["set", str(NOW + 600 + index)]))
+            self.boot += Wake.MIN_WRITE_GAP + 1
+        return codes
+
+    def test_the_thirty_first_set_in_an_hour_is_refused(self):
+        first = self.boot
+        self.assertEqual(set(self.set_many(Wake.HOURLY_SETS)), {helper.EXIT_OK})
+        self.assertEqual(self.main(["clear"]), helper.EXIT_OK)
+        writes = list(self.rtc.writes)
+        self.assertEqual(self.main(["set", str(NOW + 900)]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1], {"ok": False, "error": "hourly-limit"})
+        self.assertEqual(self.logged[-1], "set hourly-limit")
+        self.assertEqual(self.rtc.writes, writes)
+        self.boot = first + Wake.HOURLY_WINDOW
+        self.assertEqual(self.main(["set", str(NOW + 900)]), helper.EXIT_OK)
+
+    def test_old_single_number_format_still_counts(self):
+        self.root.file(TIMES, f'{{"rtc0": {self.boot - 4}}}\n', mode=0o600)
+        self.assertEqual(self.main(["set", str(NOW + 600)]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["error"], "rate-limited")
+
+
 class Serialization(Base):
     def test_only_set_waits_ten_seconds_after_the_last_set(self):
         """取消隨時可以（關機或撤銷前不能被擋）；只有兩次 set 之間至少相隔 10 秒。"""
@@ -423,6 +455,8 @@ class Consistency(unittest.TestCase):
                          (Wake.RECORD_NAME, Wake.LOCK_NAME, Wake.TIMES_NAME))
         self.assertEqual((helper.MIN_WRITE_GAP_S, helper.LOCK_WAIT_S, helper.RTC_TOLERANCE_S),
                          (Wake.MIN_WRITE_GAP, Wake.LOCK_WAIT, Wake.RTC_TOLERANCE))
+        self.assertEqual((helper.HOURLY_SETS, helper.HOUR_S, helper.HOURLY_LIMIT),
+                         (Wake.HOURLY_SETS, Wake.HOURLY_WINDOW, Wake.HOURLY_LIMIT))
         self.assertEqual("/" + helper.RTC_DIR + "/" + helper.ALARM_FILE, Wake.RTC_ALARM)
         self.assertEqual((helper.EXIT_OK, helper.EXIT_USAGE, helper.EXIT_FAILED,
                           helper.EXIT_NOT_PERMITTED), CpuPower.EXIT_CODES)

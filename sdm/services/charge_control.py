@@ -10,7 +10,8 @@
   --persist on|off（依「開機與喚醒後保留」），逾時 120 秒；成功後再以一般權限讀 sysfs 確認
   （最多 3 次、間隔 0.3 秒）。驅動不接受某個值時改用實際套用的值，並從選項移除被拒絕的值。
 - 小程式要求同一顆電池兩次寫入至少相隔 10 秒：距離上次執行小程式不到 10 秒時，先等到滿 10 秒
-  （狀態維持「套用中」）再執行，正常操作不會被拒絕。
+  （狀態維持「套用中」）再執行，正常操作不會被拒絕。所有電池合計最近一小時最多寫入 30 次，
+  超過時小程式拒絕（hourly-limit），看板說明原因，正常使用不會接近。
 - 自動寫入（智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
   每 0.1 秒確認一次，最多等 10 秒；不帶 --persist，不改變使用者保留的值與重新套用的單元。
   只接受滑桿的選項；還原使用者原本的上限時（exact）接受小程式的整個範圍 50–100。
@@ -46,6 +47,8 @@ REFUSED = "這顆電池不接受 {}%，目前是 {}；可以改選 {}%"
 PERSIST_TEXT = "上限已套用，但無法變更「開機與喚醒後保留」"
 BUSY_TEXT = "另一個充電上限的調整正在進行，請稍後再試"
 RATE_TEXT = "調整太頻繁，請 {} 秒後再試"
+HOURLY_TEXT = (f"這一小時內已調整充電上限 {ChargeLimit.HOURLY_WRITES} 次，"
+               "為了保護電池的控制晶片先暫停，請稍後再試")
 UNREADABLE = "讀不到"
 
 
@@ -400,8 +403,9 @@ class ChargeControl:
             self.finish(False, normalized(applied), message, finished)
         elif status == EXIT_FAILED and error == PERSIST_FAILED:
             self.finish(False, normalized(applied), PERSIST_TEXT, finished)
-        elif status == EXIT_FAILED and error == BUSY:
-            self.finish(False, self.state.limit, BUSY_TEXT, finished)
+        elif status == EXIT_FAILED and error in (BUSY, ChargeLimit.HOURLY_LIMIT):
+            message = BUSY_TEXT if error == BUSY else HOURLY_TEXT
+            self.finish(False, self.state.limit, message, finished)
         elif status == EXIT_FAILED and error == RATE_LIMITED:
             wait = result.get("retry_after")
             seconds = wait if type(wait) is int and 0 < wait <= ChargeLimit.MIN_WRITE_GAP \

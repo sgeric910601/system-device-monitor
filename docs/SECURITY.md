@@ -164,10 +164,12 @@ remove、之後重新安裝套件），不自動刪除任何東西。
   （busy）放棄。所以看板、命令列與開機後的重新套用不會交錯寫入。
 - 寫入間隔：同一顆電池兩次 set 至少相隔 10 秒。每次開始嘗試寫入（不論結果）後，把開機後的時鐘
   （CLOCK_BOOTTIME，睡眠也會計時）記在同一目錄的 charge-limit.times（root、0600，整檔取代，
-  只留 10 秒內的紀錄）；太快的呼叫以結束碼 3（rate-limited，附 retry_after 秒數）拒絕，
-  不讀也不寫門檻。restore 與 status 不受限制也不計入。看板自己會等滿 10 秒才執行小程式，
-  正常操作不會碰到這個限制。這是為了之後可選的免密碼規則：即使不必輸入密碼，也不能讓其他程式
-  在短時間內反覆改寫門檻或反覆啟用、停用單元。
+  只留最近一小時的紀錄）；太快的呼叫以結束碼 3（rate-limited，附 retry_after 秒數）拒絕，
+  不讀也不寫門檻。所有電池合計，最近一小時已經開始寫入 30 次時也以結束碼 3（hourly-limit）拒絕
+  （滑動視窗，同一把鎖、同一個檔案；在寫入前就被拒絕的呼叫不計入）。restore 與 status 不受限制
+  也不計入。看板自己會等滿 10 秒才執行小程式，使用者一小時調整不到幾次、智慧充電一小時最多提高
+  與還原各一次，正常操作不會碰到這兩個限制。這是為了免密碼的規則：即使不必輸入密碼，也不能讓
+  其他程式反覆改寫門檻（頻繁寫入電池的控制晶片）或反覆啟用、停用單元。
 - 電池檢查：/sys/class/power_supply/<電池> 的實際位置（realpath）必須在 /sys/devices 之下；
   type 必須是 Battery、scope 不是 Device（滑鼠等周邊），而且有 charge_control_end_threshold。
   所有屬性檔都在電池目錄的描述子底下以 O_NOFOLLOW｜O_NONBLOCK 開啟，必須是一般檔案。
@@ -227,7 +229,8 @@ remove、之後重新安裝套件），不自動刪除任何東西。
 - 一次只執行一個（/run/system-device-monitor/wake.lock，root 0600，最多等 10 秒）；兩次 set
   至少相隔 10 秒（開機後的時鐘記在 wake.times，root 0600；太快時結束碼 3、rate-limited）。
   clear 不受這個間隔限制，關機、撤銷或移除前一定能立即取消；它只在鬧鐘就是記下的時間時寫一次 "0"，
-  之後紀錄就刪除，所以寫入 RTC 的次數仍受 set 的間隔限制。
+  之後紀錄就刪除，所以寫入 RTC 的次數仍受 set 的間隔限制。最近一小時已經 set 30 次時以結束碼 3
+  （hourly-limit）拒絕（滑動視窗，記在同一個 wake.times；clear 不計入）。
 - RTC：/sys/class/rtc/rtc0 的實際位置必須在 /sys/devices 之下，wakealarm 必須是一般檔案（no-rtc）；
   硬體時鐘（since_epoch）與系統時間相差超過 5 分鐘時拒絕（rtc-offset：核心把 RTC 當成 UTC，
   硬體時鐘存本地時間的雙系統電腦會差好幾個小時）。

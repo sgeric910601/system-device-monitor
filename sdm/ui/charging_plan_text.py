@@ -3,7 +3,7 @@
 今天只寫時刻、明天寫「明天 05:57」、更晚寫「10/16 07:30」。"""
 from datetime import datetime
 
-from sdm.constants import SmartCharging
+from sdm.constants import SmartCharging, Wake
 from sdm.core.charging_plan import (CHARGING, LATE, PRECISE_WAKE, READINESS_FIRST, READY,
                                     STARTING, SYSTEM_PAUSED, UNPLUGGED, UNSUPPORTED, WAITING)
 from sdm.services import wake_control
@@ -31,6 +31,7 @@ WAKE_ERRORS = {
     "alarm-in-use": "另一個程式已經設定了喚醒時間，沒有更改",
     "no-rtc": "這台電腦沒有可用的 RTC 喚醒",
     "out-of-range": "喚醒時間超出允許的範圍（60 秒後到 7 天內）",
+    Wake.HOURLY_LIMIT: f"這一小時內已設定喚醒時間 {Wake.HOURLY_SETS} 次，先暫停",
     wake_control.UNAUTHORIZED: "未授權",
     wake_control.TIMEOUT: "喚醒元件超過 2 分鐘沒有回應",
 }

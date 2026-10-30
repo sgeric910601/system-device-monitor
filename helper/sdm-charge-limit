@@ -10,7 +10,8 @@
 - 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己、單元檔與每一層上層目錄
   都屬於 root 且群組與其他人不可寫。
 - 一次只執行一個：先以 flock 取得 /run/system-device-monitor/charge-limit.lock（root 0600），
-  最多等 10 秒（busy）；同一顆電池兩次 set 至少相隔 10 秒（rate-limited，記在 charge-limit.times）。
+  最多等 10 秒（busy）；同一顆電池兩次 set 至少相隔 10 秒（rate-limited），所有電池合計最近一小時
+  最多開始寫入 30 次（hourly-limit）；開機後的時鐘記在 charge-limit.times。
 - 電池的實際位置在 /sys/devices 之下、type 為 Battery、scope 不是 Device、有 charge_control_end_threshold；
   屬性檔以 O_NOFOLLOW 開啟並必須是一般檔案；寫入十進位數字後讀回確認（3 次、間隔 0.3 秒）。
 - --persist on 寫入 /var/lib/system-device-monitor 的狀態檔（0644，暫存檔＋fsync＋整檔取代）並啟用單元，
@@ -41,8 +42,8 @@ FROM_UNIT = "--from-unit"
 OPTION_PERSIST = "--persist"
 PERSIST_ON, PERSIST_OFF, PERSIST_UNCHANGED = "on", "off", "unchanged"
 NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
-RATE_LIMITED = "rate-limited"
-LOGGED_ERRORS = ("busy",)               # 會寫進系統日誌的錯誤代號；其他一律記成 failed
+RATE_LIMITED, HOURLY_LIMIT = "rate-limited", "hourly-limit"
+LOGGED_ERRORS = ("busy", HOURLY_LIMIT)  # 會寫進系統日誌的錯誤代號；其他一律記成 failed
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -79,8 +80,9 @@ LOCK_NAME = "charge-limit.lock"
 LOCK_MODE = 0o600
 LOCK_WAIT_S = 10.0
 LOCK_POLL_S = 0.1
-TIMES_NAME = "charge-limit.times"       # 各電池上次 set 的開機後秒數
+TIMES_NAME = "charge-limit.times"       # 各電池最近一小時開始寫入的開機後秒數
 MIN_WRITE_GAP_S = 10.0
+HOURLY_WRITES, HOUR_S = 30, 3600.0      # 所有電池合計
 PRIVATE_BITS = 0o077
 DIRECTORY_MODE = 0o755
 FILE_MODE = 0o644
@@ -204,9 +206,7 @@ def login_uid_range(path=LOGIN_DEFS):
 def production_context():
     return Context(root="/", owner=0, run=run_command, euid=os.geteuid(),
                    user_exists=user_exists, helper_path=sys.argv[0],
-                   uid_range=login_uid_range(), sleep=time.sleep, ppid=os.getppid(),
-                   write=os.write, clock=time.monotonic,
-                   boottime=lambda: time.clock_gettime(time.CLOCK_BOOTTIME))
+                   uid_range=login_uid_range(), ppid=os.getppid())
 
 
 # ── 參數 ───────────────────────────────────────────────────
@@ -370,8 +370,9 @@ def acquire_lock(context):
 
 # ── 寫入間隔 ───────────────────────────────────────────────
 
-def read_times(directory, owner):
-    """各電池上次 set 的開機後秒數；檔案必須是 root 的 0600 一般檔案，內容不合格式時當成空的。"""
+def read_times(directory, owner, now):
+    """各電池最近一小時開始寫入的開機後秒數（舊格式是一個數字）；檔案必須是 root 的 0600 一般檔案，
+    內容不合格式時當成空的。"""
     try:
         fd = os.open(TIMES_NAME, READ_FLAGS, dir_fd=directory)
     except FileNotFoundError:
@@ -385,35 +386,35 @@ def read_times(directory, owner):
         value = json.loads(data.decode("utf-8"))
     except (ValueError, RecursionError):
         return {}
-    if not isinstance(value, dict):
-        return {}
-    return {key: stamp for key, stamp in value.items() if SUPPLY_PATTERN.fullmatch(key)
-            and type(stamp) in (int, float) and math.isfinite(stamp)}
+    items = value.items() if isinstance(value, dict) else ()
+    return {key: [stamp for stamp in (stamps if isinstance(stamps, list) else [stamps])
+                  if type(stamp) in (int, float) and math.isfinite(stamp)
+                  and 0 <= now - stamp < HOUR_S]
+            for key, stamps in items if SUPPLY_PATTERN.fullmatch(key)}
 
 
-def check_rate(context, supply):
-    directory = open_child_directory(context, RUN_DIR, True)
-    try:
-        last = read_times(directory, context.owner).get(supply)
-    finally:
-        os.close(directory)
-    elapsed = None if last is None else context.boottime() - last
-    if elapsed is not None and 0 <= elapsed < MIN_WRITE_GAP_S:
-        raise RateLimited(math.ceil(MIN_WRITE_GAP_S - elapsed))
-
-
-def record_write(context, supply):
-    """記下這顆電池的寫入時間，並丟掉已經超過間隔的其他紀錄。"""
+def recent_writes(context, supply=None):
+    """（最近一小時各電池的寫入時間、現在）；指定 supply 時先記下它現在開始寫入。"""
     directory = open_child_directory(context, RUN_DIR, True)
     try:
         now = context.boottime()
-        times = {key: stamp for key, stamp in read_times(directory, context.owner).items()
-                 if 0 <= now - stamp < MIN_WRITE_GAP_S}
-        times[supply] = now
-        replace_file(directory, TIMES_NAME, (json.dumps(times, sort_keys=True) + "\n").encode(),
-                     LOCK_MODE)
+        times = read_times(directory, context.owner, now)
+        if supply is not None:
+            times[supply] = times.get(supply, []) + [now]
+            data = json.dumps({key: value for key, value in times.items() if value}, sort_keys=True)
+            replace_file(directory, TIMES_NAME, (data + "\n").encode(), LOCK_MODE)
     finally:
         os.close(directory)
+    return times, now
+
+
+def check_rate(context, supply):
+    times, now = recent_writes(context)
+    elapsed = now - max(times.get(supply) or [-math.inf])
+    if elapsed < MIN_WRITE_GAP_S:
+        raise RateLimited(math.ceil(MIN_WRITE_GAP_S - elapsed))
+    if sum(len(stamps) for stamps in times.values()) >= HOURLY_WRITES:
+        raise Failed(HOURLY_LIMIT)
 
 
 # ── 電池的屬性檔 ───────────────────────────────────────────
@@ -607,10 +608,6 @@ def persist(context, layout, request):
         raise Failed("systemctl")
 
 
-def is_integer(value):
-    return type(value) is int
-
-
 def parse_state(data):
     """狀態檔的內容 → Request；格式不完全相符時拋出 Failed。"""
     try:
@@ -618,11 +615,11 @@ def parse_state(data):
     except (ValueError, RecursionError):
         raise Failed("invalid-state") from None
     if not isinstance(value, dict) or set(value) != STATE_KEYS \
-            or not is_integer(value["format"]) or value["format"] != STATE_FORMAT:
+            or type(value["format"]) is not int or value["format"] != STATE_FORMAT:
         raise Failed("invalid-state")
     supply, end = value["supply"], value["end"]
     if not isinstance(supply, str) or not SUPPLY_PATTERN.fullmatch(supply) \
-            or not is_integer(end) or not MIN_END <= end <= MAX_END:
+            or type(end) is not int or not MIN_END <= end <= MAX_END:
         raise Failed("invalid-state")
     return Request(supply, end)
 
@@ -667,7 +664,7 @@ def set_limit(context, layout, request):
         end, start = apply_request(context, fd, request)
     finally:
         os.close(fd)
-        record_write(context, request.supply)
+        recent_writes(context, request.supply)
     try:
         persist(context, layout, request)
     except (Failed, OSError):

@@ -295,6 +295,14 @@ class UserWrites(Base):
         self.assertIn("太頻繁", self.state.message)
         self.assertIn("7", self.state.message)
 
+    def test_hourly_limit_is_explained(self):
+        self.control.drag(85)
+        self.timers.advance(1)
+        self.runner.finish(3, '{"ok":false,"error":"hourly-limit"}\n')
+        self.assertEqual(self.state.status, FAILED)
+        self.assertEqual(self.state.message,
+                         "這一小時內已調整充電上限 30 次，為了保護電池的控制晶片先暫停，請稍後再試")
+
     def test_read_back_is_polled_three_times(self):
         self.control.drag(85)
         self.timers.advance(1)

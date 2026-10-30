@@ -460,12 +460,24 @@ class RateLimit(Base):
         self.assertEqual(self.root.mode(TIMES), 0o600)
         self.assertEqual(set(json.loads((self.root.path/TIMES).read_text())), {"BAT0"})
 
-    def test_old_entries_are_dropped(self):
+    def test_entries_older_than_an_hour_are_dropped(self):
         self.battery("BAT1", end=80, start=None, device="platform/BAT1")
         self.main(["set", "BAT1", "85"])
         self.boot += ChargeLimit.MIN_WRITE_GAP + 1
         self.main(["set", "BAT0", "85"])
-        self.assertEqual(set(json.loads((self.root.path/TIMES).read_text())), {"BAT0"})
+        self.assertEqual(json.loads((self.root.path/TIMES).read_text()),
+                         {"BAT0": [1011.0], "BAT1": [1000.0]})
+        self.boot = 1000.0 + ChargeLimit.HOURLY_WINDOW + 5       # BAT1 的 1000 秒已過一小時
+        self.main(["set", "BAT0", "80"])
+        self.assertEqual(json.loads((self.root.path/TIMES).read_text()),
+                         {"BAT0": [1011.0, self.boot]})
+
+    def test_old_single_number_format_still_counts(self):
+        self.main(["set", "BAT0", "85"])
+        (self.root.path/TIMES).write_text('{"BAT0": 1000.0}\n')
+        self.boot += 4
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["error"], "rate-limited")
 
     def test_unreadable_or_odd_times_are_ignored(self):
         self.main(["set", "BAT0", "85"])
@@ -487,3 +499,55 @@ class RateLimit(Base):
                 prepare()
                 self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
         self.assertEqual(self.driver.writes, [])
+
+
+class HourlyLimit(Base):
+    """所有電池合計，最近一小時最多 30 次開始寫入（hourly-limit，結束碼 3）；正常使用遠低於此。"""
+
+    def setUp(self):
+        super().setUp()
+        self.battery(end=80, start=75)
+        self.battery("BAT1", end=80, start=None, device="platform/BAT1")
+        self.boot_step = 0.0
+
+    def set_many(self, count, supply="BAT0"):
+        codes = []
+        for index in range(count):
+            codes.append(self.main(["set", supply, "85" if index % 2 == 0 else "80"]))
+            self.boot += ChargeLimit.MIN_WRITE_GAP + 1
+        return codes
+
+    def test_the_thirty_first_write_in_an_hour_is_refused(self):
+        first = self.boot
+        self.assertEqual(self.set_many(ChargeLimit.HOURLY_WRITES),
+                         [helper.EXIT_OK] * ChargeLimit.HOURLY_WRITES)
+        writes = list(self.driver.writes)
+        self.output.clear()
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output, [{"ok": False, "error": "hourly-limit"}])
+        self.assertEqual(self.logged[-1], "set hourly-limit")
+        self.assertEqual(self.driver.writes, writes)
+        self.boot = first + ChargeLimit.HOURLY_WINDOW
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
+
+    def test_the_limit_is_shared_by_all_batteries(self):
+        half = ChargeLimit.HOURLY_WRITES // 2
+        self.assertEqual(set(self.set_many(half) + self.set_many(half, "BAT1")), {helper.EXIT_OK})
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["error"], "hourly-limit")
+
+    def test_calls_refused_before_writing_do_not_count(self):
+        """參數錯誤、找不到電池等在寫入前就拒絕的呼叫不算一次。"""
+        self.set_many(ChargeLimit.HOURLY_WRITES - 1)
+        for _ in range(5):
+            self.assertEqual(self.main(["set", "BAT0", "101"]), helper.EXIT_USAGE)
+            self.assertEqual(self.main(["set", "BAT9", "90"]), helper.EXIT_FAILED)
+        self.assertEqual(self.main(["set", "BAT0", "90"]), helper.EXIT_OK)
+        self.boot += ChargeLimit.MIN_WRITE_GAP + 1
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["error"], "hourly-limit")
+
+    def test_normal_use_stays_far_below_the_limit(self):
+        """使用者放開滑桿最快 10 秒一次；智慧充電一小時最多提高與還原各一次。"""
+        self.assertGreaterEqual(ChargeLimit.HOURLY_WRITES, 30)
+        self.assertEqual(ChargeLimit.HOURLY_WINDOW, 3600.0)
