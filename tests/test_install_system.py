@@ -58,10 +58,15 @@ class Runner:
 
     def __init__(self, package_status=None, enabled=False):
         self.calls, self.package_status, self.enabled = [], package_status, enabled
+        self.dpkg_result, self.on_call = None, None
 
     def __call__(self, argv):
         self.calls.append(tuple(argv))
+        if self.on_call is not None:
+            self.on_call(argv)
         if argv[0] == DPKG_QUERY:
+            if self.dpkg_result is not None:
+                return self.dpkg_result
             return (0, self.package_status) if self.package_status else (1, "")
         if argv[1] == "is-enabled":
             return (0 if self.enabled else 1), ""
@@ -174,6 +179,17 @@ class Install(Base):
                 self.assertEqual(self.main(), installer.EXIT_FAILED)
                 self.assertEqual(self.output[-1], {"ok": False, "error": "deb-installed"})
                 self.assertEqual(self.installed(), [])
+
+    def test_unknown_package_state_is_refused(self):
+        """dpkg-query 不是「找不到套件」（結束碼 1）而失敗，或回答看不懂時，不能判斷是否兩者擇一：拒絕。"""
+        for result in ((2, ""), (-1, ""), (0, "garbage"), (0, "")):
+            for action in ("install", "remove"):
+                with self.subTest(result=result, action=action):
+                    self.runner.dpkg_result = result
+                    self.output.clear()
+                    self.assertEqual(self.main(action), installer.EXIT_FAILED)
+                    self.assertEqual(self.output, [{"ok": False, "error": "package-check-failed"}])
+        self.assertEqual(self.installed(), [])
 
     def test_removed_package_does_not_block(self):
         for status in ("deinstall ok config-files", "unknown ok not-installed"):
@@ -450,7 +466,7 @@ class Remove(Base):
         self.hold_wake_lock()
         self.assertEqual(self.main("remove"), installer.EXIT_OK)
         self.assertGreaterEqual(sum(self.sleeps), installer.WAKE_LOCK_WAIT_S)
-        self.assertLess(sum(self.sleeps), installer.WAKE_LOCK_WAIT_S + 1)
+        self.assertLess(sum(self.sleeps), 2 * installer.WAKE_LOCK_WAIT_S + 1)   # 小程式刪除前後各等一次
         self.assertEqual(alarm.read_text(), "0")
 
     def test_untrusted_wake_lock_is_not_waited_for(self):
@@ -460,6 +476,45 @@ class Remove(Base):
         self.assertEqual(self.main("remove"), installer.EXIT_OK)
         self.assertEqual((self.sleeps, alarm.read_text()), ([], "0"))
         self.assertTrue(target.exists())
+
+    def test_waits_for_a_running_grant_before_revoking(self):
+        """正在執行的 sdm-unattended grant 寫完規則之後才撤銷（同一把鎖，不建立、不跟隨）。"""
+        self.root.file(RULE, "// rule\n")
+        lock = self.root.file("run/system-device-monitor/unattended.lock", "", mode=0o600)
+        fd = os.open(lock, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        seen = []
+
+        def released_later():
+            seen.append((self.root.path/RULE).exists())
+            if len(seen) == 2:
+                (self.root.path/RULE).write_text("// written by the running grant\n")
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        self.on_sleep = released_later
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual(seen, [True, True])
+        self.assertFalse((self.root.path/RULE).exists())
+
+    def test_cleans_again_after_the_helpers_are_gone(self):
+        """移除檔案之前才完成的 sdm-wake set 或 grant（授權在規則刪除前就給了）：刪除小程式之後
+        再拿鎖、再撤銷規則並取消鬧鐘，最後才刪除紀錄與鎖檔。"""
+        self.root.file(RULE, "// rule\n")
+        alarm = self.wake("1800000600\n", "1800000600\n")
+        for name in ("wake.lock", "unattended.lock"):
+            self.root.file("run/system-device-monitor/" + name, "", mode=0o600)
+
+        def late_helper(argv):
+            if list(argv[1:]) == ["disable", "--now", SOCKET]:     # 第一次清理之後
+                self.assertEqual(alarm.read_text(), "0")
+                alarm.write_text("1800009000\n")
+                self.root.file("run/system-device-monitor/wake", "1800009000\n", mode=0o600)
+                (self.root.path/RULE).write_text("// late grant\n")
+        self.runner.on_call = late_helper
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse((self.root.path/RULE).exists())
+        self.assertFalse((self.root.path/"run/system-device-monitor").exists())
 
     def test_wants_entry_that_is_not_a_symlink_is_left_alone(self):
         entry = self.root.file("etc/systemd/system/sockets.target.wants/" + SOCKET)

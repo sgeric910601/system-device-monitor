@@ -146,6 +146,17 @@ class ScriptText(unittest.TestCase):
                     'rm -f "$STATE_DIR/charge-limit.json"',
                     'rmdir "$STATE_DIR" 2>/dev/null || true'])
 
+    def test_smart_charging_part_is_the_same_in_prerm_and_postrm(self):
+        start, end = "# ── 智慧充電：prerm 與 postrm 共用", "# ── 智慧充電共用部分結束"
+        parts = []
+        for name in ("prerm", "postrm"):
+            text = self.text(name)
+            parts.append(text[text.index(start):text.index(end)])
+        self.assertEqual(parts[0], parts[1])
+        self.assertIn("with_lock unattended.lock revoke_rule", parts[0])
+        self.assertLess(parts[0].index("with_lock unattended.lock"),
+                        parts[0].index("with_lock wake.lock"))
+
     def test_unit_names_match_the_shipped_units(self):
         for name in MAINTAINER:
             text = self.text(name)
@@ -222,20 +233,26 @@ class ScriptRuns(unittest.TestCase):
         self.assertFalse(any(os.path.lexists(link) for link in self.limit_wants))
         self.assertFalse(self.state.exists())
 
-    def test_prerm_remove_deletes_the_helper_lock(self):
+    def test_lock_files_are_deleted_by_postrm_after_the_helpers_are_gone(self):
+        """刪除還有人在等的鎖檔會讓兩個小程式同時執行：prerm 留著，postrm（小程式已刪除）才刪。"""
         run = self.root/"run/system-device-monitor"
         run.mkdir(parents=True)
-        (run/"charge-limit.lock").write_text("")
-        (run/"charge-limit.times").write_text("{}")
+        names = ("charge-limit.lock", "charge-limit.times", "wake.lock", "wake.times",
+                 "unattended.lock")
+        for name in names:
+            (run/name).write_text("")
         self.run_script("prerm", "remove")
+        self.assertEqual(sorted(path.name for path in run.iterdir()), sorted(names))
+        self.run_script("postrm", "remove")
         self.assertFalse(run.exists())
 
-    def test_prerm_remove_keeps_other_runtime_files(self):
+    def test_remove_keeps_other_runtime_files(self):
         run = self.root/"run/system-device-monitor"
         run.mkdir(parents=True)
         (run/"charge-limit.lock").write_text("")
         (run/"other").write_text("")
         self.run_script("prerm", "remove")
+        self.run_script("postrm", "remove")
         self.assertEqual(sorted(path.name for path in run.iterdir()), ["other"])
 
     def test_prerm_remove_keeps_other_state_files(self):
@@ -328,6 +345,8 @@ class ScriptRuns(unittest.TestCase):
         alarm, run = self.populate_wake("1800000600\n", "1800000600\n")
         self.run_script("prerm", "remove")
         self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse((run/"wake").exists())
+        self.run_script("postrm", "remove")
         self.assertFalse(run.exists())
 
     def test_prerm_remove_leaves_another_alarm(self):
@@ -336,6 +355,7 @@ class ScriptRuns(unittest.TestCase):
                 shutil.rmtree(self.root, ignore_errors=True)
                 alarm, run = self.populate_wake("1800009999\n", record)
                 self.run_script("prerm", "remove")
+                self.run_script("postrm", "remove")
                 self.assertEqual(alarm.read_text(), "1800009999\n")
                 self.assertFalse(run.exists())
 
@@ -400,22 +420,76 @@ class ScriptRuns(unittest.TestCase):
         self.assertEqual(process.wait(timeout=20), 0, process.stderr.read())
         process.stderr.close()
         self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse((run/"wake").exists())
+
+    def test_prerm_waits_for_a_running_grant_before_revoking(self):
+        """正在執行的 sdm-unattended grant（已輸入管理員密碼）寫完規則之後，才撤銷規則。"""
+        alarm, run, rule = self.populate_smart_charging()
+        fd = os.open(run/"unattended.lock", os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "DPKG_ROOT": str(self.root)}
+        process = subprocess.Popen(["/bin/sh", str(SCRIPTS/"prerm"), "remove"], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(process.wait, 30)
+        time.sleep(0.5)
+        self.assertIsNone(process.poll())
+        self.assertTrue(rule.exists())
+        rule.write_text("// written by the grant that was running\n")
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        self.assertEqual(process.wait(timeout=20), 0, process.stderr.read())
+        process.stderr.close()
+        self.assertFalse(rule.exists())
+
+    def test_postrm_remove_cancels_what_a_late_helper_left(self):
+        """prerm 之後才完成的 sdm-wake set 或 grant（授權在規則刪除前就給了）：小程式刪除後再清一次。"""
+        alarm, run, rule = self.populate_smart_charging()
+        self.run_script("prerm", "remove")
+        alarm.write_text("1800009000\n")
+        (run/"wake").write_text("1800009000\n")
+        rule.write_text("// late grant\n")
+        self.run_script("postrm", "remove")
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertFalse(rule.exists())
         self.assertFalse(run.exists())
+
+    def test_downgrade_is_best_effort(self):
+        """降級時撤銷失敗（例如 /etc 唯讀）也讓降級繼續（失敗會改跑舊版的 prerm，規則就留下）；
+        小程式換掉之後 postrm 再清一次。"""
+        alarm, run, rule = self.populate_smart_charging()
+        rule.parent.chmod(0o555)
+        self.addCleanup(rule.parent.chmod, 0o755)
+        result = self.run_script("prerm", "upgrade", "0.2.0")
+        self.assertEqual(result.stderr.count("無法刪除"), 1, result.stderr)
+        self.assertIn("49-system-device-monitor.rules", result.stderr)
+        self.assertTrue(rule.exists())
+        self.assertEqual(alarm.read_text(), "0")
+        rule.parent.chmod(0o755)
+        alarm.write_text("1800009000\n")
+        (run/"wake").write_text("1800009000\n")
+        self.run_script("postrm", "upgrade", "0.2.0")
+        self.assertFalse(rule.exists())
+        self.assertEqual(alarm.read_text(), "0")
+        self.assertTrue((run/"wake.lock").exists())
+
+    def test_postrm_upgrade_to_a_version_with_smart_charging_keeps_everything(self):
+        alarm, run, rule = self.populate_smart_charging()
+        self.run_script("postrm", "upgrade", "0.3.0~beta.1")
+        self.assertTrue(rule.exists() and (run/"wake").exists())
+        self.assertEqual(alarm.read_text(), "1800000600\n")
 
     def test_remove_and_purge_delete_only_the_unattended_rule(self):
         rules = self.root/RULE
         rules.parent.mkdir(parents=True)
         other = rules.parent/"50-other.rules"
         other.write_text("// other\n")
-        for script, args in (("prerm", ("remove",)), ("postrm", ("purge",))):
-            with self.subTest(script=script):
+        for script, args in (("prerm", ("remove",)), ("postrm", ("remove",)),
+                             ("postrm", ("purge",))):
+            with self.subTest(script=script, args=args):
                 rules.write_text("// rule\n")
                 self.run_script(script, *args)
                 self.assertFalse(rules.exists())
                 self.assertTrue(other.exists())
-        rules.write_text("// rule\n")
-        self.run_script("postrm", "remove")
-        self.assertTrue(rules.exists())
 
     def test_rule_name_that_is_a_directory_is_left_alone(self):
         rules = self.root/RULE

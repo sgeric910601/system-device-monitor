@@ -1,12 +1,12 @@
 #!/bin/sh
 # 系統與裝置監看：移除套件前停用並停止 CPU 功耗取樣的 socket 與服務，
 # 並刪除 sdm-cpu-power enable 寫入的 drop-in；也停用「開機與喚醒後保留充電上限」的單元，
-# 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）、小程式的鎖檔與寫入時間
-# （/run/system-device-monitor 空了才刪除目錄）。
-# 智慧充電：先撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個檔案），再取得 sdm-wake 的鎖
-# （等正在執行的 sdm-wake 結束），才取消它排定的喚醒鬧鐘（只有目前的鬧鐘等於它記下的時間時才寫 0，
-# 別人的鬧鐘不動）並刪除紀錄。升級時（upgrade）不動任何東西；
-# 只有降級到沒有智慧充電的版本時，撤銷規則並取消鬧鐘（那個版本不會再管理它們）。
+# 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）。
+# 智慧充電：先取得 sdm-unattended 的鎖再撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個
+# 檔案），再取得 sdm-wake 的鎖，才取消它排定的喚醒鬧鐘並刪除紀錄；鎖檔與寫入時間留給 postrm
+# （小程式刪除之後）再清一次並刪除，刪掉還有人在等的鎖檔會讓兩個小程式同時執行。
+# 升級時（upgrade）不動任何東西；只有降級到沒有智慧充電的版本時盡力撤銷規則並取消鬧鐘（那個版本
+# 不會再管理它們；失敗只在標準錯誤說明，讓降級繼續）。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只處理該目錄底下的檔案。
 set -e
 
@@ -15,13 +15,14 @@ SERVICE=system-device-monitor-cpu-power.service
 LIMIT_UNIT=system-device-monitor-charge-limit.service
 UNIT_DIR="${DPKG_ROOT:-}/etc/systemd/system"
 STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"
+# ── 智慧充電：prerm 與 postrm 共用（兩份必須完全相同）───────────
 RUN_DIR="${DPKG_ROOT:-}/run/system-device-monitor"
 RTC_ALARM="${DPKG_ROOT:-}/sys/class/rtc/rtc0/wakealarm"
 RULE="${DPKG_ROOT:-}/etc/polkit-1/rules.d/49-system-device-monitor.rules"
 # 第一個附有 sdm-wake 與 sdm-unattended 的版本；結尾的「~」讓 0.3.0~beta.N 也算在內。
 SMART_CHARGING_SINCE="0.3.0~"
-# 等正在執行的 sdm-wake 放開鎖的最長秒數（它自己最多等鎖 10 秒）；逾時仍照常取消
-WAKE_LOCK_WAIT=15
+# 等正在執行的 sdm-wake 或 sdm-unattended 放開鎖的最長秒數（它們自己最多等鎖 10 秒）；逾時仍照常做
+LOCK_WAIT=15
 
 clear_wake() {
     record="$RUN_DIR/wake"
@@ -45,25 +46,48 @@ clear_wake_and_record() {
     rm -f "$RUN_DIR/wake"
 }
 
-remove_smart_charging() {
-    # 先撤銷規則：之後不會再有免密碼的 sdm-wake 開始
+revoke_rule() {
     if [ -f "$RULE" ] || [ -L "$RULE" ]; then
-        rm -f "$RULE"
-    fi
-    # 再拿 sdm-wake 的鎖（不建立、不跟隨符號連結），不會在它寫入的中途讀到舊的紀錄
-    lock="$RUN_DIR/wake.lock"
-    if [ -f "$lock" ] && [ ! -L "$lock" ] && command -v flock >/dev/null 2>&1; then
-        (
-            flock -w "$WAKE_LOCK_WAIT" 9 || true
-            clear_wake_and_record
-        ) 9<"$lock" || clear_wake_and_record
-    else
-        clear_wake_and_record
+        if ! rm -f "$RULE"; then
+            echo "system-device-monitor: 無法刪除 $RULE" >&2
+            return 1
+        fi
     fi
 }
 
-if [ "$1" = "upgrade" ] && dpkg --compare-versions "${2:-}" lt "$SMART_CHARGING_SINCE"; then
-    remove_smart_charging
+with_lock() {
+    # 拿著 $RUN_DIR/$1 的鎖（只開啟既有的一般檔案：不建立、不跟隨符號連結）執行 $2；沒有鎖檔時直接執行
+    lock="$RUN_DIR/$1"
+    if [ -f "$lock" ] && [ ! -L "$lock" ] && command -v flock >/dev/null 2>&1; then
+        (
+            flock -w "$LOCK_WAIT" 9 || true
+            "$2" || exit 100
+        ) 9<"$lock" || {
+            # 100 是 $2 自己失敗（已在標準錯誤說明）；其他是鎖檔在檢查之後消失或打不開：不拿鎖直接做
+            status=$?
+            [ "$status" -ne 100 ] || return 1
+            "$2"
+        }
+    else
+        "$2"
+    fi
+}
+
+remove_smart_charging() {
+    # 先等正在執行的 sdm-unattended（grant 可能正要寫規則）再撤銷規則，之後不會再有免密碼的
+    # sdm-wake 開始；再等正在執行的 sdm-wake，才取消它記下的鬧鐘（只有目前的鬧鐘等於紀錄時才寫 0，
+    # 別人的鬧鐘不動）並刪除紀錄。鎖檔留給 postrm 在小程式刪除之後才刪。
+    with_lock unattended.lock revoke_rule
+    with_lock wake.lock clear_wake_and_record
+}
+
+downgrading() {
+    [ "$1" = "upgrade" ] && dpkg --compare-versions "${2:-}" lt "$SMART_CHARGING_SINCE"
+}
+# ── 智慧充電共用部分結束 ─────────────────────────────────
+
+if downgrading "$@"; then
+    remove_smart_charging || echo "system-device-monitor: 降級時沒能完全撤銷無人授權的規則或取消喚醒鬧鐘" >&2
 fi
 
 if [ "$1" = "remove" ]; then
@@ -80,9 +104,6 @@ if [ "$1" = "remove" ]; then
     rm -f "$STATE_DIR/charge-limit.json"
     rmdir "$STATE_DIR" 2>/dev/null || true
     remove_smart_charging
-    rm -f "$RUN_DIR/charge-limit.lock" "$RUN_DIR/charge-limit.times"
-    rm -f "$RUN_DIR/wake" "$RUN_DIR/wake.lock" "$RUN_DIR/wake.times" "$RUN_DIR/unattended.lock"
-    rmdir "$RUN_DIR" 2>/dev/null || true
 fi
 
 exit 0

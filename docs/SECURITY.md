@@ -361,13 +361,17 @@ remove、之後重新安裝套件），不自動刪除任何東西。
 - install_system.py（root 端）再確認暫存目錄與每一層上層、manifest 的雜湊、內容與每個檔案的
   雜湊（暫存檔一律 O_NOFOLLOW｜O_NONBLOCK 開啟），全部通過後才開始寫入；目的地與權限寫死在
   程式裡，路徑上每一層都必須屬於 root 且群組與其他人不可寫。任何錯誤都只輸出一行 JSON。
-  remove 最先撤銷無人授權的規則檔（只有那一個檔案），之後不會再有免密碼的 sdm-wake 開始；
-  再以 fcntl 取得 sdm-wake 的鎖（wake.lock，root 擁有的一般檔案，不建立、不跟隨符號連結；最多等
-  15 秒，逾時仍繼續），等正在執行的 sdm-wake 結束才取消它記下的喚醒鬧鐘（紀錄必須是 root 擁有、
-  其他人不可寫，而且目前的鬧鐘等於它）並刪除紀錄。接著只刪除它安裝的檔案、drop-in、
-  sockets.target.wants 與充電上限單元在 multi-user.target.wants／sleep.target.wants 的符號連結、
-  原始碼版保留的充電上限（charge-limit-local.json，不碰 .deb 的 charge-limit.json）與充電上限
-  小程式的鎖檔、寫入時間，以及喚醒與無人授權的鎖檔。
+  remove 最先以 fcntl 取得 sdm-unattended 的鎖（unattended.lock）再撤銷無人授權的規則檔（只有那一個
+  檔案），正在執行的 grant 不會在之後把它寫回來，也不會再有免密碼的 sdm-wake 開始；再取得 sdm-wake
+  的鎖（wake.lock），等正在執行的 sdm-wake 結束才取消它記下的喚醒鬧鐘（紀錄必須是 root 擁有、
+  其他人不可寫，而且目前的鬧鐘等於它）並刪除紀錄。兩把鎖都只開啟 root 擁有的既有一般檔案（不建立、
+  不跟隨符號連結），最多等 15 秒，逾時仍繼續。接著只刪除它安裝的檔案、drop-in、sockets.target.wants
+  與充電上限單元在 multi-user.target.wants／sleep.target.wants 的符號連結、原始碼版保留的充電上限
+  （charge-limit-local.json，不碰 .deb 的 charge-limit.json）。小程式刪除之後再拿兩把鎖做一次
+  （授權在規則刪除前就給了、之後才完成的 grant 或 sdm-wake set），拿著鎖刪除紀錄、鎖檔與寫入時間，
+  最後刪除充電上限小程式的鎖檔與寫入時間。
+- dpkg-query 的結束碼 1 是找不到套件；其他失敗（例如結束碼 2、無法執行）或看不懂的回答都無法判斷
+  是否已安裝套件，install 與 remove 一律拒絕（package-check-failed），不會在不確定時動手。
 - 授權對象是 /usr/bin/python3（org.freedesktop.policykit.exec），對話框會顯示要以管理員執行
   Python 與它的參數；只在你自己執行這個指令時出現。
 
@@ -376,14 +380,19 @@ remove、之後重新安裝套件），不自動刪除任何東西。
 - postinst 只重新載入 systemd；socket 原本已啟用時才重新啟動它。從不自動啟用。
 - prerm（移除時）停用並停止 socket 與服務，刪除 drop-in 與 sockets.target.wants 的連結；
   也停用充電上限的單元（刪除它的 wants 連結），並刪除 /var/lib/system-device-monitor/charge-limit.json
-  （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）與 /run/system-device-monitor 的
-  charge-limit.lock、charge-limit.times（目錄空了才刪目錄）。智慧充電依序：先刪除無人授權的規則檔
-  （只刪那一個一般檔案或符號連結），再以 flock 取得 sdm-wake 的鎖（wake.lock 是一般檔案時；最多等
-  15 秒，逾時仍繼續），才取消 sdm-wake 記下的喚醒鬧鐘（只有紀錄是一般檔案、內容是數字、而且目前的
-  鬧鐘等於它時才寫 0，別人的鬧鐘不動）並刪除紀錄；最後刪除 wake.lock、wake.times、unattended.lock。
+  （目錄空了才刪目錄，重新安裝時不會悄悄套回舊的上限）。智慧充電依序：先以 flock 取得
+  sdm-unattended 的鎖（unattended.lock）再刪除無人授權的規則檔（只刪那一個一般檔案或符號連結），
+  再取得 sdm-wake 的鎖（wake.lock），才取消 sdm-wake 記下的喚醒鬧鐘（只有紀錄是一般檔案、內容是數字、
+  而且目前的鬧鐘等於它時才寫 0，別人的鬧鐘不動）並刪除紀錄。鎖只在是一般檔案時才拿，最多等 15 秒，
+  逾時仍繼續；鎖檔留給 postrm（刪除還有人在等的鎖檔會讓兩個小程式同時執行）。
+- postrm（remove 時，小程式已經刪除）用同一段程式（prerm 與 postrm 的這一段必須完全相同，有測試
+  比對）再拿兩把鎖、撤銷一次規則並取消鬧鐘（授權在規則刪除前就給了、之後才完成的 grant 或
+  sdm-wake set），然後才刪除鎖檔、寫入時間與 charge-limit.lock、charge-limit.times。
 - prerm（upgrade 時）不動任何東西，只有降級到沒有智慧充電的版本（`dpkg --compare-versions` 比
   0.3.0~ 舊；結尾的 ~ 讓 0.3.0~beta.N 也算有）時撤銷無人授權的規則、取消記下的喚醒鬧鐘並刪除紀錄，
-  因為舊版不會再管理或撤銷它們。
+  因為舊版不會再管理或撤銷它們。這一步盡力而為：失敗（例如 /etc 唯讀）只在標準錯誤說明，讓降級
+  繼續（若讓 prerm 失敗，dpkg 會改跑舊版的 prerm failed-upgrade，規則反而留下）；postrm upgrade
+  在檔案換成舊版之後再做一次。
 - postrm（purge 時）只刪除 drop-in 目錄裡本套件的檔案（目錄空了才刪目錄），並再確認一次
   charge-limit.json 與無人授權的規則檔已刪除；從不遞迴刪除目錄。
 - 以 dpkg --root 安裝到其他目錄（DPKG_ROOT）時不碰執行中的 systemd。

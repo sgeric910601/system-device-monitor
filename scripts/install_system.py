@@ -21,12 +21,17 @@
   sockets.target.wants 與 multi-user／sleep.target.wants 的符號連結、原始碼版保留的
   充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）與充電上限小程式的鎖檔、
   寫入時間（/run/system-device-monitor/charge-limit.lock、.times）；目錄裡還有其他檔案時保留目錄。
-  智慧充電：最先撤銷「允許無人時自動調整」的 polkit 規則（只刪那一個檔案），再取得 sdm-wake 的鎖
-  （等正在執行的 sdm-wake 結束，最多 15 秒），才取消它記下的喚醒鬧鐘（只有目前的鬧鐘等於 root
-  擁有、其他人不可寫的紀錄時才寫 0）；最後刪除喚醒與無人授權的紀錄、鎖檔。
+  智慧充電：最先取得 sdm-unattended 的鎖（等正在執行的 grant 寫完）再撤銷「允許無人時自動調整」的
+  polkit 規則（只刪那一個檔案），再取得 sdm-wake 的鎖（等正在執行的 sdm-wake 結束；兩把鎖都最多
+  等 15 秒），才取消它記下的喚醒鬧鐘（只有目前的鬧鐘等於 root 擁有、其他人不可寫的紀錄時才寫 0）
+  並刪除紀錄。刪除小程式之後再做一次（處理授權在規則刪除前就給了、之後才完成的 grant 或 set），
+  拿著鎖刪除紀錄與鎖檔。
+- dpkg-query 的結束碼 1 是找不到套件；其他失敗或看不懂的回答無法判斷是否兩者擇一，一律拒絕
+  （package-check-failed）。
 標準輸出只有一行 JSON；結束碼固定（0 成功、2 參數錯誤、3 失敗、4 沒有權限）。
 只使用標準函式庫，不載入專案裡的任何模組。
 """
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -86,7 +91,7 @@ LIMIT_TIMES = RUN_DIR + "/charge-limit.times"   # 各電池上次寫入的時間
 WAKE_RECORD = RUN_DIR + "/wake"                 # sdm-wake 排定的時間（root 0600）
 WAKE_LOCK = RUN_DIR + "/wake.lock"             # 與 sdm-wake 共用的鎖
 WAKE_FILES = (WAKE_RECORD, WAKE_LOCK, RUN_DIR + "/wake.times")
-WAKE_LOCK_WAIT_S = 15.0                         # 等正在執行的 sdm-wake（它自己最多等鎖 10 秒）
+WAKE_LOCK_WAIT_S = 15.0         # 等正在執行的 sdm-wake 或 sdm-unattended（它們自己最多等鎖 10 秒）
 LOCK_POLL_S = 0.1
 UNATTENDED_LOCK = RUN_DIR + "/unattended.lock"
 UNATTENDED_RULE = "etc/polkit-1/rules.d/49-system-device-monitor.rules"
@@ -95,6 +100,7 @@ NUMBER = re.compile(r"[1-9][0-9]{0,11}")
 NUMBER_MAX_BYTES = 64
 PACKAGE = "system-device-monitor"
 NOT_INSTALLED = ("not-installed", "config-files")
+DPKG_QUERY_NOT_FOUND = 1                        # dpkg-query：找不到套件
 SYSTEMCTL = "/usr/bin/systemctl"
 DPKG_QUERY = "/usr/bin/dpkg-query"
 SAFE_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C"}
@@ -402,9 +408,9 @@ def clear_wake(context):
         pass
 
 
-def open_wake_lock(context):
-    """sdm-wake 的鎖檔（root 擁有的一般檔案；不建立、不跟隨符號連結）；沒有或不可信時為 None。"""
-    parent, name = WAKE_LOCK.rsplit("/", 1)
+def open_run_lock(context, relative):
+    """小程式的鎖檔（root 擁有的一般檔案；不建立、不跟隨符號連結）；沒有或不可信時為 None。"""
+    parent, name = relative.rsplit("/", 1)
     try:
         directory = open_directory(context, parent)
     except (OSError, Failed):
@@ -423,9 +429,9 @@ def open_wake_lock(context):
     return fd
 
 
-def lock_wake(context):
-    """等正在執行的 sdm-wake 放開鎖（最多 15 秒；逾時仍繼續，與沒有鎖時相同）；回傳描述子或 None。"""
-    fd = open_wake_lock(context)
+def lock_run_file(context, relative):
+    """等正在執行的小程式放開鎖（最多 15 秒；逾時仍繼續，與沒有鎖時相同）；回傳描述子或 None。"""
+    fd = open_run_lock(context, relative)
     if fd is None:
         return None
     deadline = context.clock() + WAKE_LOCK_WAIT_S
@@ -439,24 +445,41 @@ def lock_wake(context):
             context.sleep(LOCK_POLL_S)
 
 
-def remove_smart_charging(context):
-    """先撤銷規則（之後不會再有免密碼的 sdm-wake 開始），拿到 sdm-wake 的鎖才取消鬧鐘並刪除紀錄。"""
-    remove_entry(context, UNATTENDED_RULE)
-    lock = lock_wake(context)
+@contextlib.contextmanager
+def holding(context, relative):
+    """拿著小程式的鎖（沒有或不可信時不拿）。"""
+    fd = lock_run_file(context, relative)
     try:
-        clear_wake(context)
-        remove_entry(context, WAKE_RECORD)
+        yield
     finally:
-        if lock is not None:
-            os.close(lock)
+        if fd is not None:
+            os.close(fd)
+
+
+def remove_smart_charging(context, final=False):
+    """拿到 sdm-unattended 的鎖才撤銷規則（之後不會再有免密碼的 sdm-wake 開始），拿到 sdm-wake 的鎖
+    才取消鬧鐘並刪除紀錄。final（小程式已刪除）時也拿著鎖刪除鎖檔與寫入時間。"""
+    with holding(context, UNATTENDED_LOCK):
+        remove_entry(context, UNATTENDED_RULE)
+        if final:
+            remove_entry(context, UNATTENDED_LOCK)
+    with holding(context, WAKE_LOCK):
+        clear_wake(context)
+        for name in WAKE_FILES if final else (WAKE_RECORD,):
+            remove_entry(context, name)
 
 
 # ── 動作 ───────────────────────────────────────────────────
 
 def deb_installed(context):
+    """套件還有檔案（不是未安裝或只剩設定檔）；dpkg-query 不是因為找不到套件而失敗時拒絕。"""
     code, output = context.run([DPKG_QUERY, "-W", "-f=${Status}", PACKAGE])
+    if code == DPKG_QUERY_NOT_FOUND:
+        return False
     words = output.split()
-    return code == 0 and len(words) == 3 and words[2] not in NOT_INSTALLED
+    if code != 0 or len(words) != 3:
+        raise Failed("package-check-failed")
+    return words[2] not in NOT_INSTALLED
 
 
 def systemctl(context, *args):
@@ -497,10 +520,9 @@ def remove(context, stage, digest, uid):
         remove_entry(context, link, allowed=(stat.S_IFLNK,))
     remove_entry(context, LIMIT_STATE)
     remove_empty_directory(context, STATE_DIR)
+    remove_smart_charging(context, final=True)
     remove_entry(context, LIMIT_LOCK)
     remove_entry(context, LIMIT_TIMES)
-    for name in (*WAKE_FILES, UNATTENDED_LOCK):
-        remove_entry(context, name)
     remove_empty_directory(context, RUN_DIR)
     remove_empty_directory(context, HELPER_DIR)
     systemctl(context, "daemon-reload")
