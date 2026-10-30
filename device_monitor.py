@@ -5,6 +5,8 @@
 --dump 印出一個 JSON 自我檢查後結束，不開視窗、不寫任何檔案。
 --preview 以記憶體中的示範資料開啟視窗（截圖用），不讀寫設定與歷史。
 --test-notification 請正在執行的看板送出一則測試通知後結束（不載入 GTK、自己不送通知）。
+--charging-plan-status 唯讀印出智慧充電的排程、階段、下一次提高上限與喚醒的時間與最後 20 行紀錄
+（JSON；不載入 GTK、不連 logind、不寫任何檔案）。
 """
 import argparse
 import json
@@ -27,13 +29,19 @@ def build_parser():
     parser.add_argument("--dump", action="store_true", help="Print a JSON self-check and exit")
     parser.add_argument("--test-notification", action="store_true",
                         help="Ask the running instance to show a test notification")
+    parser.add_argument("--charging-plan-status", action="store_true",
+                        help="Print the smart charging plan status as JSON and exit")
     return parser
 
 
-def alone(options):
-    """--test-notification 只能單獨使用。"""
-    return not (options.background or options.smoke_test or options.capture or options.preview
-                or options.dump or options.output_dir is not None)
+def alone(options, own):
+    """--test-notification 與 --charging-plan-status（own）只能單獨使用。"""
+    used = dict(background=options.background, smoke_test=options.smoke_test,
+                capture=options.capture, preview=options.preview, dump=options.dump,
+                output_dir=options.output_dir is not None,
+                test_notification=options.test_notification,
+                charging_plan_status=options.charging_plan_status)
+    return not any(value for name, value in used.items() if name != own)
 
 
 def main(argv):
@@ -50,8 +58,14 @@ def main(argv):
     if options.preview and options.background:
         # 示範模式沒有頂端列，背景執行就看不到也關不掉
         parser.error("--preview cannot run in the background")
+    if options.charging_plan_status:
+        if not alone(options, "charging_plan_status"):
+            parser.error("--charging-plan-status cannot be combined with other options")
+        from sdm.services import plan_status
+        print(json.dumps(plan_status.default_status(), ensure_ascii=False, indent=2))
+        return 0
     if options.test_notification:
-        if not alone(options):
+        if not alone(options, "test_notification"):
             parser.error("--test-notification cannot be combined with other options")
         from sdm.services.remote import request_test_notification
         return request_test_notification()
