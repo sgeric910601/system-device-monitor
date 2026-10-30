@@ -118,6 +118,19 @@ def make_plan(schedule, deadline, target, hold, restore, strategy, created, plan
                 created, plan_id)
 
 
+def rolled_deadline(plan, now, percent, tz=None):
+    """每週排程的下一次：完成或過期就換，還沒到的完成時間也重新對一次（換時區、日光節約時間），
+    相差 60 秒以上才換；不用換時為 None。"""
+    finished = now >= plan.deadline and percent >= plan.target
+    expired = now > plan.deadline + Limits.EXPIRY_SECONDS
+    if not (finished or expired or plan.deadline > now):
+        return None
+    upcoming = plan.schedule.next_deadline(now, tz)
+    if upcoming is None or abs(upcoming - plan.deadline) < Limits.RESYNC_SECONDS:
+        return None
+    return upcoming
+
+
 @dataclass(frozen=True)
 class PlanInput:
     """判斷時需要的即時狀態；estimated_minutes 為充到目標還要幾分鐘（沒有時為 None）。"""

@@ -2,10 +2,12 @@
 
 讀取 XDG 資料目錄的 charging-plan.json、狀態目錄的 charging-plan.log 與電量歷史、
 /sys/class/power_supply 的電池與門檻，印出排程、目前的階段、下一次提高上限與喚醒的時間，
-以及紀錄檔最後 20 行。不寫任何檔案：排程檔損壞時只回報（看板下次開啟時才另存備份）。
+以及紀錄檔最後 20 行。不寫任何檔案：排程檔損壞時只回報（看板下次開啟時才另存備份）；
+看板沒有執行時每週排程不會換輪，這裡照看板的規則在記憶體中換到下一次。
 沒有即時的平均充電速度，所需時間以最近 7 天的歷史速度（沒有時每小時 20%）估算，可能與看板略有不同；
 上限以滑桿的預設選項取值（與剛開啟的看板相同；驅動拒絕過某些值時看板會縮減選項）。
 """
+from dataclasses import replace
 from datetime import datetime
 import math
 from pathlib import Path
@@ -14,7 +16,8 @@ import time
 from sdm import paths
 from sdm.constants import History, SmartCharging
 from sdm.core.battery import CHARGING, FULL, LIMIT_REACHED, PLUGGED_IDLE, combine
-from sdm.core.charging_plan import PRECISE_WAKE, PlanInput, charging_rate, evaluate
+from sdm.core.charging_plan import (MINUTES_PER_HOUR, PRECISE_WAKE, PlanInput, charging_rate,
+                                    evaluate, rolled_deadline)
 from sdm.core.charge_limit import DEFAULT_OPTIONS, normalized
 from sdm.core.history import decode_history
 from sdm.core.plan_format import NewerFormat, Undecodable, decode_plan
@@ -85,7 +88,7 @@ def plan_value(plan, tz=None):
              "strategy": plan.strategy, "strategy_title": STRATEGY_TITLES[plan.strategy],
              "restoring": plan.restoring}
     if schedule.weekly:
-        hours, minutes = divmod(schedule.minute, 60)
+        hours, minutes = divmod(schedule.minute, MINUTES_PER_HOUR)
         value.update(weekdays=schedule.days(), time=f"{hours:02d}:{minutes:02d}")
     return value
 
@@ -114,10 +117,20 @@ def decision_value(plan, data, tz=None):
             "required_minutes": decision.required_minutes}
 
 
+def current_round(plan, snapshot, now, tz=None):
+    """每週排程照看板的規則換到現在這一輪（只在記憶體）。"""
+    if plan is None or not plan.schedule.weekly:
+        return plan
+    percent = int(snapshot.percent) if snapshot is not None else 0
+    upcoming = rolled_deadline(plan, now, percent, tz)
+    return plan if upcoming is None else replace(plan, deadline=upcoming, completed=None)
+
+
 def build_status(plan_path, log_path, history_path, root=Path("/"), now=None, tz=None):
     now = time.time() if now is None else now
     plan, plan_file = read_plan(plan_path)
     snapshot, limit = battery_state(root)
+    plan = current_round(plan, snapshot, now, tz)
     value = {"plan": None if plan is None else plan_value(plan, tz), "plan_file": plan_file,
              "battery": None if snapshot is None else {"percent": snapshot.percent,
                                                       "plugged": bool(snapshot.ac_online),

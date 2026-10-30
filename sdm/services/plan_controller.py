@@ -26,15 +26,14 @@ import secrets
 
 from sdm.constants import SmartCharging as Limits
 from sdm.core import charging_plan as engine
-from sdm.core.charging_plan import (CHARGING, LATE, READINESS_FIRST, READY, STARTING,
-                                    SYSTEM_PAUSED, WAITING, make_plan)
+from sdm.core.charging_plan import (CHARGING, LATE, MINUTES_PER_HOUR, READINESS_FIRST, READY,
+                                    STARTING, SYSTEM_PAUSED, WAITING, make_plan)
 
 REFRESH, WILL_SLEEP, DID_WAKE = "refresh", "will_sleep", "did_wake"
 NOTE_READY, NOTE_LATE = "ready", "late"
 EXPIRY_SECONDS = Limits.EXPIRY_SECONDS
 RETRY_SECONDS = Limits.RETRY_SECONDS
 START_GRACE_SECONDS = Limits.START_GRACE_SECONDS
-RESYNC_SECONDS = Limits.RESYNC_SECONDS
 ID_BYTES = 16
 STARTED_PHASES = (STARTING, CHARGING, SYSTEM_PAUSED, LATE)
 WRITE_ERROR = "系統沒有套用智慧充電需要的充電上限，1 分鐘後重試"
@@ -77,7 +76,7 @@ class PlanController:
     def describe(self, plan):
         schedule = plan.schedule
         if schedule.weekly:
-            hours, minutes = divmod(schedule.minute, 60)
+            hours, minutes = divmod(schedule.minute, MINUTES_PER_HOUR)
             days = "、".join(WEEKDAY_NAMES[day - 1] for day in schedule.days())
             kind = f"每週{days} {hours:02d}:{minutes:02d}"
         else:
@@ -187,12 +186,8 @@ class PlanController:
 
     def roll_weekly(self, plan, data):
         """完成或過期就換到下一次；還沒到的完成時間也重新對一次（換時區、日光節約時間）。"""
-        finished = data.now >= plan.deadline and data.percent >= plan.target
-        expired = data.now > plan.deadline + EXPIRY_SECONDS
-        if not (finished or expired or plan.deadline > data.now):
-            return
-        upcoming = plan.schedule.next_deadline(data.now, self.tz)
-        if upcoming is not None and abs(upcoming - plan.deadline) >= RESYNC_SECONDS:
+        upcoming = engine.rolled_deadline(plan, data.now, data.percent, self.tz)
+        if upcoming is not None:
             self.save(replace(plan, deadline=upcoming, completed=None))
             self.log(f"每週排程換到下一次：{self.moment(upcoming)}")
 

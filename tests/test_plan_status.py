@@ -88,6 +88,19 @@ class Status(Base):
                           value["plan"]["time"]), ("weekly", [1, 2, 3, 4, 5], "08:00"))
         self.assertIsNone(value["wake_at"])
 
+    def test_expired_weekly_plan_moves_to_the_next_time_like_the_app(self):
+        """看板沒有執行時每週排程不會換輪：查詢時照看板的規則算下一次（只在記憶體，不寫檔）。"""
+        sysfs.thinkpad(self.root, online=1, status="Not charging", capacity=80)
+        plan = make_plan(Weekly(frozenset({1, 2, 3, 4, 5}), 8 * 60), NOW - 8 * 3600, 100, 80, 80,
+                         READINESS_FIRST, NOW - 86400)
+        self.write_plan(plan)
+        data = self.plan_path.read_bytes()
+        value = self.status()
+        self.assertEqual((value["deadline"], value["plan"]["deadline"]),
+                         ("2027-01-18T08:00:00+08:00", "2027-01-18T08:00:00+08:00"))
+        self.assertEqual(value["phase"], "waiting")
+        self.assertEqual(self.plan_path.read_bytes(), data)
+
     def test_plan_without_a_battery_is_unsupported(self):
         self.write_plan(make_plan(Once(NOW + 3600), NOW + 3600, 100, 80, 90, READINESS_FIRST,
                                   NOW))
