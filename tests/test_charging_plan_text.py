@@ -7,6 +7,7 @@ from sdm.core import alert_messages as messages
 from sdm.core.charging_plan import (CHARGING, LATE, PRECISE_WAKE, READINESS_FIRST, READY,
                                     STARTING, SYSTEM_PAUSED, UNPLUGGED, UNSUPPORTED, WAITING,
                                     Decision, Once, Weekly, forecast, make_plan)
+from sdm.services.charge_control import ChargeState
 from sdm.services.unattended_control import UnattendedState
 from sdm.services.wake_control import (FAILED, MISSING, NOT_GRANTED, OFF, SCHEDULED, WakeState)
 from sdm.ui import charging_plan_text as text
@@ -70,6 +71,32 @@ class Summary(unittest.TestCase):
         self.assertEqual(text.plan_summary(weekly, NOW, TAIPEI),
                          "每週一、二、三、四、五 08:00 前充到 90%（原本的上限）・等待時維持 80%")
         self.assertEqual(text.cancel_label(PLAN), "取消排程並還原為 90%")
+
+
+class Fitted(unittest.TestCase):
+    """驅動不接受要求的上限時說明實際的值；都接受或不限制時不顯示。"""
+
+    def test_hold_rounded_down_is_explained(self):
+        self.assertEqual(text.fitted_note(100, 85, (80, 100)),
+                         "驅動只支援 80% 與 100%，保養上限實際為 80%")
+
+    def test_target_rounded_up_is_explained(self):
+        self.assertEqual(text.fitted_note(90, 80, (60, 80, 100)),
+                         "驅動只支援 60%、80% 與 100%，提高時的上限實際為 100%")
+        self.assertEqual(text.fitted_note(90, 85, (60, 80, 100)),
+                         "驅動只支援 60%、80% 與 100%，保養上限實際為 80%、提高時的上限實際為 100%")
+
+    def test_current_plan_uses_the_slider_options(self):
+        plan = make_plan(Once(NOW + 3600), NOW + 3600, 100, 85, 90, READINESS_FIRST, NOW)
+        self.assertEqual(text.plan_fitted_note(plan, ChargeState(options=(80, 100))),
+                         "驅動只支援 80% 與 100%，保養上限實際為 80%")
+        self.assertEqual(text.plan_fitted_note(None, ChargeState(options=(80, 100))), "")
+        self.assertEqual(text.plan_fitted_note(plan, None), "")
+
+    def test_nothing_to_explain(self):
+        self.assertEqual(text.fitted_note(100, 80, (80, 85, 90, 95, 100)), "")
+        self.assertEqual(text.fitted_note(77, 77, ()), "")
+        self.assertEqual(text.fitted_note(100, 100, (80, 100)), "")
 
 
 class Forecasts(unittest.TestCase):

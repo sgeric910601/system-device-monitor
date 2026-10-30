@@ -16,6 +16,7 @@ from tests.test_charging_plan import TAIPEI, data, date
 
 DEADLINE = date("2026-10-14 08:00")
 EVENING = date("2026-10-13 21:00")
+CHOICES = (60, 80, 100)                 # 只接受這幾個上限的驅動
 
 
 class Base(unittest.TestCase):
@@ -262,14 +263,62 @@ class Notifications(Base):
 
 class Options(Base):
     def test_hold_is_fitted_to_the_values_the_battery_accepts(self):
-        """驅動只接受 60、80、100：等待時的 85% 改用 100%（不低於電量），還原值照原本的寫。"""
-        choices = (60, 80, 100)
-        self.controller = self.make(fit=lambda value: next(
-            (choice for choice in choices if choice >= value), choices[-1]))
+        """驅動只接受 60、80、100：等待時的 85%（不低於電量）改用 100%，還原值照原本的寫。"""
         self.start(current=67)
-        self.assertEqual(self.evaluate(EVENING, 83, limit=67), 100)
+        self.assertEqual(self.evaluate(EVENING, 83, limit=67, options=CHOICES), 100)
         self.finished(100)
-        self.assertEqual(self.controller.cancel(data(EVENING + 10, 83, limit=100)), 67)
+        self.assertEqual(self.controller.cancel(data(EVENING + 10, 83, limit=100,
+                                                     options=CHOICES)), 67)
+
+    def test_raising_to_a_fitted_target_counts_as_raising(self):
+        """目標 90%，驅動只接受 60、80、100：提高到 100% 也算提高（寬限時間與「已準備好」通知）。"""
+        self.start(target=90, hold=80)
+        self.assertIsNone(self.evaluate(EVENING, 70, limit=80, options=CHOICES))
+        start = date("2026-10-14 07:00")
+        self.assertEqual(self.evaluate(start, 70, limit=80, options=CHOICES), 100)
+        self.finished(100, now=start)
+        self.assertEqual((self.controller.plan.raised_for, self.controller.plan.raised_at),
+                         (DEADLINE, start))
+        self.evaluate(start + 13, 75, limit=100, estimate=20, paused=True, options=CHOICES)
+        self.assertEqual(self.phase, STARTING)
+        self.evaluate(start + 150, 75, limit=100, estimate=20, paused=True, options=CHOICES)
+        self.assertEqual(self.phase, SYSTEM_PAUSED)
+        self.evaluate(start + 1800, 90, limit=100, options=CHOICES)
+        self.assertEqual(self.phase, READY)
+        self.assertEqual(self.controller.take_notification(), NOTE_READY)
+
+    def test_holding_at_the_fitted_hold_is_not_a_raise(self):
+        self.start(target=100, hold=85)
+        self.assertEqual(self.evaluate(EVENING, 70, limit=100, options=(80, 100)), 80)
+        self.finished(80)
+        self.assertIsNone(self.controller.plan.raised_for)
+
+    def test_will_sleep_raises_to_the_fitted_target(self):
+        self.start(target=90, hold=80)
+        self.assertIsNone(self.evaluate(EVENING, 70, limit=80, options=CHOICES))
+        self.assertEqual(self.evaluate(EVENING + 60, 70, event=WILL_SLEEP, limit=80,
+                                       options=CHOICES), 100)
+        self.assertIn("即將睡眠，先把上限提高到 100%", self.lines[-2])
+
+    def test_shrinking_options_refit_the_hold_and_are_logged(self):
+        self.start(target=100, hold=85, current=85)
+        self.assertIsNone(self.evaluate(EVENING, 70, limit=85, options=(80, 85, 90, 95, 100)))
+        self.lines.clear()
+        self.assertEqual(self.evaluate(EVENING + 60, 70, limit=85, options=(80, 100)), 80)
+        self.assertIn("驅動接受的上限：80% 與 100%；目標的上限實際 100%、保養上限實際 80%",
+                      self.lines)
+        self.lines.clear()
+        self.evaluate(EVENING + 120, 70, limit=85, options=(80, 100))
+        self.assertFalse(any("驅動接受" in line for line in self.lines))
+
+    def test_fitted_values_are_logged_once_for_a_new_plan(self):
+        self.start(target=90, hold=80)
+        self.evaluate(EVENING, 70, limit=80, options=CHOICES)
+        self.assertEqual(sum("驅動接受的上限" in line for line in self.lines), 1)
+        self.start(target=100, hold=80)
+        self.lines.clear()
+        self.evaluate(EVENING + 60, 70, limit=80, options=CHOICES)
+        self.assertFalse(any("驅動接受" in line for line in self.lines))
 
     def test_unsupported_battery_only_reports(self):
         self.start()

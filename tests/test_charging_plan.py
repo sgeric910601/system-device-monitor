@@ -31,10 +31,10 @@ def date(text):
 
 
 def data(now, percent, connected=True, limit=80, estimate=None, charging=False, paused=False,
-         supported=True):
+         supported=True, options=()):
     return PlanInput(now=now, percent=percent, connected=connected, limit_supported=supported,
                      current_limit=limit, estimated_minutes=estimate, charging=charging,
-                     paused=paused)
+                     paused=paused, options=options)
 
 
 def plan_until(deadline, strategy=READINESS_FIRST, target=100, hold=80, restore=80,
@@ -136,6 +136,61 @@ class HoldLimit(unittest.TestCase):
         original = replace(plan, target=95)
         self.assertEqual(engine.hold_limit(original, 93), 95)
         self.assertEqual(engine.hold_limit(original, 98), 95)
+
+
+class FittedLimits(unittest.TestCase):
+    """驅動只接受部分上限時：目標向上取（一定充得到）、保養上限向下取（不高於使用者的要求），
+    等待時不低於目前電量的部分也向上取；沒有選項（不限制）時照原值。"""
+    OPTIONS = (60, 80, 100)
+
+    def setUp(self):
+        self.deadline = date("2026-10-14 08:00")
+
+    def test_fit_limit_rounds_in_the_asked_direction(self):
+        values = (55, 60, 61, 90, 100)
+        self.assertEqual([engine.fit_limit(value, self.OPTIONS, True) for value in values],
+                         [60, 60, 80, 100, 100])
+        self.assertEqual([engine.fit_limit(value, self.OPTIONS, False) for value in values],
+                         [60, 60, 60, 80, 100])
+        self.assertEqual(engine.fit_limit(77, (), True), 77)
+        self.assertEqual(engine.fit_limit(77, (), False), 77)
+
+    def test_target_goes_up_and_hold_goes_down(self):
+        plan = plan_until(self.deadline, target=90, hold=85)
+        self.assertEqual((engine.target_limit(plan, self.OPTIONS),
+                          engine.hold_value(plan, self.OPTIONS)), (100, 80))
+        self.assertEqual((engine.target_limit(plan, ()), engine.hold_value(plan, ())), (90, 85))
+        # 沒有更低的選項時只能用最小的；仍不會高於目標的上限
+        low = plan_until(self.deadline, target=70, hold=55)
+        self.assertEqual((engine.target_limit(low, (80, 100)), engine.hold_value(low, (80, 100))),
+                         (80, 80))
+
+    def test_waiting_limit_uses_the_fitted_values(self):
+        plan = plan_until(self.deadline, target=90, hold=85)
+        self.assertEqual([engine.hold_limit(plan, value, self.OPTIONS) for value in (50, 70, 83)],
+                         [80, 80, 100])
+        decision = engine.evaluate(plan, data(date("2026-10-13 23:00"), 70,
+                                              options=self.OPTIONS))
+        self.assertEqual((decision.phase, decision.desired_limit, decision.target),
+                         (WAITING, 80, 90))
+
+    def test_phases_compare_with_the_fitted_target(self):
+        """目標 90%、驅動只接受 60、80、100：上限 100% 而且沒在充才是系統暫停。"""
+        plan = replace(plan_until(self.deadline, target=90, hold=80), started_for=self.deadline)
+        now = date("2026-10-14 07:00")
+        paused = engine.evaluate(plan, data(now, 85, limit=100, estimate=20, paused=True,
+                                            options=self.OPTIONS))
+        self.assertEqual((paused.phase, paused.desired_limit), (SYSTEM_PAUSED, 100))
+        charging = engine.evaluate(plan, data(now, 85, limit=100, estimate=20, charging=True,
+                                              options=self.OPTIONS))
+        self.assertEqual((charging.phase, charging.desired_limit), (CHARGING, 100))
+        ready = engine.evaluate(plan, data(now, 90, limit=100, options=self.OPTIONS))
+        self.assertEqual((ready.phase, ready.desired_limit), (READY, 100))
+
+    def test_options_text(self):
+        self.assertEqual(engine.options_text((80, 100)), "80% 與 100%")
+        self.assertEqual(engine.options_text((60, 80, 100)), "60%、80% 與 100%")
+        self.assertEqual(engine.options_text((100,)), "100%")
 
 
 class EnginePhases(unittest.TestCase):

@@ -13,8 +13,9 @@
 - 提高上限後 2 分鐘內還沒開始充電仍是「準備充電」，不算系統暫停。
 - 「已準備好」與「可能趕不上」每一輪（完成時間）只通知一次，重開程式也不重複；
   這一輪沒有提高過上限（建立時就已經達到目標）不通知「已準備好」。
-fit(值) 把等待與目標的上限換成驅動接受的值（例如只接受 60、80、100 的機型）；
-還原原本的上限不經過 fit。
+驅動只接受部分上限（PlanInput.options，例如只接受 60、80、100 的機型）時，目標的上限向上取、
+保養上限向下取，提高與否、寬限時間與通知都用取過的值判斷；選項改變（寫入被拒絕後縮減）或新排程
+的值要取過時寫進紀錄。還原原本的上限不取（接受 50–100 的任何值）。
 """
 from dataclasses import replace
 from datetime import datetime
@@ -48,14 +49,15 @@ def new_id():
 class PlanController:
     """只在主執行緒使用；store 為 PlanStore，log(文字) 寫入紀錄檔。"""
 
-    def __init__(self, store, tz=None, log=lambda message: None, fit=lambda value: value,
-                 make_id=new_id):
-        self.store, self.tz, self.log, self.fit, self.make_id = store, tz, log, fit, make_id
+    def __init__(self, store, tz=None, log=lambda message: None, make_id=new_id):
+        self.store, self.tz, self.log, self.make_id = store, tz, log, make_id
         self.plan = store.load()
         self.decision = None
         self.write_error = None
         self.pending = None             # 正在寫入的上限
+        self.pending_raise = False      # 這次寫入是把上限提高到目標
         self.retry_at = None            # 寫入失敗後，這個時間之前不再重試
+        self.options = None             # 上次判斷時驅動接受的上限（None：還沒判斷過這個排程）
 
     @property
     def active(self):
@@ -86,6 +88,7 @@ class PlanController:
         value = make_plan(schedule, deadline, target, hold, restore, strategy, now,
                           self.make_id())
         self.reset(value)
+        self.options = None
         self.log(f"建立排程：{self.describe(value)}，原本上限 {value.restore}%")
         return True
 
@@ -117,6 +120,7 @@ class PlanController:
         if not data.limit_supported:
             self.decision = engine.evaluate(self.plan, data)
             return None
+        self.note_options(self.plan, data.options)
         if self.plan.restoring:
             return self.restore(self.plan, data)
         if self.overridden(self.plan, data, event):
@@ -133,9 +137,19 @@ class PlanController:
         # 睡著就沒辦法準時提高上限：除非已經排好喚醒，否則睡眠前直接提高到目標，在睡眠中充
         if event == WILL_SLEEP and result.phase == WAITING \
                 and (self.plan.strategy == READINESS_FIRST or not wake_ready):
-            desired = self.plan.target
+            desired = engine.target_limit(self.plan, data.options)
             self.log(f"即將睡眠，先把上限提高到 {desired}%")
         return None if desired is None else self.request(desired, data)
+
+    def note_options(self, plan, options):
+        """驅動接受的上限改變，或新排程的值要取過時，記下實際使用的上限。"""
+        if options == self.options:
+            return
+        changed, self.options = self.options is not None, options
+        top, hold = engine.target_limit(plan, options), engine.hold_value(plan, options)
+        if changed or top != plan.target or hold != plan.hold:
+            accepted = engine.options_text(options) if options else "不限制"
+            self.log(f"驅動接受的上限：{accepted}；目標的上限實際 {top}%、保養上限實際 {hold}%")
 
     def overridden(self, plan, data, event):
         """上限不是排程最後寫入的值：使用者改過（結束排程），或剛喚醒（以排程為準）。"""
@@ -193,13 +207,17 @@ class PlanController:
 
     # ── 寫入 ───────────────────────────────────────────────
 
-    def request(self, target, data):
-        value = target if self.plan.restoring else self.fit(target)
+    def request(self, value, data):
+        """要求寫入 value（判斷時已經取成驅動接受的值；還原時是原本的上限）。"""
         if value == data.current_limit or self.pending is not None:
             return None
         if self.retry_at is not None and data.now < self.retry_at:
             return None
+        plan = self.plan
         self.pending = value
+        self.pending_raise = not plan.restoring \
+            and value == engine.target_limit(plan, data.options) \
+            and value > engine.hold_value(plan, data.options)
         self.log(f"要求把上限從 {data.current_limit}% 改成 {value}%")
         return value
 
@@ -207,7 +225,7 @@ class PlanController:
         """寫入結束；success 是讀回的上限等於 target。"""
         if self.pending != target:
             return
-        self.pending = None
+        raised, self.pending, self.pending_raise = self.pending_raise, None, False
         shown = "無" if read_back is None else f"{read_back}%"
         self.log(f"寫入上限 {target}%：{'成功' if success else '失敗'}，讀回 {shown}")
         if not success:
@@ -223,7 +241,7 @@ class PlanController:
                 self.clear(f"已還原原本的上限 {target}%，排程結束")
             return
         changes = dict(applied=target)
-        if target == plan.target and target > plan.hold:
+        if raised:
             changes.update(raised_for=plan.deadline, raised_at=now)
         self.save(replace(plan, **changes))
 
@@ -260,6 +278,7 @@ class PlanController:
 
     def reset(self, plan):
         self.decision = self.pending = self.retry_at = self.write_error = None
+        self.pending_raise = False
         self.save(plan)
 
     def clear(self, reason):

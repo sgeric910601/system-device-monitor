@@ -145,7 +145,7 @@ class Host(wiring.ChargingPlanMixin):
         if self.preview:
             return super().make_plan_parts()
         store, log = PlanStore.in_memory(), MemoryLog(clock=lambda: self.wall)
-        controller = PlanController(store, log=log.write, fit=self.plan_fit)
+        controller = PlanController(store, log=log.write)
         return wiring.PlanParts(controller, log, self.fakes.wake, self.fakes.unattended,
                                 self.fakes.gate)
 
@@ -253,6 +253,14 @@ class Ticks(Base):
         self.start()
         self.assertEqual(self.controller.plan.restore, 85)
         self.assertEqual(self.controller.plan.target, 85)       # 目標 0＝原本的上限
+
+    def test_the_slider_options_are_what_the_plan_fits_to(self):
+        """驅動只接受 80% 與 100%：保養上限 85% 實際寫 80%（不高於要求）。"""
+        self.charge.state = ChargeState(supply="BAT0", limit=100, options=(80, 100),
+                                        protocol=True, demo=True)
+        self.host.preferences.charging_hold_percent = 85
+        self.start()
+        self.assertEqual(self.charge.writes[-1][:2], [80, False])
 
     def test_target_and_hold_come_from_the_preferences(self):
         self.host.preferences.charging_target_percent = 95

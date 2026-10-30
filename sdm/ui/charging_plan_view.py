@@ -1,6 +1,6 @@
 """電源頁充電上限滑桿下方的「智慧充電」那一列：狀態（等待開始・05:57 開始、充電中・預計 07:52
-到 100%、已準備好、可能趕不上：只能充到 88%、暫停（系統）…）、上次寫入的錯誤、精準喚醒改用
-準備優先的原因，以及開啟編輯視窗的「設定…」按鈕。桌機（沒有可調整的電池）不顯示。
+到 100%、已準備好、可能趕不上：只能充到 88%、暫停（系統）…）、上次寫入的錯誤、驅動不接受要求的
+上限時實際的值、精準喚醒改用準備優先的原因，以及開啟編輯視窗的「設定…」按鈕。桌機（沒有可調整的電池）不顯示。
 文字在 sdm.ui.charging_plan_text。
 """
 import gi
@@ -23,8 +23,9 @@ class ChargingPlanView(Gtk.Box):
         self.title = label(text.TITLE, "power-state")
         self.status = label("", "muted", True)
         self.note = label("", "power-warning", True)
+        self.fitted = label("", "muted", True)
         self.wake = label("", "muted", True)
-        for widget in (self.title, self.status, self.note, self.wake):
+        for widget in (self.title, self.status, self.note, self.fitted, self.wake):
             texts.pack_start(widget, False, False, 0)
         self.button = Gtk.Button(label=text.SETTINGS_BUTTON, valign=Gtk.Align.CENTER)
         self.button.set_tooltip_text("設定「幾點前充到幾 %」、保養上限與睡眠時的做法")
@@ -43,6 +44,9 @@ class ChargingPlanView(Gtk.Box):
         set_text(self.note, error)
         show_if(self.note, bool(error))
         plan = snapshot.plan
+        fitted = text.plan_fitted_note(plan, snapshot.charge)
+        set_text(self.fitted, fitted)
+        show_if(self.fitted, bool(fitted))
         wake = ""
         if plan is not None and plan.strategy == PRECISE_WAKE and snapshot.wake is not None \
                 and snapshot.wake.note in FALLBACK_NOTES:

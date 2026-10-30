@@ -38,8 +38,8 @@ def estimated_minutes(power, target, history_rate):
     return minutes
 
 
-def plan_input(power, current_limit, limit_supported, target, history_rate, now):
-    """判斷用的即時狀態；沒有筆電電量時為 None。"""
+def plan_input(power, current_limit, limit_supported, target, history_rate, now, options=()):
+    """判斷用的即時狀態；沒有筆電電量時為 None。options 是驅動接受的上限（滑桿的選項）。"""
     battery = getattr(power, "battery", None)
     if battery is None or battery.percent is None:
         return None
@@ -48,7 +48,8 @@ def plan_input(power, current_limit, limit_supported, target, history_rate, now)
                      limit_supported=limit_supported, current_limit=current_limit,
                      estimated_minutes=estimated_minutes(power, target, history_rate),
                      charging=state == CHARGING,
-                     paused=bool(battery.ac_online) and state in HOLDING)
+                     paused=bool(battery.ac_online) and state in HOLDING,
+                     options=tuple(options))
 
 
 def forecast_rate(power, history_rate):

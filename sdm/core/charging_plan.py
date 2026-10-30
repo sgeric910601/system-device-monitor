@@ -2,6 +2,8 @@
 
 使用者指定「幾點前充到幾 %」：平常把充電上限維持在保養上限，算好需要的時間再把上限提高到
 目標，讓系統自己充；結束後還原原本的上限。這裡只有排程與判斷，不讀寫系統。
+- 驅動只接受部分上限（PlanInput.options）時：目標的上限向上取（一定充得到）、保養上限向下取
+  （不高於使用者的要求），等待時不低於目前電量的部分向上取；判斷與比較一律用取過的值。
 - 時間一律是 Unix 時間（秒）；每週排程的星期用 ISO 編號（1＝星期一 … 7＝星期日），
   時區用 zoneinfo（tz 為 None 時用本機時區，含日光節約）。
 - 日光節約跳過的時刻改用下一個存在的時間（保留分鐘），重複的時刻用第一次
@@ -127,6 +129,7 @@ class PlanInput:
     estimated_minutes: Optional[int] = None
     charging: bool = False
     paused: bool = False        # 接著電源但沒在充（到達上限、韌體暫停等）
+    options: tuple = ()         # 驅動接受的上限（由小到大）；空的表示不限制
 
 
 @dataclass(frozen=True)
@@ -140,12 +143,45 @@ class Decision:
     required_minutes: int
 
 
-def hold_limit(plan, percent):
+def fit_limit(value, options, upward):
+    """驅動接受的值：upward 時取不低於 value 的最小選項，否則取不高於 value 的最大選項；
+    那個方向沒有選項時取最接近的一端。沒有選項（不限制）時照原值。"""
+    if not options or value in options:
+        return value
+    if upward:
+        higher = [option for option in options if option >= value]
+        return min(higher) if higher else max(options)
+    lower = [option for option in options if option <= value]
+    return max(lower) if lower else min(options)
+
+
+def fitted(target, hold, options=()):
+    """（提高時寫入的上限、實際的保養上限）：目標向上取，一定充得到；保養上限向下取
+    （不高於使用者的要求），也不高於目標的上限。"""
+    top = fit_limit(target, options, True)
+    return top, min(top, fit_limit(min(hold, target), options, False))
+
+
+def target_limit(plan, options=()):
+    return fitted(plan.target, plan.hold, options)[0]
+
+
+def hold_value(plan, options=()):
+    return fitted(plan.target, plan.hold, options)[1]
+
+
+def options_text(options):
+    """「80% 與 100%」「60%、80% 與 100%」。"""
+    values = [f"{value}%" for value in options]
+    return values[0] if len(values) == 1 else "、".join(values[:-1]) + " 與 " + values[-1]
+
+
+def hold_limit(plan, percent, options=()):
     """等待時的上限：保養上限，但不低於目前電量（進位到 5% 一格，不超過完成目標）。
     電量已高於保養上限時把上限降下去，電池會先放電再充回來，白白多一次充放電。"""
     step = Limits.HOLD_STEP
-    current = math.ceil(max(0, percent) / step) * step
-    return min(plan.target, max(plan.hold, current))
+    current = fit_limit(math.ceil(max(0, percent) / step) * step, options, True)
+    return min(target_limit(plan, options), max(hold_value(plan, options), current))
 
 
 def required_minutes(plan, data):
@@ -165,8 +201,9 @@ def required_minutes(plan, data):
 
 
 def evaluate(plan, data):
-    """依排程與即時狀態決定階段與要設定的上限。"""
+    """依排程與即時狀態決定階段與要設定的上限（驅動只接受部分上限時用取過的值）。"""
     needed = required_minutes(plan, data)
+    top = target_limit(plan, data.options)
     start = plan.deadline - (needed + Limits.BUFFER_MINUTES) * SECONDS_PER_MINUTE
     precise = plan.strategy == PRECISE_WAKE
     # 精準喚醒排在開始前一分鐘，醒來就提高上限：被叫醒的電腦可能很快又睡回去，等不到開始時間
@@ -183,19 +220,19 @@ def evaluate(plan, data):
     if not data.connected:
         return decide(UNPLUGGED, None)
     if data.percent >= plan.target:
-        return decide(READY, plan.target)
+        return decide(READY, top)
     if data.now >= plan.deadline:
-        return decide(LATE, plan.target)
+        return decide(LATE, top)
     if data.now < raise_at and plan.started_for != plan.deadline:
-        return decide(WAITING, hold_limit(plan, data.percent))
+        return decide(WAITING, hold_limit(plan, data.percent, data.options))
     if data.now + needed * SECONDS_PER_MINUTE > plan.deadline:
-        return decide(LATE, plan.target)
+        return decide(LATE, top)
     if data.charging:
-        return decide(CHARGING, plan.target)
+        return decide(CHARGING, top)
     # 剛提高上限時可能還沒開始充：上限還沒是目標就是「準備充電」，已經是目標卻沒在充才算系統暫停
-    if data.paused and data.current_limit == plan.target:
-        return decide(SYSTEM_PAUSED, plan.target)
-    return decide(STARTING, plan.target)
+    if data.paused and data.current_limit == top:
+        return decide(SYSTEM_PAUSED, top)
+    return decide(STARTING, top)
 
 
 @dataclass(frozen=True)

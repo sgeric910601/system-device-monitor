@@ -1,11 +1,12 @@
 """智慧充電的文字（不載入 GTK）：電源頁的狀態列、排程摘要、建立前的預估、睡眠策略、
-精準喚醒與「允許無人時自動調整」的說明。時間格式沿用參考專案 ChargingJourneyPresentation：
+驅動不接受要求的上限時的說明、精準喚醒與「允許無人時自動調整」的說明。時間格式沿用參考專案 ChargingJourneyPresentation：
 今天只寫時刻、明天寫「明天 05:57」、更晚寫「10/16 07:30」。"""
 from datetime import datetime
 
 from sdm.constants import SmartCharging, Wake
 from sdm.core.charging_plan import (CHARGING, LATE, PRECISE_WAKE, READINESS_FIRST, READY,
-                                    STARTING, SYSTEM_PAUSED, UNPLUGGED, UNSUPPORTED, WAITING)
+                                    STARTING, SYSTEM_PAUSED, UNPLUGGED, UNSUPPORTED, WAITING,
+                                    fitted, options_text)
 from sdm.services import wake_control
 
 TITLE = "智慧充電"
@@ -96,6 +97,25 @@ def plan_summary(plan, now, tz=None):
         return f"{when} 前充到 {plan.target}%（原本的上限）・等待時維持 {plan.hold}%"
     return (f"{when} 前充到 {plan.target}%・等待時維持 {plan.hold}%"
             f"・結束後還原為 {plan.restore}%")
+
+
+def fitted_note(target, hold, options):
+    """驅動不接受要求的上限時的說明（「驅動只支援 80% 與 100%，保養上限實際為 80%」）；
+    都接受或不限制時為空字串。"""
+    if not options:
+        return ""
+    top, kept = fitted(target, hold, options)
+    parts = [f"保養上限實際為 {kept}%" if kept != min(hold, target) else "",
+             f"提高時的上限實際為 {top}%" if top != target else ""]
+    parts = [part for part in parts if part]
+    return f"驅動只支援 {options_text(options)}，" + "、".join(parts) if parts else ""
+
+
+def plan_fitted_note(plan, charge):
+    """目前排程的說明；沒有排程或不知道驅動接受哪些值時為空字串。"""
+    if plan is None or charge is None:
+        return ""
+    return fitted_note(plan.target, plan.hold, charge.options)
 
 
 def cancel_label(plan):

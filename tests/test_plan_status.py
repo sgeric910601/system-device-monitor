@@ -70,6 +70,14 @@ class Status(Base):
         self.assertEqual(value["deadline"], "2027-01-16T04:00:00+08:00")
         self.assertEqual(value["desired_limit"], 80)
 
+    def test_limits_are_fitted_to_the_slider_options_like_the_app(self):
+        """目標是原本的上限 77%：提高時寫的是滑桿選項中不低於它的 80%，與看板相同。"""
+        sysfs.thinkpad(self.root, online=1, status="Not charging", capacity=60)
+        deadline = NOW + 1800
+        self.write_plan(make_plan(Once(deadline), deadline, 77, 77, 77, READINESS_FIRST, NOW))
+        value = self.status()
+        self.assertEqual((value["phase"], value["desired_limit"]), ("late", 80))
+
     def test_weekly_plan_without_a_wake(self):
         sysfs.thinkpad(self.root, online=1, status="Not charging", capacity=80)
         plan = make_plan(Weekly(frozenset({1, 2, 3, 4, 5}), 8 * 60), NOW + 3600, 100, 80, 80,

@@ -3,7 +3,8 @@
 讀取 XDG 資料目錄的 charging-plan.json、狀態目錄的 charging-plan.log 與電量歷史、
 /sys/class/power_supply 的電池與門檻，印出排程、目前的階段、下一次提高上限與喚醒的時間，
 以及紀錄檔最後 20 行。不寫任何檔案：排程檔損壞時只回報（看板下次開啟時才另存備份）。
-沒有即時的平均充電速度，所需時間以最近 7 天的歷史速度（沒有時每小時 20%）估算，可能與看板略有不同。
+沒有即時的平均充電速度，所需時間以最近 7 天的歷史速度（沒有時每小時 20%）估算，可能與看板略有不同；
+上限以滑桿的預設選項取值（與剛開啟的看板相同；驅動拒絕過某些值時看板會縮減選項）。
 """
 from datetime import datetime
 import math
@@ -14,7 +15,7 @@ from sdm import paths
 from sdm.constants import History, SmartCharging
 from sdm.core.battery import CHARGING, FULL, LIMIT_REACHED, PLUGGED_IDLE, combine
 from sdm.core.charging_plan import PRECISE_WAKE, PlanInput, charging_rate, evaluate
-from sdm.core.charge_limit import normalized
+from sdm.core.charge_limit import DEFAULT_OPTIONS, normalized
 from sdm.core.history import decode_history
 from sdm.core.plan_format import NewerFormat, Undecodable, decode_plan
 from sdm.data.charge_thresholds import find_battery
@@ -99,7 +100,8 @@ def plan_input(snapshot, limit, rate, target, now):
     state = snapshot.state
     return PlanInput(now, int(snapshot.percent), bool(snapshot.ac_online), limit is not None,
                      limit if limit is not None else SmartCharging.MAX_PERCENT, estimate,
-                     state == CHARGING, bool(snapshot.ac_online) and state in HOLDING)
+                     state == CHARGING, bool(snapshot.ac_online) and state in HOLDING,
+                     DEFAULT_OPTIONS)
 
 
 def decision_value(plan, data, tz=None):

@@ -116,8 +116,7 @@ class ChargingPlanMixin:
             wake, unattended = WakeControl(runner, changed), UnattendedControl(runner, changed)
             gate = None if self.smoke else SleepGate(self.plan_bus, self.plan_will_sleep,
                                                      self.plan_did_wake, self.plan_shutdown)
-        return PlanParts(PlanController(store, log=log.write, fit=self.plan_fit), log, wake,
-                         unattended, gate)
+        return PlanParts(PlanController(store, log=log.write), log, wake, unattended, gate)
 
     def make_plan_view(self):
         from sdm.ui.charging_plan_view import ChargingPlanView
@@ -177,7 +176,7 @@ class ChargingPlanMixin:
         state, plan, now = self.charge_control.state, self.plan_controller.plan, self.plan_clock()
         target = plan.target if plan is not None else SmartCharging.MAX_PERCENT
         return plan_inputs.plan_input(power, state.limit, state.supply is not None, target,
-                                      self.plan_history_rate(now), now)
+                                      self.plan_history_rate(now), now, state.options)
 
     def plan_history_rate(self, now):
         history = getattr(self, "history", None)
@@ -188,14 +187,6 @@ class ChargingPlanMixin:
                                             self.plan_clock())
         self.plan_after()
         finish()
-
-    def plan_fit(self, value):
-        """驅動接受的值：滑桿的選項中不低於 value 的最小值（沒有時用最大的選項）。"""
-        options = self.charge_control.state.options
-        if value in options:
-            return value
-        higher = [option for option in options if option >= value]
-        return min(higher) if higher else max(options)
 
     def plan_after(self):
         """判斷或寫入之後：睡眠延遲鎖、精準喚醒、通知與畫面。"""

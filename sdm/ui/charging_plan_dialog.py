@@ -1,10 +1,10 @@
 """智慧充電的編輯視窗（電源頁「智慧充電」的「設定…」開啟；第一次開啟時建立，關閉只是隱藏）。
 
-- 目前的排程：摘要、狀態、上次寫入的錯誤與「取消排程並還原為 N%」。
+- 目前的排程：摘要、狀態、驅動不接受要求的上限時實際的值、上次寫入的錯誤與「取消排程並還原為 N%」。
 - 新排程：單次（日期與時間）或每週（選星期＋時間），建立前的預估（「需要約 1 小時 48 分，
   會在 05:57 開始」或來不及時最多能充到幾 %），以及「開始」（排程進行中為「改成這個排程」）。
 - 目標、保養上限與睡眠策略寫入設定（設定的「充電」是同一份），之後建立的排程使用；
-  睡眠策略也套用到目前的排程。
+  睡眠策略也套用到目前的排程。驅動不接受選的值時說明實際的保養上限與提高時的上限。
 - 「允許無人時自動調整」：開關（每次都要管理員密碼）與授權範圍的說明。
 所有動作都經由 PlanActions（sdm.ui.charging_plan_wiring），這裡只負責排版。
 """
@@ -80,10 +80,12 @@ class ChargingPlanDialog:
 
     def current_card(self):
         self.summary, self.state = wrapped(""), wrapped("", "power-state")
+        self.current_fitted = wrapped("", "muted")
         self.error = wrapped("", "power-warning")
         self.cancel = Gtk.Button(label="", halign=Gtk.Align.START)
         self.cancel.connect("clicked", lambda *_: self.actions.cancel())
-        self.current = card("目前的排程", self.state, self.summary, self.error, self.cancel)
+        self.current = card("目前的排程", self.state, self.summary, self.current_fitted,
+                            self.error, self.cancel)
         return self.current
 
     def sync_current(self, snapshot):
@@ -96,6 +98,9 @@ class ChargingPlanDialog:
         set_text(self.state, line)
         set_text(self.summary, text.plan_summary(plan, snapshot.now) + "・睡眠時"
                  + text.STRATEGY_TITLES[plan.strategy])
+        fitted = text.plan_fitted_note(plan, snapshot.charge)
+        set_text(self.current_fitted, fitted)
+        show_if(self.current_fitted, bool(fitted))
         set_text(self.error, snapshot.write_error or "")
         show_if(self.error, bool(snapshot.write_error))
         self.cancel.set_label(text.cancel_label(plan))
@@ -186,6 +191,10 @@ class ChargingPlanDialog:
         line = problem or self.actions.forecast(deadline, target, hold)
         set_text(self.forecast, line)
         self.start.set_sensitive(not problem)
+        options = snapshot.charge.options if snapshot.charge is not None else ()
+        fitted = text.fitted_note(target, hold, options)
+        set_text(self.fitted, fitted)
+        show_if(self.fitted, bool(fitted))
 
     def start_plan(self):
         started = self.actions.start(self.chosen_schedule())
@@ -198,7 +207,8 @@ class ChargingPlanDialog:
         hold, _ = hold_row(self.controls, snapshot)
         strategy, sync_strategy = strategy_rows(self.controls)
         self.syncs += [sync_target, sync_strategy]
-        return card("目標與睡眠", target, hold, strategy,
+        self.fitted = wrapped("", "muted")
+        return card("目標與睡眠", target, hold, self.fitted, strategy,
                     wrapped("套用到之後建立的排程；睡眠策略也套用到目前的排程。", "muted"))
 
     # ── 顯示 ───────────────────────────────────────────────
