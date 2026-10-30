@@ -423,8 +423,9 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
 沒有人輸入而失敗。開啟「允許無人時自動調整」（編輯視窗或「設定 → 充電」，需要輸入一次管理員密碼）後：
 
 - 只限你自己的帳號，而且只在這台電腦登入、正在使用時（不是遠端、不是被切換到背景的工作階段）。
-- 只允許兩件事：把充電上限改成 50–100% 的值（含開關保留），以及設定或取消 60 秒後到 7 天內的
-  喚醒時間。CPU 功耗取樣、安裝更新等其他管理員動作仍然每次要密碼。
+- 只允許兩件事：把充電上限改成 50–100% 的值，以及設定或取消 60 秒後到 7 天內的喚醒時間；
+  命令必須與小程式接受的寫法完全相同。開關「開機與喚醒後保留」、CPU 功耗取樣、安裝更新等
+  其他管理員動作仍然每次要密碼。
 - 做法是在 /etc/polkit-1/rules.d/49-system-device-monitor.rules 寫入一個只給你的 polkit 規則
   （詳見 docs/SECURITY.md「無人授權」）。你的帳號底下的其他程式在你使用電腦時也能做這兩件事；
   不需要時請關閉。
@@ -432,6 +433,9 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
   `pkexec /usr/libexec/system-device-monitor/sdm-unattended revoke`
   （原始碼安裝換成 /usr/local/libexec/…）；移除套件或執行
   install.py --system-components remove 時也會刪除這個規則。
+- 刪除帳號前請先關閉：規則以帳號名稱比對，之後以同一個名稱建立的新帳號會沿用它。
+  `pkexec /usr/libexec/system-device-monitor/sdm-unattended status` 顯示
+  `"account_changed":true` 時就是這種情況，請執行上面的 revoke。
 
 ### 紀錄與查詢
 

@@ -288,14 +288,18 @@ jobs:
           as_rules grant | grep -q '"ok":true'
           test "$(sudo stat -c '%U %a' "$rule")" = "root 644"
           sudo grep -qF "var user = \"$(id -un)\";" "$rule"
+          sudo grep -qF "帳號 uid：$(id -u)" "$rule"
+          # 命令列以樣式完整比對（不能多 --persist 等參數）
           for text in 'subject.local !== true' 'subject.active !== true' \
                       'action.lookup("program") !== program' 'action.lookup("user") !== "root"' \
+                      'pattern.test(line)' '(5[0-9]|[6-9][0-9]|100)$/]' \
                       '"tw.local.system-device-monitor.unattended.charge-limit"' \
                       '"tw.local.system-device-monitor.unattended.wake-clear"'; do
             sudo grep -qF "$text" "$rule"
           done
-          if sudo grep -qE '=>|\blet |\bconst |startsWith|indexOf|cpu-power|\.update"' "$rule"; then exit 1; fi
+          if sudo grep -qE '=>|\blet |\bconst |startsWith|indexOf|slice\(|cpu-power|\.update"' "$rule"; then exit 1; fi
           as_rules status | grep -q '"granted":true'
+          as_rules status | grep -q '"account_changed":false'
           if systemctl is-active --quiet polkit; then
             sleep 3
             if sudo journalctl -u polkit --since "-2min" --no-pager | grep -i "49-system-device-monitor" | grep -qi error; then exit 1; fi

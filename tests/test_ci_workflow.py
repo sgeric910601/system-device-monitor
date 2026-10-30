@@ -136,7 +136,9 @@ class SmartCharging(unittest.TestCase):
 
     def test_rule_is_granted_checked_and_revoked(self):
         for text in ("as_rules grant", "test \"$(sudo stat -c '%U %a' \"$rule\")\" = \"root 644\"",
-                     "'subject.active !== true'", "journalctl -u polkit",
+                     "'subject.active !== true'", "'pattern.test(line)'",
+                     'sudo grep -qF "帳號 uid：$(id -u)" "$rule"', "'(5[0-9]|[6-9][0-9]|100)$/]'",
+                     '"account_changed":false', "journalctl -u polkit",
                      "pkcheck --action-id tw.local.system-device-monitor.unattended.status",
                      "as_rules revoke", 'sudo test ! -e "$rule"'):
             self.assertIn(text, WORKFLOW)

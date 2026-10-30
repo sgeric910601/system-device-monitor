@@ -250,10 +250,11 @@
 - grant：帳號名稱必須符合 `^[a-z_][a-z0-9_-]{0,31}$`，而且以名稱查回的 uid 必須就是 PKEXEC_UID
   （不符時 unsupported-user）。依固定的範本寫入 /etc/polkit-1/rules.d/49-system-device-monitor.rules
   （root 0644，O_EXCL 暫存檔＋fsync＋改名）：範本只代入這個帳號名稱（不可能含引號、反斜線或換行），
-  其他內容一律固定。/etc、polkit-1、rules.d 必須已存在，逐層以 O_NOFOLLOW 開啟並確認屬於 root、
+  以及註解裡記錄的 uid（只有數字，只用來在 status 比對），其他內容一律固定。/etc、polkit-1、rules.d 必須已存在，逐層以 O_NOFOLLOW 開啟並確認屬於 root、
   群組與其他人不可寫（Ubuntu 的 rules.d 是 root:polkitd 0750）；既有的同名項目不是一般檔案時拒絕。
   同一時間只有一個帳號：另一個帳號（也要管理員密碼）grant 時取代。
-- revoke 只刪除那一個檔案（一般檔案或符號連結，不跟隨）；status 與範本逐字比對，被改過時回報 modified。
+- revoke 只刪除那一個檔案（一般檔案或符號連結，不跟隨）；status 與範本逐字比對，被改過時回報 modified；
+  帳號名稱現在對應的 uid 與註解裡記錄的不同時（帳號刪除後以同一個名稱重建）回報 account_changed。
 - 規則的內容（ES5，polkitd 124 以 duktape 執行）：
   - `subject.user !== user || subject.local !== true || subject.active !== true` 時不做任何決定
     （回到預設：需要密碼）；遠端、非作用中、其他帳號一律如此。
@@ -262,9 +263,15 @@
     tw.local.system-device-monitor.unattended.wake、…unattended.wake-clear，以及原始碼安裝的
     …unattended.local.charge-limit、…unattended.local.wake、…unattended.local.wake-clear。
   - 對這些動作再確認 pkexec 傳來的細節：`action.lookup("program")` 必須是對應小程式的完整路徑、
-    `action.lookup("user")` 必須是 root、`action.lookup("command_line")` 必須以「路徑 set 」開頭
-    （clear 則必須完全等於「路徑 clear」）。全部相符才回傳 polkit.Result.YES，其他情況不回傳任何值
-    （不是 NO，所以仍可依預設輸入密碼）。
+    `action.lookup("user")` 必須是 root、`action.lookup("command_line")` 必須完全符合固定的樣式
+    （ES5 正規表示式，從 ^ 到 $，沒有 m、g、i 旗標）：
+    - 充電上限：`^路徑 set [A-Za-z0-9_]{1,32} (5[0-9]|[6-9][0-9]|100)$`，電池名稱與上限的寫法和
+      sdm-charge-limit 本身的參數檢查完全相同（測試逐字比對兩邊）。
+    - 喚醒：`^路徑 set [1-9][0-9]{0,11}$`（與 sdm-wake 的時間格式相同），或剛好 `^路徑 clear$`。
+    - 多一個參數（例如 `--persist on`、`--persist off`）、多一個空白、尾端空白、換行、前導 0、
+      超出範圍的值都不符合。所以「開機與喚醒後保留」的開關一律要密碼，免密碼只能改這次的上限。
+
+    全部相符才回傳 polkit.Result.YES，其他情況不回傳任何值（不是 NO，所以仍可依預設輸入密碼）。
   - 兩個 unattended.status 動作（…unattended.status、…unattended.local.status）沒有任何對應的程式，
     預設一律拒絕；規則生效時才允許，看板以一般權限的 pkcheck 查詢它，知道目前是否已授權
     （規則檔所在的目錄只有 root 與 polkitd 能讀）。
@@ -274,16 +281,27 @@
   喚醒的 set 與 clear 各有一個動作；pkexec 依路徑找動作，第一個參數不符時改用一般的
   org.freedesktop.policykit.exec（每次都要密碼）。所以充電上限與喚醒的 status 不在免密碼的範圍。
   pkexec 也確實把 command_line（完整路徑＋以空白連接的參數）放進動作細節，但 pkexec 的說明文件提醒
-  它不能單獨當成安全檢查（參數以空白連接，界線不明確）；這裡主要靠 argv1 與完整的動作 ID，
-  command_line 只是多一層：就算有人把「set BAT0 80」包成一個參數，小程式的參數檢查也會以結束碼 2 拒絕。
+  它不能單獨當成安全檢查（參數以空白連接，界線不明確）；這裡先靠 argv1 與完整的動作 ID，再以樣式
+  完整比對 command_line 限制參數的個數與寫法。同一行可能來自不同的參數切分（例如把「BAT0 80」包成
+  一個參數），但小程式只接受各自獨立的參數，其他切分一律以結束碼 2 拒絕，不會做任何事。
 - 為什麼規則不能被放寬：規則檔由 root 依固定範本產生，看板與一般使用者都無法改寫（rules.d 只有 root
   能寫）；範本只有帳號名稱一個變數而且經過格式與 uid 的雙重確認；免密碼只對上面列出的完整動作 ID，
   每個動作又綁定固定的程式路徑與第一個參數，CPU 功耗取樣、安裝更新與規則開關本身都不在其中。
   免密碼也不放寬小程式的任何檢查：參數驗證、一次只執行一個與 10 秒的寫入間隔都照常生效，充電上限
   只能寫 50–100% 並開關保留（不接受起點），喚醒只能設定 60 秒後到 7 天內、不覆寫別人的鬧鐘。
 - 移除套件（prerm remove，與 postrm purge 再確認一次）或原始碼安裝的 remove 都會刪除這個規則檔。
-- 剩下的風險：已允許時，你的帳號底下任何沒有被沙箱隔離的程式，在你登入而且正在使用電腦時，都能
-  免密碼把充電上限改成 50–100% 之間的值或設定 7 天內的喚醒時間（不能做別的事）。不需要時請關閉。
+- 剩下的風險：
+  - 已允許時，你的帳號底下任何沒有被沙箱隔離的程式，在你登入而且正在使用電腦時，都能免密碼把
+    充電上限改成 50–100% 之間的值或設定、取消 7 天內的喚醒時間（不能做別的事，也不能改保留的設定）。
+    不需要時請關閉。
+  - 「本機、作用中」由 polkitd 判斷：程式不屬於任何 logind 工作階段時（例如 systemd --user 服務，
+    或從 SSH 以 systemd-run --user 啟動的程式），polkitd 124 以 sd_uid_get_display 找出同一個帳號
+    目前的圖形工作階段，改用它的「本機、作用中」。所以你在電腦前使用時，能以你的帳號登入 SSH 的人
+    也能透過使用者服務做上面兩件事；SSH 工作階段本身是遠端，直接執行時仍需要密碼。
+  - 規則以帳號名稱比對（polkit 只提供名稱，沒有 uid）：帳號刪除後若以同一個名稱建立新帳號（不同
+    uid），新帳號會沿用這條規則。刪除帳號前請先關閉；sdm-unattended status 在名稱對應的 uid 與規則
+    記錄的不同時回報 `"account_changed":true`，這時請執行 revoke（看板只能以 pkcheck 查詢是否生效，
+    讀不到規則檔，所以只會顯示「已允許」）。
 
 ## 原始碼安裝（install.py --system-components）
 

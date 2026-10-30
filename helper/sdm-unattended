@@ -7,12 +7,14 @@
 - 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己與每一層上層目錄都屬於 root
   且群組與其他人不可寫。一次只執行一個（/run/system-device-monitor/unattended.lock，root 0600）。
 - grant：帳號名稱必須符合 ^[a-z_][a-z0-9_-]{0,31}$，而且以名稱查回的 uid 必須就是 PKEXEC_UID；
-  依固定的範本（只代入帳號名稱）寫入 /etc/polkit-1/rules.d/49-system-device-monitor.rules
+  依固定的範本（只代入帳號名稱，以及註解裡的 uid）寫入 /etc/polkit-1/rules.d/49-system-device-monitor.rules
   （root 0644，暫存檔 O_EXCL＋fsync＋改名）；/etc、polkit-1、rules.d 必須已存在，逐層確認屬於 root
   且群組與其他人不可寫，不跟隨符號連結；既有的同名項目不是一般檔案時拒絕。
-- revoke：只刪除那一個檔案（一般檔案或符號連結，不跟隨）。status：讀那個檔案，與範本比對。
+- revoke：只刪除那一個檔案（一般檔案或符號連結，不跟隨）。status：讀那個檔案，與範本比對；
+  帳號名稱現在對應的 uid 與註解裡的不同時（刪除後以同名重建）回報 account_changed。
 - 規則只對開啟它的帳號、本機作用中的工作階段，讓充電上限的 set 與喚醒的 set、clear 免密碼
-  （動作 ID 完整比對，再確認 pkexec 傳來的程式路徑、目標帳號 root 與命令列）；其他一律不做決定。
+  （動作 ID 完整比對，再確認 pkexec 傳來的程式路徑、目標帳號 root，命令列以樣式完整比對，
+  寫法與小程式本身接受的相同，不能多任何參數）；其他一律不做決定。
 - 不執行任何外部程式；標準輸出只有一行 JSON；結束碼 0、2、3、4；系統日誌只記錄動作與結果，
   不記錄帳號。只使用標準函式庫。
 """
@@ -60,41 +62,52 @@ DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 LOG_IDENT = "sdm-unattended"
 USER_MARK = "@USER@"
+UID_MARK = "@UID@"
+UID_COMMENT = "// 開啟這條規則的帳號 uid："
 USER_LINE = re.compile(r'    var user = "([a-z_][a-z0-9_-]{0,31})";\n')
-# 規則範本：只代入帳號名稱（已驗證，不含引號、反斜線或換行）。polkitd 以 duktape 執行，只用 ES5。
-RULE_TEMPLATE = """\
-// 系統與裝置監看：允許無人時自動調整（由 sdm-unattended grant 建立；revoke 或移除套件時刪除）。
+UID_LINE = re.compile("^" + re.escape(UID_COMMENT) + r"([1-9][0-9]{0,9})$", re.MULTILINE)
+# 規則範本：只代入帳號名稱（已驗證，不含引號、反斜線或換行）與 uid（數字）。
+# polkitd 以 duktape 執行，只用 ES5；命令列的樣式與 sdm-charge-limit、sdm-wake 的參數檢查相同。
+RULE_TEMPLATE = r"""// 系統與裝置監看：允許無人時自動調整（由 sdm-unattended grant 建立；revoke 或移除套件時刪除）。
 // 只讓下面這個帳號在本機、作用中的工作階段，不輸入密碼執行充電上限小程式的 set，
 // 以及定時喚醒小程式的 set 與 clear；兩個 status 動作只用來查詢這條規則是否生效，沒有任何作用。
+// 命令列必須與小程式接受的寫法完全相同，不能多任何參數（例如開機保留的設定一律要密碼）。
 // 其他帳號、遠端或非作用中的工作階段、其他動作或參數一律不做決定，回到預設（需要管理員密碼）。
 // 請勿修改：這個檔案依固定的範本產生，修改後看板會顯示規則已被修改。
+// 開啟這條規則的帳號 uid：@UID@
 polkit.addRule(function (action, subject) {
     var user = "@USER@";
     var allowed = [
         ["tw.local.system-device-monitor.unattended.charge-limit",
-         "/usr/libexec/system-device-monitor/sdm-charge-limit", "set"],
+         "/usr/libexec/system-device-monitor/sdm-charge-limit",
+         /^\/usr\/libexec\/system-device-monitor\/sdm-charge-limit set [A-Za-z0-9_]{1,32} (5[0-9]|[6-9][0-9]|100)$/],
         ["tw.local.system-device-monitor.unattended.local.charge-limit",
-         "/usr/local/libexec/system-device-monitor/sdm-charge-limit", "set"],
+         "/usr/local/libexec/system-device-monitor/sdm-charge-limit",
+         /^\/usr\/local\/libexec\/system-device-monitor\/sdm-charge-limit set [A-Za-z0-9_]{1,32} (5[0-9]|[6-9][0-9]|100)$/],
         ["tw.local.system-device-monitor.unattended.wake",
-         "/usr/libexec/system-device-monitor/sdm-wake", "set"],
+         "/usr/libexec/system-device-monitor/sdm-wake",
+         /^\/usr\/libexec\/system-device-monitor\/sdm-wake set [1-9][0-9]{0,11}$/],
         ["tw.local.system-device-monitor.unattended.wake-clear",
-         "/usr/libexec/system-device-monitor/sdm-wake", "clear"],
+         "/usr/libexec/system-device-monitor/sdm-wake",
+         /^\/usr\/libexec\/system-device-monitor\/sdm-wake clear$/],
         ["tw.local.system-device-monitor.unattended.local.wake",
-         "/usr/local/libexec/system-device-monitor/sdm-wake", "set"],
+         "/usr/local/libexec/system-device-monitor/sdm-wake",
+         /^\/usr\/local\/libexec\/system-device-monitor\/sdm-wake set [1-9][0-9]{0,11}$/],
         ["tw.local.system-device-monitor.unattended.local.wake-clear",
-         "/usr/local/libexec/system-device-monitor/sdm-wake", "clear"],
-        ["tw.local.system-device-monitor.unattended.status", "", ""],
-        ["tw.local.system-device-monitor.unattended.local.status", "", ""]
+         "/usr/local/libexec/system-device-monitor/sdm-wake",
+         /^\/usr\/local\/libexec\/system-device-monitor\/sdm-wake clear$/],
+        ["tw.local.system-device-monitor.unattended.status", "", null],
+        ["tw.local.system-device-monitor.unattended.local.status", "", null]
     ];
     if (subject.user !== user || subject.local !== true || subject.active !== true) {
         return undefined;
     }
     for (var i = 0; i < allowed.length; i++) {
-        var id = allowed[i][0], program = allowed[i][1], command = allowed[i][2];
+        var id = allowed[i][0], program = allowed[i][1], pattern = allowed[i][2];
         if (action.id !== id) {
             continue;
         }
-        if (program === "") {
+        if (pattern === null) {
             return polkit.Result.YES;
         }
         var line = action.lookup("command_line");
@@ -102,12 +115,7 @@ polkit.addRule(function (action, subject) {
                 typeof line !== "string") {
             return undefined;
         }
-        var prefix = program + " " + command;
-        if (command === "clear" ? line === prefix :
-                line.slice(0, prefix.length + 1) === prefix + " ") {
-            return polkit.Result.YES;
-        }
-        return undefined;
+        return pattern.test(line) ? polkit.Result.YES : undefined;
     }
     return undefined;
 });
@@ -319,11 +327,32 @@ def acquire_lock(context):
 
 # ── 規則 ───────────────────────────────────────────────────
 
-def render_rule(name):
-    """依固定的範本產生規則；名稱不符格式時拋出 Failed。"""
-    if not isinstance(name, str) or not USER_PATTERN.fullmatch(name):
+def render_rule(name, uid):
+    """依固定的範本產生規則；名稱或 uid 不符格式時拋出 Failed。"""
+    if not isinstance(name, str) or not USER_PATTERN.fullmatch(name) \
+            or type(uid) is not int or not 0 < uid <= MAX_UID:
         raise Failed("unsupported-user")
-    return RULE_TEMPLATE.replace(USER_MARK, name)
+    return RULE_TEMPLATE.replace(USER_MARK, name).replace(UID_MARK, str(uid))
+
+
+def rule_owner(text):
+    """規則檔與範本完全相同時回傳（帳號名稱、uid）；不同或不存在時為 None。"""
+    user, owner = USER_LINE.search(text or ""), UID_LINE.search(text or "")
+    if user is None or owner is None:
+        return None
+    try:
+        expected = render_rule(user.group(1), int(owner.group(1)))
+    except Failed:
+        return None
+    return (user.group(1), int(owner.group(1))) if text == expected else None
+
+
+def same_account(context, name, uid):
+    """這個名稱現在是否仍是開啟規則的帳號（刪除後以同名重建的帳號 uid 不同）。"""
+    try:
+        return context.user_uid(name) == uid
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def account_name(context, uid):
@@ -396,7 +425,7 @@ def read_rule(context, dir_fd):
 
 def grant(context, uid):
     name = account_name(context, uid)
-    text = render_rule(name)
+    text = render_rule(name, uid)
     try:
         fd = open_rules(context)
     except FileNotFoundError:
@@ -429,7 +458,7 @@ def revoke(context, _uid):
 
 
 def status(context, _uid):
-    """規則是否存在、給哪個帳號，以及內容是否與範本完全相同。"""
+    """規則是否存在、給哪個帳號、內容是否與範本完全相同，以及帳號是否已被同名的新帳號取代。"""
     try:
         fd = open_rules(context)
     except FileNotFoundError:
@@ -439,11 +468,11 @@ def status(context, _uid):
             text = read_rule(context, fd)
         finally:
             os.close(fd)
-    match = USER_LINE.search(text or "")
-    granted = match is not None and text == render_rule(match.group(1))
-    return {"ok": True, "action": "status", "granted": granted,
-            "user": match.group(1) if granted else None,
-            "modified": text is not None and not granted}
+    owner = rule_owner(text)
+    return {"ok": True, "action": "status", "granted": owner is not None,
+            "user": owner[0] if owner else None,
+            "modified": text is not None and owner is None,
+            "account_changed": owner is not None and not same_account(context, *owner)}
 
 
 ACTIONS = {"grant": grant, "revoke": revoke, "status": status}

@@ -16,6 +16,8 @@ from tests.fixtures.fakeroot import FakeRoot
 from tests.fixtures.helpers import ROOT, git_mode, load_helper
 
 helper = load_helper("sdm-unattended")
+limit_helper = load_helper("sdm-charge-limit")
+wake_helper = load_helper("sdm-wake")
 UID = 1000
 ENV = {"PKEXEC_UID": str(UID)}
 RULES = "etc/polkit-1/rules.d"
@@ -117,7 +119,7 @@ class Grant(Base):
         finally:
             os.umask(previous)
         self.assertEqual(self.output, [{"ok": True, "action": "grant", "user": "alice"}])
-        self.assertEqual(self.rule(), helper.render_rule("alice"))
+        self.assertEqual(self.rule(), helper.render_rule("alice", UID))
         path = self.root.path/RULE
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE((self.root.path/RULES).stat().st_mode), 0o750)
@@ -130,6 +132,7 @@ class Grant(Base):
         self.names[1001] = "bob"
         self.assertEqual(self.main(["grant"], env={"PKEXEC_UID": "1001"}), helper.EXIT_OK)
         self.assertIn('var user = "bob";', self.rule())
+        self.assertIn(helper.UID_COMMENT + "1001\n", self.rule())
         self.assertNotIn("alice", self.rule())
 
     def test_unsupported_user_names_are_refused(self):
@@ -205,15 +208,43 @@ class Status(Base):
     def test_status_reports_the_user_and_modifications(self):
         self.assertEqual(self.main(["status"]), helper.EXIT_OK)
         self.assertEqual(self.output[-1], {"ok": True, "action": "status", "granted": False,
-                                           "user": None, "modified": False})
+                                           "user": None, "modified": False,
+                                           "account_changed": False})
         self.main(["grant"])
         self.main(["status"])
         self.assertEqual(self.output[-1], {"ok": True, "action": "status", "granted": True,
-                                           "user": "alice", "modified": False})
-        (self.root.path/RULE).write_text(self.rule().replace("subject.active !== true", "false"))
-        self.main(["status"])
-        self.assertEqual(self.output[-1], {"ok": True, "action": "status", "granted": False,
-                                           "user": None, "modified": True})
+                                           "user": "alice", "modified": False,
+                                           "account_changed": False})
+        original = self.rule()
+        for edited in (original.replace("subject.active !== true", "false"),
+                       original.replace(" (5[0-9]|[6-9][0-9]|100)$/", " [0-9]+/"),
+                       original.replace(helper.UID_COMMENT + str(UID), helper.UID_COMMENT + "0"),
+                       original.replace(helper.UID_COMMENT + str(UID),
+                                        helper.UID_COMMENT + "99999999999"),
+                       original + "\n"):
+            with self.subTest(edited=edited[-40:]):
+                (self.root.path/RULE).write_text(edited)
+                self.main(["status"])
+                self.assertEqual(self.output[-1], {"ok": True, "action": "status",
+                                                   "granted": False, "user": None,
+                                                   "modified": True, "account_changed": False})
+
+    def test_status_notices_an_account_recreated_under_the_same_name(self):
+        """帳號刪除後以同一個名稱重建（不同 uid）會繼承規則；status 要提醒撤銷。"""
+        self.main(["grant"])
+        self.names = {1001: "alice"}             # alice 被刪除，之後同名的新帳號是 1001
+        self.assertEqual(self.main(["status"], env={"PKEXEC_UID": "1001"}), helper.EXIT_OK)
+        self.assertEqual(self.output[-1], {"ok": True, "action": "status", "granted": True,
+                                           "user": "alice", "modified": False,
+                                           "account_changed": True})
+        self.names = {1000: "alice"}
+        (self.root.path/RULE).write_text(helper.render_rule("alice", 1001))
+        self.main(["status"])                    # 註解裡的 uid 與帳號不符
+        self.assertTrue(self.output[-1]["granted"])
+        self.assertTrue(self.output[-1]["account_changed"])
+        self.names = {1001: "bob"}               # 名稱已不存在
+        self.main(["status"], env={"PKEXEC_UID": "1001"})
+        self.assertTrue(self.output[-1]["account_changed"])
 
     def test_lock_is_private_and_serializes_runs(self):
         self.main(["status"])
@@ -227,16 +258,27 @@ class Status(Base):
         self.assertFalse((self.root.path/RULE).exists())
 
 
+def js_pattern(path, words):
+    """規則中應有的 ES5 樣式字面值：完整比對「路徑 參數…」。"""
+    return "/^" + path.replace("/", "\\/") + " " + " ".join(words) + "$/"
+
+
 class Template(unittest.TestCase):
     def setUp(self):
-        self.text = helper.render_rule("alice")
+        self.text = helper.render_rule("alice", UID)
 
-    def test_only_the_user_name_is_substituted(self):
+    def test_only_the_user_name_and_uid_are_substituted(self):
         self.assertEqual(helper.RULE_TEMPLATE.count(helper.USER_MARK), 1)
-        self.assertEqual(self.text, helper.RULE_TEMPLATE.replace(helper.USER_MARK, "alice"))
+        self.assertEqual(helper.RULE_TEMPLATE.count(helper.UID_MARK), 1)
+        self.assertEqual(self.text, helper.RULE_TEMPLATE.replace(helper.USER_MARK, "alice")
+                         .replace(helper.UID_MARK, str(UID)))
         self.assertIn('var user = "alice";', self.text)
-        with self.assertRaises(helper.Failed):
-            helper.render_rule('alice"; polkit.addRule(function () { return "yes"; }); //')
+        self.assertIn("\n" + helper.UID_COMMENT + "1000\n", self.text)
+        for name, uid in (('alice"; polkit.addRule(function () { return "yes"; }); //', UID),
+                          ("alice", "1000\npolkit.addRule()"), ("alice", True), ("alice", 0),
+                          ("alice", -1), ("alice", helper.MAX_UID + 1), ("alice", 1000.0)):
+            with self.subTest(name=name, uid=uid), self.assertRaises(helper.Failed):
+                helper.render_rule(name, uid)
 
     def test_exact_action_ids_and_helper_paths(self):
         ids = re.findall(r'"(tw\.local\.[^"]+)"', self.text)
@@ -244,14 +286,32 @@ class Template(unittest.TestCase):
         paths = set(re.findall(r'"(/[^"]+)"', self.text))
         self.assertEqual(paths, {ChargeLimit.DEB_HELPER, ChargeLimit.LOCAL_HELPER,
                                  Wake.DEB_HELPER, Wake.LOCAL_HELPER})
-        for word in ("indexOf", "startsWith", "match(", "RegExp", "cpu-power", ".rules\"",
-                     "AUTH_", "NO;"):
+        for word in ("indexOf", "startsWith", "slice(", "match(", "RegExp", "cpu-power",
+                     ".rules\"", "AUTH_", "NO;", "/m", "/g", "/i"):
             self.assertNotIn(word, self.text)
+
+    def test_command_lines_match_exactly_what_the_helpers_accept(self):
+        """樣式完整比對整行；電池名稱、上限與時間的寫法與小程式本身的檢查完全相同。"""
+        supply = limit_helper.SUPPLY_PATTERN.pattern
+        end = "(" + limit_helper.END_PATTERN.pattern + ")"
+        epoch = wake_helper.EPOCH_PATTERN.pattern
+        expected = {
+            (ChargeLimit.ACTION_DEB, ChargeLimit.DEB_HELPER, ("set", supply, end)),
+            (ChargeLimit.ACTION_LOCAL, ChargeLimit.LOCAL_HELPER, ("set", supply, end)),
+            (Wake.ACTION_DEB, Wake.DEB_HELPER, ("set", epoch)),
+            (Wake.ACTION_LOCAL, Wake.LOCAL_HELPER, ("set", epoch)),
+            (Wake.ACTION_CLEAR_DEB, Wake.DEB_HELPER, ("clear",)),
+            (Wake.ACTION_CLEAR_LOCAL, Wake.LOCAL_HELPER, ("clear",))}
+        found = re.findall(r'\["([^"]+)",\s*"([^"]+)",\s*(/\^[^\n]+\$/)\]', self.text)
+        self.assertEqual(set(found), {(action, path, js_pattern(path, words))
+                                      for action, path, words in expected})
+        self.assertEqual(self.text.count("$/"), len(expected))
 
     def test_conditions_are_all_required(self):
         for condition in ("subject.user !== user", "subject.local !== true",
                           "subject.active !== true", 'action.lookup("program") !== program',
-                          'action.lookup("user") !== "root"'):
+                          'action.lookup("user") !== "root"', 'typeof line !== "string"',
+                          "pattern.test(line)"):
             self.assertIn(condition, self.text)
         self.assertEqual(self.text.count("polkit.Result.YES"), 2)
 
@@ -271,11 +331,11 @@ class Decisions(unittest.TestCase):
     """規則在 polkitd 的引擎中的實際判斷：只有完全符合時才是 yes，其他一律不做決定。"""
 
     def decide(self, *cases):
-        return duktape.decide(helper.render_rule("alice"), [list(case) for case in cases])
+        return duktape.decide(helper.render_rule("alice", UID), [list(case) for case in cases])
 
     def test_allowed_cases(self):
         local_set = {"program": ChargeLimit.LOCAL_HELPER, "user": "root",
-                     "command_line": ChargeLimit.LOCAL_HELPER + " set BAT0 80 --persist on"}
+                     "command_line": ChargeLimit.LOCAL_HELPER + " set BAT0 80"}
         wake_set = {"program": Wake.DEB_HELPER, "user": "root",
                     "command_line": Wake.DEB_HELPER + " set 1800000600"}
         local_clear = {"program": Wake.LOCAL_HELPER, "user": "root",
@@ -322,8 +382,42 @@ class Decisions(unittest.TestCase):
                                        for details in clears]), ["none"] * 3)
         self.assertEqual(self.decide((Wake.ACTION_DEB, WAKE_CLEAR, ACTIVE)), ["none"])
 
+    def test_every_value_the_helpers_accept_is_allowed(self):
+        limits = [dict(LIMIT_SET, command_line=f"{ChargeLimit.DEB_HELPER} set {supply} {end}")
+                  for supply in ("BAT0", "BAT1", "CMB0", "macsmc_battery", "A" * 32)
+                  for end in (50, 59, 60, 79, 80, 99, 100)]
+        wakes = [{"program": Wake.DEB_HELPER, "user": "root",
+                  "command_line": f"{Wake.DEB_HELPER} set {epoch}"}
+                 for epoch in (1, 9, 1800000600, 999999999999)]
+        self.assertEqual(self.decide(*[(ChargeLimit.ACTION_DEB, details, ACTIVE)
+                                       for details in limits]
+                                     + [(Wake.ACTION_DEB, details, ACTIVE) for details in wakes]),
+                         ["yes"] * (len(limits) + len(wakes)))
+
+    def test_extra_or_malformed_arguments_are_not_allowed(self):
+        """只多一個參數、空白或前導 0 都不允許（仍可輸入密碼）；--persist 只能由你本人決定。"""
+        limit = ChargeLimit.DEB_HELPER + " set "
+        limits = ("BAT0 50 --persist on", "BAT0 80 --persist off", "BAT0 80 ", "BAT0 80 extra",
+                  "BAT0 080", "BAT0 49", "BAT0 101", "BAT0 8", "BAT0 1000", "BAT0  80",
+                  " BAT0 80", "BAT0 80\n", "\nBAT0 80", "BAT0\t80", "A" * 33 + " 80",
+                  "BAT-0 80", "../x 80", "BAT0 80;", "BAT0 +80", "BAT0 80.0", "BAT0", "80",
+                  "BAT0 ８０")
+        cases = [(ChargeLimit.ACTION_DEB, dict(LIMIT_SET, command_line=limit + rest), ACTIVE)
+                 for rest in limits]
+        cases.append((ChargeLimit.ACTION_DEB, dict(LIMIT_SET, command_line=" " + limit + "BAT0 80"),
+                      ACTIVE))
+        wake = Wake.DEB_HELPER + " set "
+        wakes = ("01800000600", "0", "1234567890123", "1800000600 ", "1800000600 x", "-1",
+                 "1800000600\n", "", " 1800000600", "1e9", "0x6b49d200")
+        cases += [(Wake.ACTION_DEB, {"program": Wake.DEB_HELPER, "user": "root",
+                                     "command_line": wake + rest}, ACTIVE) for rest in wakes]
+        clears = ("clear ", "clear\n", " clear", "clear x", "clear --all", "CLEAR")
+        cases += [(Wake.ACTION_CLEAR_DEB, dict(WAKE_CLEAR, command_line=Wake.DEB_HELPER + " " + rest),
+                   ACTIVE) for rest in clears]
+        self.assertEqual(self.decide(*cases), ["none"] * len(cases))
+
     def test_rule_compiles_in_the_polkit_engine(self):
-        duktape.run(duktape.INIT + helper.render_rule("alice") + "\n1;")
+        duktape.run(duktape.INIT + helper.render_rule("alice", UID) + "\n1;")
 
 
 class Consistency(unittest.TestCase):
@@ -335,6 +429,7 @@ class Consistency(unittest.TestCase):
         self.assertEqual("/" + helper.RULES_DIR + "/" + helper.RULE_NAME, Unattended.RULE_FILE)
         self.assertEqual(helper.RULE_NAME, Unattended.RULE_NAME)
         self.assertEqual(helper.USER_PATTERN.pattern, Unattended.USER_PATTERN)
+        self.assertEqual(helper.MAX_UID, limit_helper.MAX_UID)
         self.assertEqual(helper.LOCK_NAME, Unattended.LOCK_NAME)
         self.assertEqual("/" + helper.RUN_DIR, ChargeLimit.RUN_DIR)
         self.assertEqual((helper.EXIT_OK, helper.EXIT_USAGE, helper.EXIT_FAILED,
