@@ -1,7 +1,7 @@
 """通知的內容（純邏輯，不載入 GTK）：標題、內文、圖示、緊急程度與點通知時開啟的頁面。
 
 用詞沿用參考專案 Notifier；圖示名稱取自系統圖示主題。
-隱私：內文只有百分比、瓦數、分鐘數與設備名稱；設備名稱先清理控制字元，
+隱私：內文只有百分比、瓦數、分鐘數、時刻與設備名稱；設備名稱先清理控制字元，
 再把像 MAC 或 IPv4 位址的部分換成 x，絕不放序號、位址或裝置路徑。
 """
 from dataclasses import dataclass
@@ -17,6 +17,8 @@ UPS_ON_BATTERY = "ups_on_battery"
 UPS_ON_MAINS = "ups_on_mains"
 UPS_LOW = "ups_low"
 UPS_COMM_LOST = "ups_comm_lost"
+CHARGING_READY = "charging_ready"       # 智慧充電：已在預定時間前充好
+CHARGING_LATE = "charging_late"         # 智慧充電：可能趕不上
 TEST = "test"
 
 POWER_PAGE = "power"
@@ -121,6 +123,19 @@ def ups_comm_lost():
     return Alert(UPS_COMM_LOST, "不斷電系統通訊中斷",
                  "讀不到不斷電系統的狀態，請檢查連接線與 apcupsd 服務。",
                  "dialog-warning-symbolic")
+
+
+def charging_ready(target):
+    return Alert(CHARGING_READY, f"智慧充電：已充到 {target}%",
+                 "已在預定時間前充好，可以拔掉電源。", "battery-full-charged-symbolic")
+
+
+def charging_late(target, reachable, deadline_text):
+    """reachable 為到時候最多能充到的百分比（不知道時為 None）。"""
+    body = (f"{deadline_text} 前可能只能充到約 {reachable}%（目標 {target}%），會繼續充電。"
+            if reachable is not None else
+            f"照目前的速度，{deadline_text} 前可能充不到 {target}%，會繼續充電。")
+    return Alert(CHARGING_LATE, "智慧充電可能趕不上", body, "battery-caution-charging-symbolic")
 
 
 def test_alert():
