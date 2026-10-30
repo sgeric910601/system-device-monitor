@@ -40,11 +40,15 @@ class Charge:
         self.writes, self.observed, self.reloads, self.cancelled = [], [], 0, 0
         self.user_commit, self.saved = None, None
 
-    def apply_automatically(self, target, done, exact=False):
-        self.writes.append([target, exact, done])
+    def apply_automatically(self, target, done, exact=False, urgent=False):
+        self.writes.append([target, exact, done, urgent])
+
+    def skip(self, index=-1):
+        """即將睡眠時來不及寫：回報沒有嘗試。"""
+        self.writes[index][2](None, self.state.limit)
 
     def finish(self, ok=True, index=-1):
-        target, _, done = self.writes[index]
+        target, _, done, _ = self.writes[index]
         if ok:
             self.state = ChargeState(supply="BAT0", limit=target, protocol=True, demo=True)
         done(ok, self.state.limit)
@@ -329,6 +333,25 @@ class SleepAndWake(Base):
         self.assertEqual(self.done, [])
         self.charge.finish()
         self.assertEqual(self.done, [True])
+
+    def test_sleep_write_is_urgent_and_a_skip_releases_at_once(self):
+        self.host.plan_will_sleep(lambda: self.done.append(True))
+        self.assertEqual(self.charge.writes[-1][::3], [100, True])
+        self.charge.skip()
+        self.assertEqual(self.done, [True])
+        self.assertIsNone(self.controller.write_error)
+        self.assertTrue(any("來不及" in line for line in self.host.plan_log.lines))
+
+    def test_routine_writes_are_not_urgent(self):
+        self.assertFalse(self.charge.writes[-1][3])
+
+    def test_released_before_writing_is_logged(self):
+        self.host.plan_will_sleep(lambda: None)
+        self.host.plan_sleep_timed_out("sleep")
+        self.host.plan_sleep_timed_out("shutdown")
+        lines = self.host.plan_log.lines
+        self.assertTrue(any("睡眠前 4 秒內沒有寫完" in line for line in lines))
+        self.assertTrue(any("關機前 4 秒內沒有取消完喚醒" in line for line in lines))
 
     def test_will_sleep_without_anything_to_write_releases_at_once(self):
         self.host.fakes.wake.ready_value = True

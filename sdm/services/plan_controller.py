@@ -125,8 +125,9 @@ class PlanController:
             self.decision = engine.evaluate(self.plan, data)
             return None
         self.note_options(self.plan, data.options)
-        if event == DID_WAKE:
+        if event == DID_WAKE:     # 睡前的失敗不必再等 1 分鐘；喚醒後的第一次改變可能是保留的服務
             self.resume_until = data.now + Limits.WAKE_RESTORE_SECONDS
+            self.retry_at = None
         if self.plan.restoring:
             return self.restore(self.plan, data)
         if self.overridden(self.plan, data, event):
@@ -251,6 +252,14 @@ class PlanController:
         if raised:
             changes.update(raised_for=plan.deadline, raised_at=now)
         self.save(replace(plan, **changes))
+
+    def write_skipped(self, target):
+        """即將睡眠時來不及寫（使用者正在調整、另一個寫入或 10 秒的間隔）：不算失敗、不等 1 分鐘，
+        喚醒後（或下一次判斷時）重新判斷。"""
+        if self.pending != target:
+            return
+        self.pending, self.pending_raise = None, False
+        self.log(f"即將睡眠，來不及把上限改成 {target}%，喚醒後再判斷")
 
     def take_notification(self):
         """這一輪該發的通知（NOTE_READY、NOTE_LATE 或 None），每一輪只發一次。"""

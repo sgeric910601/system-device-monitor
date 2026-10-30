@@ -15,6 +15,8 @@
 - 自動寫入（智慧充電）排在使用者的調整後面：使用者正在拖動、等待送出或正在寫入時
   每 0.1 秒確認一次，最多等 10 秒；不帶 --persist，不改變使用者保留的值與重新套用的單元。
   只接受滑桿的選項；還原使用者原本的上限時（exact）接受小程式的整個範圍 50–100。
+  即將睡眠時（urgent）只有幾秒：不排隊也不等，使用者正在調整、還有別的寫入，或距離上次執行
+  不到 10 秒（小程式會拒絕）時立刻以 done(None, 目前的上限) 回報沒有嘗試。
   使用者送出自己的值（放開滑桿或切換保留）時呼叫 user_commit(值)：智慧充電以使用者為準、
   結束排程，並以 cancel_automatic() 取消還在排隊的自動寫入。
 不需要授權就能知道的事（是否支援、目前的上限、是否保留）都以一般權限讀取，
@@ -293,15 +295,27 @@ class ChargeControl:
         for _, done, _ in queued:
             done(False, self.state.limit)
 
-    def apply_automatically(self, target, done, exact=False):
+    def apply_automatically(self, target, done, exact=False, urgent=False):
         """done(成功, 讀回的上限)；排在使用者的調整與其他自動寫入後面。
-        exact 時（還原原本的上限）接受 50–100 的任何整數，否則只接受滑桿的選項。"""
+        exact 時（還原原本的上限）接受 50–100 的任何整數，否則只接受滑桿的選項。
+        urgent 時不能立刻執行就以 done(None, 目前的上限) 回報沒有嘗試。"""
         if not self.state.ready or not allowed_target(target, self.state.options, exact):
             done(False, None)
+            return
+        if urgent and target != self.state.limit and not self.can_write_now():
+            done(None, self.state.limit)
             return
         polls = round(ChargeLimit.AUTOMATIC_WAIT / ChargeLimit.AUTOMATIC_POLL)
         self.queue.append([target, done, polls])
         self.next_automatic()
+
+    def can_write_now(self):
+        return not (self.user_active() or self.automatic or self.queue) and self.gap_left() <= 0
+
+    def gap_left(self):
+        """距離上次執行小程式還要等的秒數（同一顆電池兩次寫入至少相隔 10 秒）。"""
+        return 0 if self.last_run is None else \
+            self.last_run + ChargeLimit.MIN_WRITE_GAP - self.clock()
 
     def next_automatic(self):
         if self.stopped or self.automatic or not self.queue:
@@ -351,8 +365,7 @@ class ChargeControl:
         if persist is not None:
             argv += ["--persist", "on" if persist else "off"]
         self.update(busy=True, outcome="", message="")
-        wait = 0 if self.last_run is None else \
-            self.last_run + ChargeLimit.MIN_WRITE_GAP - self.clock()
+        wait = self.gap_left()
         if wait > 0:
             self.gap_timer = self.schedule(wait, lambda: self.run_helper(argv, target, finished))
         else:
@@ -458,7 +471,7 @@ class DemoChargeControl:
     def set_persist(self, wanted):
         self.update(persist=bool(wanted))
 
-    def apply_automatically(self, target, done, exact=False):
+    def apply_automatically(self, target, done, exact=False, urgent=False):
         self.update(limit=target)
         done(True, target)
 

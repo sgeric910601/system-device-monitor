@@ -5,6 +5,7 @@
   （Inhibit("sleep:shutdown", "系統與裝置監看", 說明, "delay")，回傳描述子，關閉即放開）；
   沒有排程時不拿，排程結束立即放開。呼叫一律非同步，不卡住主迴圈。
 - PrepareForSleep(true)：呼叫 will_sleep(done)；done() 或 4 秒後（logind 預設最多等 5 秒）放開。
+  時間到才放開（還沒寫完）時記一筆警告，並呼叫 timed_out("sleep" 或 "shutdown")。
   PrepareForSleep(false)（喚醒）：還有排程就重新拿，再呼叫 did_wake()。
 - PrepareForShutdown(true)：呼叫 shutdown(done)（取消精準喚醒的鬧鐘，避免關機後在那個時間
   自動開機），done() 或 4 秒後放開；取消關機（false）時重新拿。
@@ -43,8 +44,9 @@ class SleepGate:
     """只在主執行緒使用。will_sleep(done)、shutdown(done) 做完要呼叫 done()（可以晚一點）。"""
 
     def __init__(self, connection, will_sleep, did_wake, shutdown=None, schedule=glib_schedule,
-                 cancel=glib_cancel, clock=time.monotonic):
+                 cancel=glib_cancel, clock=time.monotonic, timed_out=None):
         self.connection, self.will_sleep, self.did_wake = connection, will_sleep, did_wake
+        self.timed_out = timed_out or (lambda kind: None)
         self.shutdown = shutdown or (lambda done: done())
         self.schedule, self.cancel, self.clock = schedule, cancel, clock
         self.fd, self.wanted, self.asking, self.retry_at = None, False, False, None
@@ -138,7 +140,9 @@ class SleepGate:
         starting = bool(parameters.unpack()[0])
         if starting:
             self.suspending = self.clock()
-            self.prepare(self.will_sleep if member == SIGNALS[0] else self.shutdown)
+            sleeping = member == SIGNALS[0]
+            self.prepare(self.will_sleep if sleeping else self.shutdown,
+                         "sleep" if sleeping else "shutdown")
             return
         self.suspending = None
         if self.wanted and self.fd is None and not self.asking:
@@ -147,7 +151,7 @@ class SleepGate:
         if member == SIGNALS[0]:
             self.did_wake()
 
-    def prepare(self, handler):
+    def prepare(self, handler, kind):
         """交給排程處理，做完或時間到就放開延遲鎖（每次只放開這一次拿到的鎖）。"""
         state = {"open": True}
 
@@ -160,7 +164,14 @@ class SleepGate:
                 self.release()
             return False
 
+        def expired():
+            self.timer = None
+            if state["open"]:
+                LOG.warning("Released the %s delay before smart charging finished", kind)
+                self.timed_out(kind)
+            return finish()
+
         if self.timer is not None:
             self.cancel(self.timer)
-        self.timer = self.schedule(Limits.SLEEP_RELEASE_SECONDS, finish)
+        self.timer = self.schedule(Limits.SLEEP_RELEASE_SECONDS, expired)
         handler(finish)

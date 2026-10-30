@@ -546,6 +546,30 @@ class Automatic(Base):
         self.save_state(supply="BAT1", end=85)
         self.assertIsNone(self.control.saved_limit())
 
+    def test_urgent_write_before_sleep_never_waits(self):
+        """即將睡眠：使用者正在調整或距離上次執行不到 10 秒（小程式會拒絕）時不排隊，
+        立刻以 None 回報沒有嘗試；可以寫時立刻寫。"""
+        self.control.drag(85)
+        self.control.apply_automatically(95, self.done, urgent=True)
+        self.assertEqual((self.results, self.runner.calls), ([(None, 80)], []))
+        self.timers.advance(0.6)
+        self.sysfs(85)
+        self.runner.finish(0, ok_output(85))
+        self.control.apply_automatically(95, self.done, urgent=True)
+        self.assertEqual(self.results[-1], (None, 85))
+        self.assertEqual(len(self.runner.writes()), 1)
+        self.control.apply_automatically(85, self.done, urgent=True)
+        self.assertEqual(self.results[-1], (True, 85))
+        self.timers.advance(ChargeLimit.MIN_WRITE_GAP)
+        self.control.apply_automatically(95, self.done, urgent=True)
+        self.assertEqual([argv[4] for argv in self.runner.writes()], ["85", "95"])
+
+    def test_urgent_write_does_not_jump_the_queue(self):
+        self.control.apply_automatically(90, self.done)
+        self.control.apply_automatically(95, self.done, urgent=True)
+        self.assertEqual(self.results, [(None, 80)])
+        self.assertEqual(len(self.runner.writes()), 1)
+
     def test_automatic_writes_do_not_count_as_user_changes(self):
         commits = []
         self.control.user_commit = commits.append

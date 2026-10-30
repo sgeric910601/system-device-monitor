@@ -115,7 +115,8 @@ class ChargingPlanMixin:
             runner = HelperRunner()
             wake, unattended = WakeControl(runner, changed), UnattendedControl(runner, changed)
             gate = None if self.smoke else SleepGate(self.plan_bus, self.plan_will_sleep,
-                                                     self.plan_did_wake, self.plan_shutdown)
+                                                     self.plan_did_wake, self.plan_shutdown,
+                                                     timed_out=self.plan_sleep_timed_out)
         return PlanParts(PlanController(store, log=log.write), log, wake, unattended, gate)
 
     def make_plan_view(self):
@@ -168,7 +169,7 @@ class ChargingPlanMixin:
         exact = controller.plan is not None and controller.plan.restoring
         self.charge_control.apply_automatically(
             target, lambda ok, read_back: self.plan_written(target, ok, read_back, finish),
-            exact=exact)
+            exact=exact, urgent=event == WILL_SLEEP)
 
     def plan_input(self):
         power = self.current_power()
@@ -183,8 +184,12 @@ class ChargingPlanMixin:
         return self.plan_rate.rate(lambda: history.samples if history is not None else (), now)
 
     def plan_written(self, target, ok, read_back, finish):
-        self.plan_controller.write_finished(target, bool(ok) and read_back == target, read_back,
-                                            self.plan_clock())
+        """ok 為 None：即將睡眠時來不及寫（沒有嘗試）。"""
+        if ok is None:
+            self.plan_controller.write_skipped(target)
+        else:
+            self.plan_controller.write_finished(target, bool(ok) and read_back == target,
+                                                read_back, self.plan_clock())
         self.plan_after()
         finish()
 
@@ -260,6 +265,12 @@ class ChargingPlanMixin:
 
     def plan_shutdown(self, done):
         self.plan_wake.clear_now(done)
+
+    def plan_sleep_timed_out(self, kind):
+        """延遲鎖是時間到才放開的（還沒做完）：記在紀錄檔，喚醒後再判斷。"""
+        if self.plan_controller.active:
+            self.plan_log.write("睡眠前 4 秒內沒有寫完，已讓系統先睡；喚醒後再判斷" if kind == "sleep"
+                                else "關機前 4 秒內沒有取消完喚醒，鬧鐘可能仍在")
 
     # ── 使用者的操作 ───────────────────────────────────────
 

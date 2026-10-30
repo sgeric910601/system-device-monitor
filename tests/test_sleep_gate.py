@@ -180,6 +180,30 @@ class Sleep(Base):
         self.pending.pop()()                    # 之後才完成也沒有影響
         self.assertEqual(self.timers.pending, {})
 
+    def test_release_by_the_timer_is_a_warning(self):
+        """時間到才放開（不是寫完）時記警告，並告訴排程是睡眠還是關機。"""
+        timed_out = []
+        self.gate.timed_out = timed_out.append
+        read = self.take()
+        self.connection.emit("PrepareForSleep", True)
+        with self.assertLogs("sdm.services.sleep_gate", "WARNING") as logs:
+            self.timers.advance(SmartCharging.SLEEP_RELEASE_SECONDS)
+        self.assertTrue(released(read))
+        self.assertEqual(timed_out, ["sleep"])
+        self.assertIn("before smart charging finished", logs.output[0])
+        self.pending.pop()()
+        self.assertEqual(timed_out, ["sleep"])
+
+    def test_release_after_finishing_is_not_a_warning(self):
+        timed_out = []
+        self.gate.timed_out = timed_out.append
+        self.take()
+        self.connection.emit("PrepareForShutdown", True)
+        with self.assertNoLogs("sdm.services.sleep_gate", "WARNING"):
+            self.pending.pop()()
+            self.timers.advance(SmartCharging.SLEEP_RELEASE_SECONDS)
+        self.assertEqual(timed_out, [])
+
     def test_taken_again_after_waking_up(self):
         self.take()
         self.connection.emit("PrepareForSleep", True)

@@ -238,6 +238,24 @@ class Sleep(Base):
         self.assertEqual(self.evaluate(now + 3700, 84, WILL_SLEEP, wake_ready=False, limit=85),
                          100)
 
+    def test_write_skipped_before_sleep_is_not_a_failure(self):
+        """即將睡眠時來不及寫（使用者正在調整或剛寫過）：不顯示錯誤、不等 1 分鐘，之後再判斷。"""
+        now = date("2026-10-13 23:00")
+        self.start(now=now)
+        self.assertEqual(self.evaluate(now, 80, WILL_SLEEP, limit=80), 100)
+        self.controller.write_skipped(100)
+        self.assertIsNone(self.controller.write_error)
+        self.assertIn("即將睡眠，來不及把上限改成 100%，喚醒後再判斷", self.lines)
+        self.assertEqual(self.evaluate(now + 5, 80, WILL_SLEEP, limit=80), 100)
+        self.controller.write_skipped(95)
+        self.assertIsNotNone(self.controller.pending)
+
+    def test_failure_before_sleep_does_not_delay_the_check_after_waking(self):
+        self.start(current=100)
+        self.assertEqual(self.evaluate(EVENING, 70, limit=100), 80)
+        self.finished(80, success=False)
+        self.assertEqual(self.evaluate(EVENING + 5, 70, DID_WAKE, limit=100), 80)
+
     def test_strategy_change_is_saved_and_logged(self):
         self.start()
         self.controller.set_strategy(PRECISE_WAKE)
