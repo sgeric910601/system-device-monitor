@@ -6,7 +6,7 @@ from datetime import datetime
 from sdm.constants import SmartCharging, Wake
 from sdm.core.charging_plan import (CHARGING, LATE, PRECISE_WAKE, READINESS_FIRST, READY,
                                     STARTING, SYSTEM_PAUSED, UNPLUGGED, UNSUPPORTED, WAITING,
-                                    fitted, options_text)
+                                    fit_limit, fitted, options_text)
 from sdm.services import wake_control
 
 TITLE = "智慧充電"
@@ -109,6 +109,14 @@ def fitted_note(target, hold, options):
              f"提高時的上限實際為 {top}%" if top != target else ""]
     parts = [part for part in parts if part]
     return f"驅動只支援 {options_text(options)}，" + "、".join(parts) if parts else ""
+
+
+def unsupported_hold(hold, options):
+    """設定裡的保養上限已不在選項中（驅動拒絕過、選項變少）時的提醒；支援或不限制時為空字串。"""
+    if not options or hold in options:
+        return ""
+    return (f"驅動只支援 {options_text(options)}，設定的保養上限 {hold}% "
+            f"會改用 {fit_limit(hold, options, False)}%")
 
 
 def plan_fitted_note(plan, charge):

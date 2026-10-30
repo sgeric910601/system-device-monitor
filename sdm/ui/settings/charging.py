@@ -76,7 +76,7 @@ def build(controls, context):
         return page
     snapshot = actions.snapshot()
     target, sync_target = target_row(controls, snapshot)
-    hold, _ = hold_row(controls, snapshot)
+    hold, sync_hold = hold_row(controls, snapshot)
     strategy, sync_strategy = strategy_rows(controls)
     defaults = card("智慧充電的預設", wrapped(text.HINT, "muted"), target, hold, strategy,
                     wrapped("套用到之後建立的排程；睡眠策略也套用到目前的排程。"
@@ -86,7 +86,7 @@ def build(controls, context):
     log, sync_log = log_card(actions, snapshot)
     for widget in (defaults, unattended, wake, log):
         page.pack_start(widget, False, False, 0)
-    syncs = (sync_target, sync_strategy, sync_unattended, sync_wake, sync_log)
+    syncs = (sync_target, sync_hold, sync_strategy, sync_unattended, sync_wake, sync_log)
 
     def refresh():
         current = actions.snapshot()

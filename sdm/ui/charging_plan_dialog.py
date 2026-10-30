@@ -4,7 +4,7 @@
 - 新排程：單次（日期與時間）或每週（選星期＋時間），建立前的預估（「需要約 1 小時 48 分，
   會在 05:57 開始」或來不及時最多能充到幾 %），以及「開始」（排程進行中為「改成這個排程」）。
 - 目標、保養上限與睡眠策略寫入設定（設定的「充電」是同一份），之後建立的排程使用；
-  睡眠策略也套用到目前的排程。驅動不接受選的值時說明實際的保養上限與提高時的上限。
+  睡眠策略也套用到目前的排程。驅動不接受選的值時，保養上限下方說明實際使用的值。
 - 「允許無人時自動調整」：開關（每次都要管理員密碼）與授權範圍的說明。
 所有動作都經由 PlanActions（sdm.ui.charging_plan_wiring），這裡只負責排版。
 """
@@ -191,10 +191,6 @@ class ChargingPlanDialog:
         line = problem or self.actions.forecast(deadline, target, hold)
         set_text(self.forecast, line)
         self.start.set_sensitive(not problem)
-        options = snapshot.charge.options if snapshot.charge is not None else ()
-        fitted = text.fitted_note(target, hold, options)
-        set_text(self.fitted, fitted)
-        show_if(self.fitted, bool(fitted))
 
     def start_plan(self):
         started = self.actions.start(self.chosen_schedule())
@@ -204,11 +200,10 @@ class ChargingPlanDialog:
 
     def options_card(self, snapshot):
         target, sync_target = target_row(self.controls, snapshot)
-        hold, _ = hold_row(self.controls, snapshot)
+        hold, sync_hold = hold_row(self.controls, snapshot)
         strategy, sync_strategy = strategy_rows(self.controls)
-        self.syncs += [sync_target, sync_strategy]
-        self.fitted = wrapped("", "muted")
-        return card("目標與睡眠", target, hold, self.fitted, strategy,
+        self.syncs += [sync_target, sync_hold, sync_strategy]
+        return card("目標與睡眠", target, hold, strategy,
                     wrapped("套用到之後建立的排程；睡眠策略也套用到目前的排程。", "muted"))
 
     # ── 顯示 ───────────────────────────────────────────────

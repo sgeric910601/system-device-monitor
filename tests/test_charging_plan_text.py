@@ -93,6 +93,13 @@ class Fitted(unittest.TestCase):
         self.assertEqual(text.plan_fitted_note(None, ChargeState(options=(80, 100))), "")
         self.assertEqual(text.plan_fitted_note(plan, None), "")
 
+    def test_stored_hold_the_driver_no_longer_accepts(self):
+        """選項變少後設定裡的保養上限不在選項中（選單是空的）：說明會改用哪個值。"""
+        self.assertEqual(text.unsupported_hold(85, (80, 100)),
+                         "驅動只支援 80% 與 100%，設定的保養上限 85% 會改用 80%")
+        self.assertEqual(text.unsupported_hold(80, (80, 100)), "")
+        self.assertEqual(text.unsupported_hold(85, ()), "")
+
     def test_nothing_to_explain(self):
         self.assertEqual(text.fitted_note(100, 80, (80, 85, 90, 95, 100)), "")
         self.assertEqual(text.fitted_note(77, 77, ()), "")

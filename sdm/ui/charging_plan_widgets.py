@@ -82,9 +82,30 @@ def target_row(controls, snapshot):
 
 
 def hold_row(controls, snapshot):
+    """保養上限；驅動不接受設定的值（只支援部分上限，或拒絕過、選項變少）時，下方說明實際使用的
+    保養上限與提高時的上限。"""
     options = [(value, f"{value}%") for value in percent_options(snapshot)]
-    row = controls.choice(HOLD, "保養上限（等待時維持；不會高於完成目標）", options)
-    return row, lambda current: None
+    container = box(spacing=4)
+    container.pack_start(controls.choice(HOLD, "保養上限（等待時維持；不會高於完成目標）",
+                                         options), False, False, 0)
+    note = wrapped("", "muted")
+    container.pack_start(note, False, False, 0)
+    state = {"snapshot": snapshot}
+
+    def refresh():
+        current, hold = state["snapshot"], controls.store.value(HOLD)
+        options = percent_options(current)
+        target = controls.store.value(TARGET) or current.original_limit
+        line = text.fitted_note(target, min(hold, target), options) \
+            or text.unsupported_hold(hold, options)
+        set_text(note, line)
+        show_if(note, bool(line))
+
+    def sync(current):
+        state["snapshot"] = current
+        refresh()
+    controls.bind({TARGET, HOLD}, refresh)
+    return container, sync
 
 
 def strategy_rows(controls):
