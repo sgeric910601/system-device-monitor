@@ -26,6 +26,11 @@ def set_text(widget, value):
 
 
 def show_if(widget, visible):
+    """顯示或隱藏，之後不受上層的 show_all() 影響。顯示時連同還沒顯示過的子元件一起顯示
+    （它們自己設為隱藏的仍然隱藏）。"""
+    if visible and not widget.get_visible():
+        widget.set_no_show_all(False)
+        widget.show_all()
     widget.set_no_show_all(True)
     widget.set_visible(visible)
 

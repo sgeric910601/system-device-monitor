@@ -94,7 +94,8 @@ class ChargingPlanDialog:
         line, _ = text.status_line(plan, snapshot.decision, snapshot.now, None,
                                    snapshot.reachable)
         set_text(self.state, line)
-        set_text(self.summary, text.plan_summary(plan, snapshot.now))
+        set_text(self.summary, text.plan_summary(plan, snapshot.now) + "・睡眠時"
+                 + text.STRATEGY_TITLES[plan.strategy])
         set_text(self.error, snapshot.write_error or "")
         show_if(self.error, bool(snapshot.write_error))
         self.cancel.set_label(text.cancel_label(plan))
@@ -115,8 +116,8 @@ class ChargingPlanDialog:
         self.hour, self.minute = spin(23), spin(59)
         self.hour.set_value(DEFAULT_HOUR)
         self.minute.set_value(DEFAULT_MINUTE)
-        clock = box(False, 6)
-        for widget in (label("完成時間"), self.date, self.hour, label("："), self.minute):
+        clock = box(False, 6)          # 「完成時間」放在上一行：480 px 寬的視窗也放得下這一列
+        for widget in (self.date, self.hour, label("："), self.minute):
             clock.pack_start(widget, False, False, 0)
         for widget in (self.hour, self.minute):
             widget.connect("value-changed", lambda *_: self.update_forecast())
@@ -124,7 +125,8 @@ class ChargingPlanDialog:
         self.start = Gtk.Button(label="開始", halign=Gtk.Align.START)
         self.start.get_style_context().add_class("suggested-action")
         self.start.connect("clicked", lambda *_: self.start_plan())
-        return card("新排程", kinds, self.days, clock, self.forecast, self.start, self.result)
+        return card("新排程", kinds, self.days, label("完成時間"), clock, self.forecast, self.start,
+                    self.result)
 
     def weekday_row(self):
         row = box(False, 4)
