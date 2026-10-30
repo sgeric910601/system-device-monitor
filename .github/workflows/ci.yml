@@ -209,6 +209,104 @@ jobs:
           fails input "$work/root/$name" "$sums" "$sig"
           sudo sh -c 'test ! -e /var/cache/system-device-monitor/staging || test -z "$(ls -A /var/cache/system-device-monitor/staging | grep -vx .lock)"'
           test "$(dpkg-query -W -f='${Version}' system-device-monitor)" = "$(cat VERSION)"
+      - name: Smart charging components
+        run: |
+          set -eu
+          wake=/usr/libexec/system-device-monitor/sdm-wake
+          rules=/usr/libexec/system-device-monitor/sdm-unattended
+          rule=/etc/polkit-1/rules.d/49-system-device-monitor.rules
+          actions=/usr/share/polkit-1/actions
+          expect() {
+            want=$1; shift
+            set +e; "$@"; got=$?; set -e
+            if [ "$got" != "$want" ]; then echo "expected exit $want, got $got: $*"; exit 1; fi
+          }
+          as_wake() { sudo env PKEXEC_UID="$(id -u)" "$wake" "$@"; }
+          as_rules() { sudo env PKEXEC_UID="$(id -u)" "$rules" "$@"; }
+          one_json() { /usr/bin/python3 -c 'import json,sys; lines=sys.stdin.read().splitlines(); assert len(lines)==1, lines; print(json.loads(lines[0]))'; }
+          for path in "$wake" "$rules"; do
+            test "$(stat -c '%U %a' "$path")" = "root 755"
+          done
+          for path in "$actions/tw.local.system-device-monitor.unattended.wake.policy" "$actions/tw.local.system-device-monitor.rules.policy"; do
+            test "$(stat -c '%U %a' "$path")" = "root 644"
+          done
+          check_action() {
+            pkaction --verbose --action-id "$1" | tee "/tmp/pkaction-$1.txt"
+            grep -Eq 'implicit any: *no$' "/tmp/pkaction-$1.txt"
+            grep -Eq 'implicit inactive: *no$' "/tmp/pkaction-$1.txt"
+            grep -Eq "implicit active: *$2\$" "/tmp/pkaction-$1.txt"
+          }
+          check_action tw.local.system-device-monitor.unattended.wake auth_admin_keep
+          check_action tw.local.system-device-monitor.unattended.wake-clear auth_admin_keep
+          check_action tw.local.system-device-monitor.unattended.charge-limit auth_admin_keep
+          check_action tw.local.system-device-monitor.rules auth_admin
+          check_action tw.local.system-device-monitor.unattended.status no
+          grep -q 'exec.argv1 -> set$' /tmp/pkaction-tw.local.system-device-monitor.unattended.wake.txt
+          grep -q 'exec.argv1 -> clear$' /tmp/pkaction-tw.local.system-device-monitor.unattended.wake-clear.txt
+          grep -q 'exec.argv1 -> set$' /tmp/pkaction-tw.local.system-device-monitor.unattended.charge-limit.txt
+          if grep -q 'exec.argv1' /tmp/pkaction-tw.local.system-device-monitor.rules.txt; then exit 1; fi
+          expect 0 "$wake" --protocol
+          expect 0 "$rules" --protocol
+          # 參數錯誤一律結束碼 2（$args 刻意不加引號，以空白分成多個參數）
+          for args in "set" "set 0" "set -1" "set 1e9" "set 01800000000" "set 1800000000.5" \
+                      "set 1800000000 extra" "set 9999999999999" "clear now" "status x" "bogus"; do
+            expect 2 as_wake $args
+          done
+          expect 2 as_wake set " 1800000000"
+          expect 2 sudo "$wake"
+          for args in "grant alice" "revoke x" "status x" "GRANT" "bogus"; do
+            expect 2 as_rules $args
+          done
+          expect 2 sudo "$rules"
+          expect 4 sudo "$wake" status
+          expect 4 "$wake" clear
+          expect 4 sudo "$rules" status
+          expect 4 "$rules" grant
+          as_wake status | one_json
+          # 太近的時間一律拒絕（執行器沒有 RTC 時則是 no-rtc），標準輸出剛好一行 JSON
+          set +e; out=$(as_wake set "$(( $(date +%s) + 30 ))"); got=$?; set -e
+          test "$got" = 3
+          printf '%s\n' "$out" | one_json
+          # 執行器（虛擬機）有可用的 RTC 時：真的排定、取消，再留一個給 prerm 取消（只在 CI 執行）
+          if [ -e /sys/class/rtc/rtc0/wakealarm ] && [ -z "$(cat /sys/class/rtc/rtc0/wakealarm)" ]; then
+            epoch=$(( $(date +%s) + 3600 ))
+            set +e; out=$(as_wake set "$epoch"); got=$?; set -e
+            echo "$out"
+            if [ "$got" = 0 ]; then
+              test "$(cat /sys/class/rtc/rtc0/wakealarm)" = "$epoch"
+              test "$(sudo stat -c '%U %a' /run/system-device-monitor/wake)" = "root 600"
+              sleep 11
+              as_wake clear | grep -q '"cleared":true'
+              test -z "$(cat /sys/class/rtc/rtc0/wakealarm)"
+              sleep 11
+              as_wake set "$epoch" | grep -q '"ok":true'
+              echo "$epoch" > "$RUNNER_TEMP/sdm-wake-left"
+            fi
+          fi
+          # 無人授權規則：產生、範本的條件、polkit 載入時沒有錯誤、撤銷只刪那一個檔案
+          as_rules status | grep -q '"granted":false'
+          as_rules grant | grep -q '"ok":true'
+          test "$(sudo stat -c '%U %a' "$rule")" = "root 644"
+          sudo grep -qF "var user = \"$(id -un)\";" "$rule"
+          for text in 'subject.local !== true' 'subject.active !== true' \
+                      'action.lookup("program") !== program' 'action.lookup("user") !== "root"' \
+                      '"tw.local.system-device-monitor.unattended.charge-limit"' \
+                      '"tw.local.system-device-monitor.unattended.wake-clear"'; do
+            sudo grep -qF "$text" "$rule"
+          done
+          if sudo grep -qE '=>|\blet |\bconst |startsWith|indexOf|cpu-power|\.update"' "$rule"; then exit 1; fi
+          as_rules status | grep -q '"granted":true'
+          if systemctl is-active --quiet polkit; then
+            sleep 3
+            if sudo journalctl -u polkit --since "-2min" --no-pager | grep -i "49-system-device-monitor" | grep -qi error; then exit 1; fi
+          fi
+          # 執行器不是本機作用中的工作階段：規則存在也不會允許（只看結束碼：1 是不允許，127 是沒有這個動作）
+          set +e; pkcheck --action-id tw.local.system-device-monitor.unattended.status --process $$; got=$?; set -e
+          test "$got" = 1
+          as_rules revoke | grep -q '"removed":true'
+          sudo test ! -e "$rule"
+          # 留下規則：移除套件時 prerm 必須刪除它
+          as_rules grant | grep -q '"ok":true'
       - name: Remove and purge
         run: |
           set -eu
@@ -216,6 +314,12 @@ jobs:
           test ! -e /var/lib/system-device-monitor/charge-limit.json
           test ! -e /run/system-device-monitor/charge-limit.lock
           test ! -e /run/system-device-monitor/charge-limit.times
+          test ! -e /run/system-device-monitor/wake
+          test ! -e /run/system-device-monitor/wake.lock
+          test ! -e /run/system-device-monitor/wake.times
+          test ! -e /run/system-device-monitor/unattended.lock
+          sudo test ! -e /etc/polkit-1/rules.d/49-system-device-monitor.rules
+          if [ -f "$RUNNER_TEMP/sdm-wake-left" ]; then test -z "$(cat /sys/class/rtc/rtc0/wakealarm)"; fi
           test ! -e /usr/bin/system-device-monitor
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.socket
           test ! -e /usr/lib/systemd/system/system-device-monitor-cpu-power.service
@@ -232,6 +336,8 @@ jobs:
           test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy
           test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy
           test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.charge-limit.policy
+          test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.unattended.wake.policy
+          test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.rules.policy
           test ! -e /usr/libexec/system-device-monitor
-          if ls /etc/polkit-1/rules.d 2>/dev/null | grep -q system-device-monitor; then exit 1; fi
+          if sudo ls /etc/polkit-1/rules.d | grep -q system-device-monitor; then exit 1; fi
           if dpkg-query -W system-device-monitor 2>/dev/null; then exit 1; fi

@@ -113,5 +113,44 @@ class ChargeLimit(unittest.TestCase):
                      "tw.local.system-device-monitor.unattended.charge-limit.policy"):
             self.assertIn(f"test ! -e {path}", WORKFLOW)
 
+
+class SmartCharging(unittest.TestCase):
+    """定時喚醒與無人授權的小程式、polkit 動作與規則：沒有電池（可能也沒有 RTC）的執行器上也要檢查。"""
+
+    def test_modes_and_polkit_defaults(self):
+        for text in ("wake=/usr/libexec/system-device-monitor/sdm-wake",
+                     "rules=/usr/libexec/system-device-monitor/sdm-unattended",
+                     "check_action tw.local.system-device-monitor.unattended.wake auth_admin_keep",
+                     "check_action tw.local.system-device-monitor.unattended.wake-clear "
+                     "auth_admin_keep",
+                     "check_action tw.local.system-device-monitor.rules auth_admin",
+                     "check_action tw.local.system-device-monitor.unattended.status no",
+                     "exec.argv1 -> set$", "exec.argv1 -> clear$"):
+            self.assertIn(text, WORKFLOW)
+
+    def test_bad_arguments_and_permissions(self):
+        for text in ("expect 2 as_wake $args", '"set 1e9"', '"set 01800000000"',
+                     "expect 2 as_rules $args", '"grant alice"', 'expect 4 sudo "$wake" status',
+                     'expect 4 "$rules" grant', 'expect 0 "$wake" --protocol'):
+            self.assertIn(text, WORKFLOW)
+
+    def test_rule_is_granted_checked_and_revoked(self):
+        for text in ("as_rules grant", "test \"$(sudo stat -c '%U %a' \"$rule\")\" = \"root 644\"",
+                     "'subject.active !== true'", "journalctl -u polkit",
+                     "pkcheck --action-id tw.local.system-device-monitor.unattended.status",
+                     "as_rules revoke", 'sudo test ! -e "$rule"'):
+            self.assertIn(text, WORKFLOW)
+
+    def test_removal_clears_the_alarm_and_the_rule(self):
+        for text in ("test ! -e /run/system-device-monitor/wake\n",
+                     "sudo test ! -e /etc/polkit-1/rules.d/49-system-device-monitor.rules",
+                     "sdm-wake-left",
+                     "test ! -e /usr/share/polkit-1/actions/"
+                     "tw.local.system-device-monitor.unattended.wake.policy",
+                     "test ! -e /usr/share/polkit-1/actions/tw.local.system-device-monitor.rules.policy",
+                     "sudo ls /etc/polkit-1/rules.d"):
+            self.assertIn(text, WORKFLOW)
+
+
 if __name__ == "__main__":
     unittest.main()
