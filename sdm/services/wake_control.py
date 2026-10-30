@@ -7,7 +7,8 @@ sdm-wake 小程式寫 RTC 喚醒鬧鐘（/sys/class/rtc/rtc0/wakealarm），經�
 - 喚醒時間只能在 60 秒後到 7 天內；與已排定的時間相差不到 1 秒視為同一個，相差 5 分鐘以上
   才重排；不需要時取消。失敗後 1 分鐘內不再試。
 - 小程式要求兩次 set 至少相隔 10 秒：距離上次 set 不到 10 秒時，先等滿再執行最新的要求；
-  取消（clear）不受限，立即執行。同一時間只執行一個。關機前（clear_now）不等失敗後的 1 分鐘。
+  取消（clear）不受限，立即執行。同一時間只執行一個。關機或撤銷授權前（clear_now）不等失敗後的
+  1 分鐘；正在設定鬧鐘時排在它後面，設定完再取消（不會留下鬧鐘）。
 - 已排定的鬧鐘以一般權限讀 wakealarm 確認還在；響過或被別人換掉就不算排好。
 所有方法都在主執行緒呼叫。
 """
@@ -93,6 +94,7 @@ class WakeControl:
         self.state, self.generation, self.stopped = WakeState(), 0, False
         self.target = (None, False, False)  # 最新的（喚醒時間、精準喚醒、已授權）
         self.last_set = self.retry_at = self.timer = None
+        self.waiting = []                   # 正在執行時收到的 clear_now，結束後再取消
 
     def update(self, **changes):
         state = replace(self.state, **changes)
@@ -198,12 +200,19 @@ class WakeControl:
             self.update(busy=False, scheduled=scheduled, note=FAILED, error=code)
         if done is not None:
             done()
-        else:
+        if self.waiting:
+            waiting, self.waiting = self.waiting, []
+            self.clear_now(lambda: [callback() for callback in waiting])
+        elif done is None:
             self.sync(*self.target)
 
     def clear_now(self, done):
-        """關機前：有排定的鬧鐘就立即取消（不等失敗後的 1 分鐘）；done() 在結束後呼叫。"""
-        if self.state.scheduled is None or self.state.busy or not self.state.component:
+        """關機或撤銷授權前：有排定的鬧鐘就立即取消（不等失敗後的 1 分鐘）；正在執行時排在它後面。
+        done() 在結束後呼叫。"""
+        if self.state.busy:
+            self.waiting.append(done)
+            return
+        if self.state.scheduled is None or not self.state.component:
             done()
             return
         self.run(["clear"], done, urgent=True)

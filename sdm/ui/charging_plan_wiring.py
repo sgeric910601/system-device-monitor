@@ -331,12 +331,13 @@ class ChargingPlanMixin:
         self.plan_tick()
 
     def set_unattended(self, wanted, done):
-        """開關「允許無人時自動調整」；關閉前先取消已排定的喚醒（仍免密碼時）。"""
+        """開關「允許無人時自動調整」；關閉前先取消已排定（或正在設定）的喚醒（仍免密碼時）。"""
         def finished(ok):
             self.plan_after()
             done(ok)
 
-        if not wanted and self.plan_wake.state.scheduled is not None:
+        wake = self.plan_wake.state
+        if not wanted and (wake.scheduled is not None or wake.busy):
             self.plan_wake.clear_now(lambda: self.plan_unattended.set_granted(False, finished))
             return
         self.plan_unattended.set_granted(wanted, finished)

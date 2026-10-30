@@ -423,6 +423,20 @@ class Snapshots(Base):
         self.host.set_unattended(True, results.append)
         self.assertEqual((self.host.fakes.unattended.requests, results), ([True], [True]))
 
+    def test_revoking_clears_the_app_alarm_first_even_while_it_is_being_set(self):
+        """關閉授權前先取消看板排定的鬧鐘（之後就要密碼了）；正在設定時也一樣，排在它後面。"""
+        for state in (WakeState(scheduled=int(NOW) + 3600), WakeState(busy=True)):
+            with self.subTest(state=state):
+                wake, unattended, results = self.host.fakes.wake, self.host.fakes.unattended, []
+                wake.state, wake.cleared, unattended.requests = state, [], []
+                self.host.set_unattended(False, results.append)
+                self.assertEqual((len(wake.cleared), unattended.requests), (1, []))
+                wake.cleared[0]()
+                self.assertEqual((unattended.requests, results), ([False], [True]))
+        self.host.fakes.wake.state, self.host.fakes.wake.cleared = WakeState(), []
+        self.host.set_unattended(False, lambda ok: None)
+        self.assertEqual(self.host.fakes.wake.cleared, [])
+
 
 class Unplugged(Base):
     def test_unplugged_phase_writes_nothing(self):

@@ -214,6 +214,28 @@ class Shutdown(Base):
         self.assertEqual(results, ["done", "cleared"])
 
 
+    def test_clear_waits_for_a_running_set(self):
+        """關機或撤銷授權時鬧鐘正在設定：等它設定完再取消，不會留下鬧鐘。"""
+        results = []
+        self.sync(NOW + 3600)
+        self.control.clear_now(lambda: results.append("cleared"))
+        self.assertEqual((results, self.runner.helper_calls()),
+                         ([], [["set", str(int(NOW) + 3600)]]))
+        self.scheduled(int(NOW) + 3600)
+        self.assertEqual(self.runner.helper_calls()[-1], ["clear"])
+        self.runner.finish(0, json.dumps({"ok": True, "action": "clear", "cleared": True}))
+        self.assertEqual(results, ["cleared"])
+        self.assertIsNone(self.state.scheduled)
+
+    def test_clear_after_a_failed_set_only_reports(self):
+        results = []
+        self.sync(NOW + 3600)
+        self.control.clear_now(lambda: results.append("done"))
+        self.runner.finish(3, '{"ok":false,"error":"alarm-in-use"}')
+        self.assertEqual(results, ["done"])
+        self.assertEqual(len(self.runner.helper_calls()), 1)
+
+
 class Demo(unittest.TestCase):
     def test_demo_only_remembers_the_time(self):
         demo = DemoWake(lambda: None, clock=lambda: NOW)
