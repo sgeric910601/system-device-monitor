@@ -170,6 +170,11 @@ class ChargeControl:
         layout = self.state.layout
         return None if layout is None else self.root/layout.state.lstrip("/")
 
+    def saved_limit(self):
+        """這顆電池「開機與喚醒後保留」的值（sdm.data.charge_thresholds.SavedLimit）；沒有時為 None。"""
+        saved = read_saved(self.state_path())
+        return saved if saved is not None and saved.supply == self.state.supply else None
+
     def reload(self):
         """以一般權限重新讀取門檻與保留狀態；寫入中或拖動中不改變上限。"""
         battery = find_battery(self.root)
@@ -454,6 +459,9 @@ class DemoChargeControl:
         done(True, target)
 
     def cancel_automatic(self):
+        return None
+
+    def saved_limit(self):
         return None
 
     def set_conflicts(self, conflicts):

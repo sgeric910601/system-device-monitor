@@ -531,6 +531,13 @@ class Automatic(Base):
         self.control.set_persist(True)
         self.assertEqual(commits, [80])
 
+    def test_saved_limit_of_this_battery(self):
+        self.assertIsNone(self.control.saved_limit())
+        self.save_state(end=85)
+        self.assertEqual(self.control.saved_limit().end, 85)
+        self.save_state(supply="BAT1", end=85)
+        self.assertIsNone(self.control.saved_limit())
+
     def test_automatic_writes_do_not_count_as_user_changes(self):
         commits = []
         self.control.user_commit = commits.append
