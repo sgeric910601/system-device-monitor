@@ -93,6 +93,15 @@ class Status(Base):
                                   NOW))
         self.assertEqual(self.status()["phase"], "unsupported")
 
+    def test_symlinked_plan_file_is_not_followed(self):
+        target = self.base/"elsewhere.json"
+        target.write_bytes(plan_format.encode_plan(make_plan(Once(NOW + 3600), NOW + 3600, 100,
+                                                             80, 90, READINESS_FIRST, NOW)))
+        self.plan_path.parent.mkdir(parents=True)
+        self.plan_path.symlink_to(target)
+        value = self.status()
+        self.assertEqual((value["plan"], value["plan_file"]), (None, "unreadable"))
+
     def test_corrupt_plan_is_reported_but_never_backed_up(self):
         self.plan_path.parent.mkdir(parents=True)
         self.plan_path.write_bytes(b"{broken")

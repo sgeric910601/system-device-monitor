@@ -21,7 +21,7 @@ from sdm.core.plan_format import NewerFormat, Undecodable, decode_plan
 from sdm.data.charge_thresholds import find_battery
 from sdm.data.power_supply import read_adapters, read_batteries
 from sdm.services.plan_controller import PHASE_TITLES, STRATEGY_TITLES
-from sdm.services.plan_store import PlanLog
+from sdm.services.plan_store import PlanLog, PlanStore
 
 HOLDING = (PLUGGED_IDLE, LIMIT_REACHED, FULL)
 MAX_HISTORY_BYTES = History.MAX_FILE_BYTES
@@ -44,8 +44,7 @@ def read_small(path, limit):
 def read_plan(path):
     """（排程或 None, 檔案狀態：ok／none／invalid／newer／unreadable）。"""
     try:
-        data = Path(path).read_bytes() if Path(path).stat().st_size <= \
-            SmartCharging.PLAN_MAX_BYTES else None
+        data = PlanStore(path).read()       # 不跟隨符號連結、只讀一般檔案、最多 64 KB
     except FileNotFoundError:
         return None, "none"
     except OSError:

@@ -4,16 +4,18 @@
 - 原子寫入（暫存檔＋fsync＋取代），檔案 0600；資料夾不存在時才建立並設為 0700。
 - 無法解讀時，先把原始位元組存成新的 charging-plan-<epoch>.json.bak（同名已存在就加 -1、-2…，
   絕不覆寫），原檔留到下次存檔才被取代；備份失敗、讀不到或來自較新版本時，這次執行不寫入。
-- 超過 64 KB 時不讀取，分段複製成備份後視為沒有排程。
+- 超過 64 KB 時不讀取，分段複製成備份後視為沒有排程。以 O_NOFOLLOW｜O_NONBLOCK 開啟並以 fstat
+  確認是一般檔案：符號連結或特殊檔案不讀，這次執行也不寫入（不取代它）；讀取時最多讀 64 KB＋1。
 紀錄檔（XDG 狀態目錄的 charging-plan.log）：每次判斷的狀態變化、寫入的上限與讀回結果、
 喚醒排程，每行一筆、開頭是本機時間；以 O_APPEND｜O_NOFOLLOW 附加，超過 256 KB 時只留後半
-（從完整的一行開始）。只寫百分比、時間與狀態，不寫電池名稱、序號或帳號。
+（從完整的一行開始）。修剪與最後幾行都只讀檔案結尾的 256 KB（檔案被寫得很大也一樣）。只寫百分比、時間與狀態，不寫電池名稱、序號或帳號。
 示範模式與模擬測試改用 in_memory／MemoryLog，不讀寫任何檔案。
 """
 from datetime import datetime
 import logging
 import os
 from pathlib import Path
+import stat
 import time
 
 from sdm import paths
@@ -26,6 +28,23 @@ LOG = logging.getLogger(__name__)
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 APPEND_FLAGS = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+
+
+class NotRegularFile(OSError):
+    """排程檔或紀錄檔不是一般檔案（FIFO、裝置、資料夾等）。"""
+
+
+def open_regular(path):
+    """以 O_NOFOLLOW｜O_NONBLOCK 開啟並確認是一般檔案；回傳（檔案物件、大小）。"""
+    handle = os.fdopen(os.open(path, READ_FLAGS), "rb")
+    try:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise NotRegularFile(path)
+    except BaseException:
+        handle.close()
+        raise
+    return handle, info.st_size
 
 
 def default_plan_path():
@@ -66,16 +85,25 @@ class PlanStore:
             return self.plan
         remove_stale_temporaries(self.path)
         try:
-            if self.path.stat().st_size > Limits.PLAN_MAX_BYTES:
-                self.recover(None)
-                return None
-            data = self.path.read_bytes()
+            data = self.read()
         except FileNotFoundError:
             return None
         except OSError as error:
             self.disable("Charging plan unreadable (%s)", type(error).__name__)
             return None
+        if data is None:
+            self.recover(None)
+            return None
         return self.decode(data)
+
+    def read(self):
+        """排程檔的內容；超過 64 KB（包括讀的時候變大）時為 None。"""
+        handle, size = open_regular(self.path)
+        with handle:
+            if size > Limits.PLAN_MAX_BYTES:
+                return None
+            data = handle.read(Limits.PLAN_MAX_BYTES + 1)
+        return None if len(data) > Limits.PLAN_MAX_BYTES else data
 
     def decode(self, data):
         try:
@@ -159,13 +187,14 @@ class PlanLog:
             self.warned = True
 
     def read(self):
-        """紀錄檔的內容（不跟隨符號連結）；不存在或讀不到時為 None。"""
+        """紀錄檔最後 256 KB（不跟隨符號連結、必須是一般檔案）；不存在或讀不到時為 None。"""
         try:
-            fd = os.open(self.path, READ_FLAGS)
+            handle, size = open_regular(self.path)
         except OSError:
             return None
-        with os.fdopen(fd, "rb") as handle:
-            return handle.read(2 * Limits.LOG_MAX_BYTES)
+        with handle:
+            handle.seek(max(0, size - Limits.LOG_MAX_BYTES))
+            return handle.read(Limits.LOG_MAX_BYTES)
 
     def trim(self):
         try:

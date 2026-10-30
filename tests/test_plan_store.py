@@ -11,6 +11,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+import unittest.mock
 
 from sdm.constants import SmartCharging
 from sdm.core import plan_format
@@ -176,6 +177,38 @@ class Store(Base):
             self.assertIsNone(self.store().load())
         self.assertIn(f"charging-plan-{int(NOW)}.json.bak", self.files())
 
+    def test_symlinked_or_special_plan_file_is_not_followed(self):
+        """排程檔是符號連結或 FIFO 時不讀（不跟隨、不卡住），這次執行也不寫入（不取代它）。"""
+        self.path.parent.mkdir(parents=True)
+        target = self.base/"elsewhere.json"
+        target.write_bytes(plan_format.encode_plan(ONCE))
+        self.path.symlink_to(target)
+        store = self.store()
+        with self.assertLogs("sdm.services.plan_store", "WARNING"):
+            self.assertIsNone(store.load())
+        store.save(WEEKLY)
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(plan_format.decode_plan(target.read_bytes()), ONCE)
+        self.path.unlink()
+        os.mkfifo(self.path)
+        with self.assertLogs("sdm.services.plan_store", "WARNING"):
+            self.assertIsNone(self.store().load())
+
+    def test_file_that_grows_after_the_size_check_is_not_read_past_the_limit(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_bytes(plan_format.encode_plan(ONCE))
+        store = self.store()
+        real = os.fstat
+
+        def growing(fd):
+            info = real(fd)
+            with open(self.path, "ab") as handle:
+                handle.write(b" " * (SmartCharging.PLAN_MAX_BYTES + 1))
+            return info
+        with unittest.mock.patch("os.fstat", growing), \
+                self.assertLogs("sdm.services.plan_store", "WARNING"):
+            self.assertIsNone(store.load())
+
     def test_memory_store_never_touches_the_disk(self):
         store = PlanStore.in_memory(WEEKLY)
         self.assertEqual(store.load(), WEEKLY)
@@ -239,6 +272,23 @@ class Log(Base):
         self.assertTrue(data.startswith(b"x" * 99 + b"\n"))     # 從完整的一行開始
         self.assertTrue(data.decode().endswith(" 新的一筆\n"))
         self.assertEqual(mode(self.log_path), 0o600)
+
+    def test_huge_log_keeps_its_end(self):
+        """紀錄檔被別的程式寫得很大時，修剪與最後幾行都取檔案的結尾，不是開頭。"""
+        self.log_path.parent.mkdir(parents=True)
+        line = "舊" * 30 + "\n"
+        with open(self.log_path, "w", encoding="utf-8") as handle:
+            for _ in range(4 * SmartCharging.LOG_MAX_BYTES // len(line.encode())):
+                handle.write(line)
+            handle.write("最後一筆舊的\n")
+        log = self.log()
+        self.assertEqual(log.tail(1), ["最後一筆舊的"])
+        log.write("新的一筆")
+        text = self.log_path.read_text(encoding="utf-8")
+        self.assertLessEqual(len(text.encode()), SmartCharging.LOG_MAX_BYTES // 2 + 200)
+        self.assertTrue(text.endswith("最後一筆舊的\n" + text.splitlines()[-1] + "\n"))
+        self.assertTrue(text.splitlines()[-1].endswith(" 新的一筆"))
+        self.assertTrue(text.startswith("舊"))
 
     def test_small_log_is_not_trimmed(self):
         log = self.log()
