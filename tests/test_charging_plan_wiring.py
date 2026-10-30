@@ -185,6 +185,24 @@ class Building(Base):
                          (1, 1))
         self.assertIn("refresh", self.host.fakes.wake.syncs)
 
+    def test_desktop_never_reads_the_plan_file(self):
+        loads = []
+
+        class Store(PlanStore):
+            def load(self):
+                loads.append(1)
+                return None
+        for supply, expected in ((None, []), ("BAT0", [1])):
+            with self.subTest(supply=supply), \
+                    patch.object(wiring.PlanStore, "in_memory",
+                                 classmethod(lambda cls, plan=None: Store(memory=True))):
+                loads.clear()
+                host = Host(smoke=True, supply=supply)
+                host.make_plan_parts = lambda host=host: wiring.ChargingPlanMixin.make_plan_parts(host)
+                host.build_charging_plan()
+                host.start_plan_components()
+                self.assertEqual(loads, expected)
+
     def test_desktop_starts_nothing(self):
         host = Host(supply=None)
         host.build_charging_plan()
@@ -417,6 +435,42 @@ class Snapshots(Base):
         self.assertEqual((shot.original_limit, shot.laptop, shot.demo), (90, True, False))
         self.assertIs(shot.wake, self.host.fakes.wake.state)
         self.assertIs(shot.unattended, self.host.fakes.unattended.state)
+
+    def test_user_name_is_looked_up_once(self):
+        calls = []
+
+        def lookup(uid):
+            calls.append(uid)
+            return SimpleNamespace(pw_name="alice")
+        self.host.plan_user_name = None
+        with patch.object(wiring.pwd, "getpwuid", lookup):
+            names = [self.host.plan_snapshot().user for _ in range(3)]
+        self.assertEqual((names, len(calls)), (["alice"] * 3, 1))
+
+    def test_unchanged_snapshot_is_not_shown_again(self):
+        self.host.plan_changed()
+        synced = self.host.plan_view.synced
+        self.host.plan_changed()
+        self.host.advance(20)
+        self.host.plan_changed()
+        self.assertEqual(self.host.plan_view.synced, synced)
+        self.host.advance(60)
+        self.host.plan_changed()
+        self.assertEqual(self.host.plan_view.synced, synced + 1)
+        self.start()
+        self.assertGreater(self.host.plan_view.synced, synced + 1)
+
+    def test_nothing_is_built_while_no_window_shows_it(self):
+        self.host.window = SimpleNamespace(get_visible=lambda: False)
+        synced, built = self.host.plan_view.synced, []
+        original = self.host.plan_snapshot
+        self.host.plan_snapshot = lambda: built.append(1) or original()
+        self.start()
+        self.host.plan_tick()
+        self.assertEqual((self.host.plan_view.synced, built), (synced, []))
+        self.host.window = SimpleNamespace(get_visible=lambda: True)
+        self.host.plan_tick()
+        self.assertEqual(self.host.plan_view.synced, synced + 1)
 
     def test_unattended_switch(self):
         results = []

@@ -2,7 +2,8 @@
 
 - 每份耗電快照（看不到視窗時也一樣）先交給充電上限跟著系統的值，再判斷一次；需要寫入時
   經由 ChargeControl.apply_automatically（從不帶 --persist），還原原本的上限時接受任何 50–100 的值。
-- 只有筆電（有可調整的電池）才啟動；桌機不尋找元件、不連 logind、不執行任何程式。
+- 只有筆電（有可調整的電池）才啟動；桌機不讀排程檔、不尋找元件、不連 logind、不執行任何程式。
+- 畫面：沒有任何視窗看得到時不產生狀態；內容（以分鐘計的時間）沒變時不重新顯示。
 - 有排程時才向 logind 要睡眠延遲鎖；即將睡眠時以 will_sleep 判斷（準備優先或喚醒沒排好就先
   提高到目標），寫完或 4 秒後放開。收到即將睡眠後，到喚醒後 3 秒的計時器真正執行為止都不做一般的
   判斷（計時器可能因為主迴圈忙而晚一點）：喚醒後「開機與喚醒後保留」的服務可能把上限改回使用者
@@ -14,7 +15,7 @@
   記憶體，也不連 logind。
 拆出 app.py，讓主程式維持在檔案大小上限內；方法仍透過 Monitor 物件呼叫。
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import os
 from pathlib import Path
@@ -40,6 +41,7 @@ from sdm.ui import charging_plan_text as text
 
 LOG = logging.getLogger(__name__)
 DEMO_USER = "示範帳號"           # 示範模式的截圖不出現真正的帳號名稱
+SECONDS_PER_MINUTE = 60
 STRATEGY_KEY, WAKE_KEY = "charging_sleep_strategy", "charging_wake_enabled"
 
 
@@ -81,9 +83,15 @@ class PlanActions(NamedTuple):
     open_log: Callable[[], None]
 
 
+def shown(owner):
+    """owner 的視窗看得到（沒有 window 屬性的物件當成看得到）。"""
+    window = getattr(owner, "window", None)
+    return window is None or window.get_visible()
+
+
 class ChargingPlanMixin:
     plan_controller = plan_log = plan_wake = plan_unattended = plan_gate = None
-    plan_view = plan_editor = plan_rate = None
+    plan_view = plan_editor = plan_rate = plan_shown = plan_user_name = None
     plan_running = False
     plan_sleep_at = plan_resume_at = None
     plan_clock = staticmethod(time.time)
@@ -117,7 +125,8 @@ class ChargingPlanMixin:
             gate = None if self.smoke else SleepGate(self.plan_bus, self.plan_will_sleep,
                                                      self.plan_did_wake, self.plan_shutdown,
                                                      timed_out=self.plan_sleep_timed_out)
-        return PlanParts(PlanController(store, log=log.write), log, wake, unattended, gate)
+        return PlanParts(PlanController(store, log=log.write, load=False), log, wake, unattended,
+                         gate)
 
     def make_plan_view(self):
         from sdm.ui.charging_plan_view import ChargingPlanView
@@ -133,6 +142,7 @@ class ChargingPlanMixin:
         if not self.plan_running:
             self.plan_changed()
             return
+        self.plan_controller.load()
         self.plan_wake.refresh()
         self.plan_unattended.refresh()
         if self.plan_gate is not None:
@@ -345,12 +355,15 @@ class ChargingPlanMixin:
     # ── 顯示 ───────────────────────────────────────────────
 
     def plan_user(self):
+        """授權範圍說明裡的帳號名稱（只查一次）。"""
         if self.preview:
             return DEMO_USER
-        try:
-            return pwd.getpwuid(os.getuid()).pw_name
-        except KeyError:
-            return ""
+        if self.plan_user_name is None:
+            try:
+                self.plan_user_name = pwd.getpwuid(os.getuid()).pw_name
+            except KeyError:
+                self.plan_user_name = ""
+        return self.plan_user_name
 
     def plan_snapshot(self):
         controller, charge = self.plan_controller, self.charge_control
@@ -384,13 +397,25 @@ class ChargingPlanMixin:
         """排程、喚醒或授權的狀態改變：更新那一列、編輯視窗與設定的「充電」。"""
         if self.plan_view is None or self.plan_controller is None:
             return
+        if not self.plan_visible():
+            self.plan_shown = None
+            return
         snapshot = self.plan_snapshot()
+        key = replace(snapshot, now=int(snapshot.now) // SECONDS_PER_MINUTE)
+        if key == self.plan_shown:
+            return
+        self.plan_shown = key
         self.plan_view.sync(snapshot)
         if self.plan_editor is not None:
             self.plan_editor.sync(snapshot)
         window = getattr(self, "settings_window", None)
         if window is not None and hasattr(window, "charging_changed"):
             window.charging_changed()
+
+    def plan_visible(self):
+        """主視窗、編輯視窗或設定視窗有一個看得到。"""
+        return shown(self) or any(owner is not None and shown(owner) for owner in
+                                  (self.plan_editor, getattr(self, "settings_window", None)))
 
     def open_plan_editor(self):
         if self.plan_editor is None:

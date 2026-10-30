@@ -52,9 +52,9 @@ def new_id():
 class PlanController:
     """只在主執行緒使用；store 為 PlanStore，log(文字) 寫入紀錄檔。"""
 
-    def __init__(self, store, tz=None, log=lambda message: None, make_id=new_id):
+    def __init__(self, store, tz=None, log=lambda message: None, make_id=new_id, load=True):
         self.store, self.tz, self.log, self.make_id = store, tz, log, make_id
-        self.plan = store.load()
+        self.plan = store.load() if load else None
         self.decision = None
         self.write_error = None
         self.pending = None             # 正在寫入的上限
@@ -62,6 +62,10 @@ class PlanController:
         self.retry_at = None            # 寫入失敗後，這個時間之前不再重試
         self.options = None             # 上次判斷時驅動接受的上限（None：還沒判斷過這個排程）
         self.resume_until = None        # 喚醒後這個時間之前第一次的上限改變是保留的服務
+
+    def load(self):
+        """讀取存起來的排程（看板只在筆電啟動智慧充電時才讀，桌機不碰排程檔）。"""
+        self.plan = self.store.load()
 
     @property
     def active(self):
