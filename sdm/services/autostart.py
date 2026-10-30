@@ -47,6 +47,7 @@ def initialize_preferences():
 
 
 def launcher_script(project):
+    """一次性的指令（Launcher.TERMINAL_OPTIONS）把輸出留在終端機，看板本身的輸出寫進 app.log。"""
     return """#!/bin/bash
 set -eu
 project=%s
@@ -54,13 +55,15 @@ for attempt in {1..%d}; do
     if [ -f "$project/device_monitor.py" ]; then
         cache="${XDG_CACHE_HOME:-$HOME/.cache}/system-device-monitor"
         mkdir -p "$cache"
-        if [[ " $* " == *" --version "* || " $* " == *" --smoke-test "* ]]; then
-            exec /usr/bin/python3 -B "$project/device_monitor.py" "$@"
-        fi
+        for argument in "$@"; do
+            case "$argument" in
+                %s) exec /usr/bin/python3 -B "$project/device_monitor.py" "$@" ;;
+            esac
+        done
         exec /usr/bin/python3 -B "$project/device_monitor.py" "$@" >>"$cache/app.log" 2>&1
     fi
     sleep 1
 done
 echo "System Device Monitor: application files unavailable" >&2
 exit 1
-""" % (shlex.quote(str(project)), Launcher.WAIT_SECONDS)
+""" % (shlex.quote(str(project)), Launcher.WAIT_SECONDS, "|".join(Launcher.TERMINAL_OPTIONS))

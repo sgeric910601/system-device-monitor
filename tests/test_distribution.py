@@ -129,6 +129,45 @@ class Portability(unittest.TestCase):
         self.assertEqual(output.splitlines(),
                          ["System Device Monitor " + version, "exit 0 False"])
 
+class Launcher(unittest.TestCase):
+    """啟動器：一次性的指令（--dump、--charging-plan-status、--test-notification 等）把輸出印在
+    終端機，讓使用者看得到；看板本身（含背景執行與示範模式）的輸出寫進快取目錄的 app.log。"""
+
+    def run_launcher(self, *args):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)/"checkout"
+            root.mkdir()
+            (root/"device_monitor.py").write_text(
+                "import sys\nprint('out', *sys.argv[1:], flush=True)\n"
+                "print('err', file=sys.stderr)\n")
+            launcher = Path(tmp)/"launcher"
+            launcher.write_text(autostart.launcher_script(root))
+            launcher.chmod(0o755)
+            # 啟動器會建立快取目錄；指向暫存目錄，避免碰到真實的使用者快取。
+            env = {**os.environ, "XDG_CACHE_HOME": str(Path(tmp)/"cache")}
+            result = subprocess.run([str(launcher), *args], capture_output=True, text=True,
+                                    env=env, timeout=30)
+            log = Path(tmp)/"cache/system-device-monitor/app.log"
+            return result, (log.read_text() if log.exists() else "")
+
+    def test_one_shot_commands_print_in_the_terminal(self):
+        for args in (("--version",), ("--dump",), ("--charging-plan-status",),
+                     ("--test-notification",), ("--help",), ("-h",),
+                     ("--smoke-test", "--output-dir", "out")):
+            with self.subTest(args=args):
+                result, log = self.run_launcher(*args)
+                self.assertEqual((result.stdout, result.stderr),
+                                 (" ".join(("out",) + args) + "\n", "err\n"))
+                self.assertEqual(log, "")
+
+    def test_the_dashboard_writes_its_output_to_the_log(self):
+        for args in ((), ("--background",), ("--preview", "desktop")):
+            with self.subTest(args=args):
+                result, log = self.run_launcher(*args)
+                self.assertEqual((result.stdout, result.stderr), ("", ""))
+                self.assertEqual(log, " ".join(("out",) + args) + "\nerr\n")
+
+
 class Publication(unittest.TestCase):
     def test_private_data_detection_does_not_need_real_private_data(self):
         path = ROOT/"scripts/privacy_check.py"
