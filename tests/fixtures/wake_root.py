@@ -3,7 +3,8 @@
 假根目錄的擁有者是執行測試的使用者（代替 root）：sys/devices/pnp0/00:00/rtc/rtc0 底下放
 wakealarm 與 since_epoch，sys/class/rtc/rtc0 是指向它的相對符號連結，與真正的 sysfs 相同。
 假驅動取代 os.write：與核心相同，寫 "0" 取消鬧鐘（內容變成空的），已經有鬧鐘時寫入新的時間
-回傳 EBUSY；rounding 可以模擬驅動把時間改成別的值。
+回傳 EBUSY；rounding 可以模擬驅動把時間改成別的值，hook 在每次寫入前以寫入的文字呼叫
+（可以檢查當時的狀態，或拋出例外模擬中斷）。
 """
 import errno
 import os
@@ -27,10 +28,12 @@ class Rtc:
     """假的 RTC 驅動：記錄寫入的文字。"""
 
     def __init__(self, rounding=0, refuse=False):
-        self.rounding, self.refuse, self.writes = rounding, refuse, []
+        self.rounding, self.refuse, self.writes, self.hook = rounding, refuse, [], None
 
     def __call__(self, fd, data):
         text = data.decode("ascii")
+        if self.hook is not None:
+            self.hook(text)
         self.writes.append(text)
         if self.refuse:
             raise OSError(errno.EINVAL, "Invalid argument")

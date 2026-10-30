@@ -15,15 +15,19 @@
 - 規則只對開啟它的帳號、本機作用中的工作階段，讓充電上限的 set 與喚醒的 set、clear 免密碼
   （動作 ID 完整比對，再確認 pkexec 傳來的程式路徑、目標帳號 root，命令列以樣式完整比對，
   寫法與小程式本身接受的相同，不能多任何參數）；其他一律不做決定。
+- 執行期間忽略終端機的中斷、暫停、結束與掛斷（SIGINT、SIGTSTP、SIGQUIT、SIGHUP），寫入與刪除時
+  也是；仍收到 KeyboardInterrupt 時不留暫存檔，回報 interrupted（結束碼 3）。
 - 不執行任何外部程式；標準輸出只有一行 JSON；結束碼 0、2、3、4；系統日誌只記錄動作與結果，
   不記錄帳號。只使用標準函式庫。
 """
+import contextlib
 import fcntl
 import json
 import os
 import pwd
 import re
 import secrets
+import signal
 import stat
 import sys
 import syslog
@@ -36,7 +40,9 @@ EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
 HELPER_NAME = "sdm-unattended"
 PROTOCOL_FLAG = "--protocol"
 COMMANDS = ("grant", "revoke", "status")
+INTERRUPTED = "interrupted"
 LOGGED_ERRORS = ("busy", "unsupported-user", "no-rules-directory")
+TERMINAL_SIGNALS = (signal.SIGINT, signal.SIGTSTP, signal.SIGQUIT, signal.SIGHUP)
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
 UID_PATTERN = re.compile(r"[1-9][0-9]{0,9}")
@@ -176,6 +182,23 @@ class Context(NamedTuple):
 def log(message):
     syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
     syslog.syslog(syslog.LOG_INFO, message)
+
+
+def ignore_terminal_signals():
+    """整個執行期間忽略終端機的中斷、暫停、結束與掛斷：小程式很快結束，不會停在一半。"""
+    for number in TERMINAL_SIGNALS:
+        signal.signal(number, signal.SIG_IGN)
+
+
+@contextlib.contextmanager
+def ignoring_signals():
+    """寫入或刪除規則檔的關鍵區：暫時忽略終端機的訊號，結束後恢復原本的處理方式。"""
+    previous = [(number, signal.signal(number, signal.SIG_IGN)) for number in TERMINAL_SIGNALS]
+    try:
+        yield
+    finally:
+        for number, handler in previous:
+            signal.signal(number, signal.SIG_DFL if handler is None else handler)
 
 
 def parse_login_defs(text):
@@ -431,7 +454,8 @@ def grant(context, uid):
     except FileNotFoundError:
         raise Failed("no-rules-directory") from None
     try:
-        replace_file(fd, RULE_NAME, text.encode("utf-8"), RULE_MODE)
+        with ignoring_signals():
+            replace_file(fd, RULE_NAME, text.encode("utf-8"), RULE_MODE)
     finally:
         os.close(fd)
     return {"ok": True, "action": "grant", "user": name}
@@ -450,8 +474,9 @@ def revoke(context, _uid):
             return {"ok": True, "action": "revoke", "removed": False}
         if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
             raise Failed("unexpected-file")
-        os.unlink(RULE_NAME, dir_fd=fd)
-        os.fsync(fd)
+        with ignoring_signals():
+            os.unlink(RULE_NAME, dir_fd=fd)
+            os.fsync(fd)
     finally:
         os.close(fd)
     return {"ok": True, "action": "revoke", "removed": True}
@@ -504,6 +529,8 @@ def outcome_of(command, env, context):
         return EXIT_FAILED, {"ok": False, "error": str(error)}, logged
     except OSError:
         return EXIT_FAILED, {"ok": False, "error": "failed"}, "failed"
+    except KeyboardInterrupt:
+        return EXIT_FAILED, {"ok": False, "error": INTERRUPTED}, INTERRUPTED
     return EXIT_OK, result, "ok"
 
 
@@ -523,6 +550,7 @@ def main(argv, env, context=None, emit=emit_json, report=log):
 
 
 if __name__ == "__main__":
+    ignore_terminal_signals()
     ENVIRONMENT = dict(os.environ)
     os.environ.clear()
     os.environ.update(SAFE_ENV)

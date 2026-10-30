@@ -230,9 +230,13 @@
   硬體時鐘存本地時間的雙系統電腦會差好幾個小時）。
 - set：時間（系統時鐘 CLOCK_REALTIME）必須在 60 秒後到 7 天內（out-of-range，在取得鎖之後檢查）；
   目前已經有不是這個小程式記下的鬧鐘時拒絕（alarm-in-use），絕不覆寫別人（例如 rtcwake）的鬧鐘。
-  先寫 "0" 再寫時間（O_WRONLY｜O_NOFOLLOW，不建立），讀回不符時寫 "0" 取消（not-applied）；
-  成功後把時間記在 /run/system-device-monitor/wake（root 0600，O_EXCL 暫存檔＋fsync＋改名）。
+  先寫 "0"，把時間記在 /run/system-device-monitor/wake（root 0600，O_EXCL 暫存檔＋fsync＋改名），
+  再寫時間（O_WRONLY｜O_NOFOLLOW，不建立）並讀回：任何時刻停下來，RTC 上的鬧鐘都已記下或是空的，
+  之後的 clear 與移除套件都能取消它。讀回不符（not-applied）或任何例外（包括中斷）時寫 "0" 取消，
+  紀錄改成與 RTC 一致（取消也失敗時記下 RTC 上實際的時間）。
 - clear：只有目前的鬧鐘等於記下的時間時才寫 "0"；鬧鐘已經響過或被別人換掉時只刪除紀錄。
+- 執行期間忽略終端機的 SIGINT、SIGTSTP、SIGQUIT 與 SIGHUP（寫入 RTC 與紀錄時也是），不會停在
+  一半或暫停時拿著鎖；仍收到 KeyboardInterrupt 時回報 interrupted（結束碼 3），輸出仍只有一行 JSON。
 - 標準輸出只有一行 JSON；結束碼固定（0、2、3、4）；系統日誌只記錄動作與結果（例如 set ok），
   不記錄時間或使用者。
 - 看板只在排程選了精準喚醒、喚醒元件可用而且已允許無人時自動調整時才執行它（否則睡眠前改用準備優先，
@@ -255,6 +259,7 @@
   以及註解裡記錄的 uid（只有數字，只用來在 status 比對），其他內容一律固定。/etc、polkit-1、rules.d 必須已存在，逐層以 O_NOFOLLOW 開啟並確認屬於 root、
   群組與其他人不可寫（Ubuntu 的 rules.d 是 root:polkitd 0750）；既有的同名項目不是一般檔案時拒絕。
   同一時間只有一個帳號：另一個帳號（也要管理員密碼）grant 時取代。
+- 寫入與刪除規則時與 sdm-wake 一樣忽略終端機的訊號；仍被中斷時刪除暫存檔、回報 interrupted。
 - revoke 只刪除那一個檔案（一般檔案或符號連結，不跟隨）；status 與範本逐字比對，被改過時回報 modified；
   帳號名稱現在對應的 uid 與註解裡記錄的不同時（帳號刪除後以同一個名稱重建）回報 account_changed。
 - 規則的內容（ES5，polkitd 124 以 duktape 執行）：

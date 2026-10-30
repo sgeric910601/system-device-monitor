@@ -7,8 +7,10 @@
 import fcntl
 import os
 import re
+import signal
 import stat
 import unittest
+from unittest import mock
 
 from sdm.constants import ChargeLimit, CpuPower, Unattended, Wake
 from tests.fixtures import duktape
@@ -261,6 +263,42 @@ class Status(Base):
 def js_pattern(path, words):
     """規則中應有的 ES5 樣式字面值：完整比對「路徑 參數…」。"""
     return "/^" + path.replace("/", "\\/") + " " + " ".join(words) + "$/"
+
+
+class Interruptions(Base):
+    """寫入或刪除規則時忽略終端機的訊號；仍被中斷時不留暫存檔，結果仍是一行 JSON。"""
+
+    def watch(self, name):
+        seen, real = [], getattr(os, name)
+
+        def watching(*args, **kwargs):
+            seen.append({signal.getsignal(number) for number in helper.TERMINAL_SIGNALS})
+            return real(*args, **kwargs)
+        return seen, mock.patch.object(os, name, watching)
+
+    def test_terminal_signals_are_ignored_while_changing_the_rule(self):
+        before = {number: signal.getsignal(number) for number in helper.TERMINAL_SIGNALS}
+        replaced, patch = self.watch("replace")
+        with patch:
+            self.assertEqual(self.main(["grant"]), helper.EXIT_OK)
+        removed, patch = self.watch("unlink")
+        with patch:
+            self.assertEqual(self.main(["revoke"]), helper.EXIT_OK)
+        self.assertEqual(replaced + removed, [{signal.SIG_IGN}, {signal.SIG_IGN}])
+        self.assertEqual({number: signal.getsignal(number) for number in helper.TERMINAL_SIGNALS},
+                         before)
+
+    def test_keyboard_interrupt_is_one_json_line_and_leaves_nothing(self):
+        with mock.patch.object(os, "fsync", side_effect=KeyboardInterrupt):
+            self.assertEqual(self.main(["grant"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output, [{"ok": False, "error": "interrupted"}])
+        self.assertEqual(self.logged, ["grant interrupted"])
+        self.assertEqual(os.listdir(self.root.path/RULES), [])
+
+    def test_main_ignores_terminal_signals_for_the_whole_run(self):
+        text = (ROOT/"helper/sdm-unattended").read_text(encoding="utf-8")
+        entry = text[text.index('if __name__ == "__main__":'):]
+        self.assertLess(entry.index("ignore_terminal_signals()"), entry.index("main("))
 
 
 class Template(unittest.TestCase):

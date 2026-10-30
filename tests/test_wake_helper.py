@@ -6,6 +6,7 @@
 """
 import fcntl
 import os
+import signal
 import stat
 import unittest
 
@@ -269,6 +270,108 @@ class SetAndClear(Base):
         self.set_alarm(NOW + 600)
         self.assertEqual(self.main(["set", str(NOW + 900)]), helper.EXIT_FAILED)
         self.assertEqual(self.output[-1]["error"], "alarm-in-use")
+
+
+class Interruptions(Base):
+    """RTC 上的鬧鐘一定已經記下（先取消舊的、記下新的時間，再寫入）；寫入時忽略終端機的訊號；
+    任何例外都回復，結果仍是一行 JSON。"""
+
+    def interrupt_after(self, count, error):
+        """第 count 次寫入 RTC 之前拋出一次 error。"""
+        raised = []
+
+        def hook(_text):
+            if len(self.rtc.writes) == count and not raised:
+                raised.append(error)
+                raise error
+        self.rtc.hook = hook
+
+    def record_text(self):
+        path = self.root.path/RECORD
+        return path.read_text() if path.exists() else None
+
+    def test_alarm_on_the_rtc_is_always_recorded(self):
+        self.record(NOW + 5000)
+        self.set_alarm(NOW + 5000)
+        seen = []
+        self.rtc.hook = lambda text: seen.append((text, self.alarm(), self.record_text()))
+        self.assertEqual(self.main(["set", str(NOW + 600)]), helper.EXIT_OK)
+        self.assertEqual(seen, [("0", str(NOW + 5000), f"{NOW + 5000}\n"),
+                                (str(NOW + 600), "", f"{NOW + 600}\n")])
+
+    def test_terminal_signals_are_ignored_while_writing(self):
+        before = {number: signal.getsignal(number) for number in helper.TERMINAL_SIGNALS}
+        seen = []
+        self.rtc.hook = lambda _text: seen.append({signal.getsignal(number)
+                                                   for number in helper.TERMINAL_SIGNALS})
+        self.main(["set", str(NOW + 600)])
+        self.boot += 100
+        self.main(["clear"])
+        self.assertEqual(len(seen), 3)
+        self.assertTrue(all(handlers == {signal.SIG_IGN} for handlers in seen))
+        self.assertEqual({number: signal.getsignal(number) for number in helper.TERMINAL_SIGNALS},
+                         before)
+        self.assertEqual(set(helper.TERMINAL_SIGNALS),
+                         {signal.SIGINT, signal.SIGTSTP, signal.SIGQUIT, signal.SIGHUP})
+
+    def test_keyboard_interrupt_is_one_json_line_and_leaves_no_alarm(self):
+        for count in (0, 1):
+            with self.subTest(count=count):
+                self.output.clear()
+                self.rtc.writes.clear()
+                self.interrupt_after(count, KeyboardInterrupt())
+                self.boot += 100
+                self.assertEqual(self.main(["set", str(NOW + 600)]), helper.EXIT_FAILED)
+                self.assertEqual(self.output, [{"ok": False, "error": "interrupted"}])
+                self.assertEqual(self.logged[-1], "set interrupted")
+                self.assertEqual(self.alarm(), "")
+                self.assertFalse((self.root.path/RECORD).exists())
+
+    def test_any_exception_after_the_alarm_is_written_is_undone(self):
+        self.record(NOW + 5000)
+        self.set_alarm(NOW + 5000)
+        self.rtc.hook = None
+        calls = []
+        real = helper.record_time
+
+        def failing(context):
+            calls.append(1)
+            real(context)
+            raise SystemExit(9)
+        self.patch(helper, "record_time", failing)
+        with self.assertRaises(SystemExit):
+            self.main(["set", str(NOW + 600)])
+        self.assertEqual(calls, [1])
+        self.assertEqual(self.alarm(), "")
+        self.assertFalse((self.root.path/RECORD).exists())
+
+    def test_alarm_that_cannot_be_cancelled_keeps_a_matching_record(self):
+        """取消也失敗時，紀錄改成 RTC 上實際的時間，之後的 clear 與移除套件仍能取消它。"""
+        self.rtc.rounding = 30
+        self.interrupt_after(2, OSError("refused"))
+        self.assertEqual(self.main(["set", str(NOW + 600)]), helper.EXIT_FAILED)
+        self.assertEqual(self.alarm(), str(NOW + 630))
+        self.assertEqual((self.root.path/RECORD).read_text(), f"{NOW + 630}\n")
+        self.rtc.hook = None
+        self.assertEqual(self.main(["clear"]), helper.EXIT_OK)
+        self.assertEqual(self.alarm(), "")
+
+    def test_interrupted_clear_is_one_json_line(self):
+        self.main(["set", str(NOW + 600)])
+        self.interrupt_after(len(self.rtc.writes), KeyboardInterrupt())
+        self.assertEqual(self.main(["clear"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1], {"ok": False, "error": "interrupted"})
+
+    def test_main_ignores_terminal_signals_for_the_whole_run(self):
+        text = (ROOT/"helper/sdm-wake").read_text(encoding="utf-8")
+        entry = text[text.index('if __name__ == "__main__":'):]
+        self.assertIn("ignore_terminal_signals()", entry)
+        self.assertLess(entry.index("ignore_terminal_signals()"), entry.index("main("))
+
+    def patch(self, owner, name, value):
+        original = getattr(owner, name)
+        setattr(owner, name, value)
+        self.addCleanup(setattr, owner, name, original)
 
 
 class Serialization(Base):
