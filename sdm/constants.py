@@ -223,6 +223,8 @@ class SmartCharging:
     WAKE_EARLIEST = 60          # 喚醒時間只能在 60 秒後到 7 天內
     WAKE_LATEST = 7 * 24 * 3600
     WAKE_REPLACE_SECONDS = 5 * 60           # 與已排定的時間相差 5 分鐘以上才重排
+    WAKE_KEEP_SECONDS = 1       # 與已排定（或送出中）的時間相差不到 1 秒視為同一個
+    WAKE_READY_SECONDS = 30     # 已排定的喚醒至少還要 30 秒才算準備好（睡眠前不必先提高上限）
     EXPIRY_SECONDS = 2 * 3600   # 一次性排程完成時間過後多久還沒拔電就結束、還原
     RETRY_SECONDS = 60          # 寫入失敗後多久再試
     START_GRACE_SECONDS = 120   # 提高上限後等開始充電的時間（之內不算系統暫停）
