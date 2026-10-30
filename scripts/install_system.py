@@ -15,7 +15,8 @@
   /etc/systemd/system），路徑上每一層都必須屬於 root 且群組與其他人不可寫，
   先寫暫存檔再整檔取代。之後重新載入 systemd；只有 socket 原本已啟用時才重新啟動它
   （充電上限的單元只在使用者選擇保留時由 sdm-charge-limit 啟用，這裡不啟用）。
-  已安裝 .deb 套件時拒絕（兩者擇一）。
+- install 與 remove 都在已安裝 .deb 套件時拒絕（deb-installed，兩者擇一）：兩者共用無人授權的
+  規則檔與喚醒的紀錄，原始碼版的 remove 會撤銷套件的規則並取消它的鬧鐘。
 - remove：停用並停止 socket 與服務、停用充電上限的單元，只刪除 FILES 列出的檔案、drop-in、
   sockets.target.wants 與 multi-user／sleep.target.wants 的符號連結、原始碼版保留的
   充電上限狀態檔（/var/lib/system-device-monitor/charge-limit-local.json）與充電上限小程式的鎖檔、
@@ -481,6 +482,8 @@ def install(context, stage, digest, uid):
 
 
 def remove(context, stage, digest, uid):
+    if deb_installed(context):
+        raise Failed("deb-installed")
     read_stage(stage, digest, uid, context.lstat)
     remove_smart_charging(context)
     systemctl(context, "disable", "--now", SOCKET)      # 尚未安裝或已移除時失敗也沒關係

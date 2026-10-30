@@ -184,7 +184,9 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 
 移除管理員元件：
 - 原始碼：`/usr/bin/python3 -B install.py --system-components remove`（會先停用服務，
-  並刪除原始碼版保留的充電上限）。
+  並刪除原始碼版保留的充電上限）。已安裝 .deb 時會拒絕（兩者共用無人授權的規則與喚醒紀錄）：
+  要從原始碼版改用套件，請先 sudo apt remove system-device-monitor、再執行這個指令，
+  之後重新安裝套件。
 - .deb：sudo apt remove system-device-monitor 會停用服務、移除所有元件，並刪除保留的充電上限
   （/var/lib/system-device-monitor/charge-limit.json）；sudo apt purge system-device-monitor
   另外清除 drop-in。

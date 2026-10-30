@@ -331,10 +331,17 @@ class Run(unittest.TestCase):
         self.assertEqual(self.run_action(git=FakeGit(
             listing=tree_listing(modes={"helper/sdm-cpu-power": "100755"}))), 0)
 
-    def test_installed_package_blocks_install_but_not_remove(self):
+    def test_installed_package_blocks_install_and_remove(self):
+        """兩者擇一：原始碼版的移除會撤銷共用的無人授權規則與喚醒鬧鐘，所以套件在時也不移除。"""
         self.assertEqual(self.run_action(deb=True), 1)
+        self.assertEqual(self.messages[-1], components.DEB_INSTALLED)
+        self.assertEqual(self.run_action("remove", deb=True), 1)
+        self.assertEqual(self.messages[-1], components.DEB_INSTALLED_REMOVE)
         self.assertEqual(self.seen, [])
-        self.assertEqual(self.run_action("remove", deb=True), 0)
+        text = components.DEB_INSTALLED_REMOVE
+        self.assertLess(text.index("sudo apt remove system-device-monitor"),
+                        text.index("install.py --system-components remove"))
+        self.assertEqual(self.run_action("remove", deb=False), 0)
 
     def test_authorization_failures_are_explained(self):
         for status, words in ((126, "未授權"), (127, "未授權"), (3, "失敗"), (4, "權限")):

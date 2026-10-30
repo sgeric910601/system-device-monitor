@@ -429,7 +429,8 @@ class ScriptRuns(unittest.TestCase):
         helper.parent.mkdir(parents=True)
         helper.write_text("#!/bin/sh\n")
         result = self.run_script("postinst", "configure", "")
-        self.assertIn("install.py --system-components remove", result.stderr)
+        self.assertLess(result.stderr.index("sudo apt remove system-device-monitor"),
+                        result.stderr.index("install.py --system-components remove"))
 
 
 if __name__ == "__main__":

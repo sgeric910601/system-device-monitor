@@ -39,7 +39,10 @@
 | polkit 動作（更新） | /usr/share/polkit-1/actions/tw.local.system-device-monitor.update.policy | （不提供） | root 0644 |
 | 更新的暫存目錄與執行鎖（安裝更新時才建立，用完清空，只留 .lock） | /var/cache/system-device-monitor/staging、staging/.lock | （不提供） | root 0700、鎖 0600 |
 
-兩種安裝方式擇一：已安裝 .deb 時原始碼安裝會拒絕；.deb 安裝時若發現原始碼安裝的元件會提示移除。
+兩種安裝方式擇一：已安裝 .deb 時原始碼安裝的 install 與 remove 都會拒絕（兩者共用無人授權的
+規則檔與喚醒的紀錄，原始碼版的 remove 會撤銷套件的規則並取消它的鬧鐘；使用者端與 root 端各確認一次）。
+.deb 安裝時若發現原始碼安裝的元件，postinst 只顯示警告與正確的順序（先移除套件、再執行原始碼版的
+remove、之後重新安裝套件），不自動刪除任何東西。
 套件與原始碼安裝都不安裝任何 polkit 規則或 setuid 程式，安裝時也不啟用任何服務；
 充電上限的單元只有在你開啟「開機與喚醒後保留」並授權後，才由小程式啟用；
 無人授權的規則只有在你開啟「允許無人時自動調整」並輸入管理員密碼後，才由 sdm-unattended 寫入。

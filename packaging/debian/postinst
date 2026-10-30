@@ -17,7 +17,8 @@ if [ "$1" = "configure" ]; then
         fi
     fi
     if [ -e "${DPKG_ROOT:-}$LOCAL_HELPER" ]; then
-        echo "system-device-monitor: 偵測到原始碼安裝的管理員元件；兩者擇一，請在原始碼資料夾執行 install.py --system-components remove 移除。" >&2
+        # 只警告：套件已安裝時原始碼版的移除會拒絕執行（兩者共用無人授權的規則與喚醒紀錄）
+        echo "system-device-monitor: 偵測到原始碼安裝的管理員元件；兩者擇一。要改用套件時，請先執行 sudo apt remove system-device-monitor，再在原始碼資料夾執行 install.py --system-components remove，之後重新安裝套件。" >&2
     fi
 fi
 

@@ -14,7 +14,8 @@ install.py --system-components install｜remove 的使用者端。
    pkexec /usr/bin/python3 -I -B -c BOOTSTRAP <暫存>/scripts/install_system.py <它的 SHA-256>
    install｜remove --stage <暫存> --manifest-sha256 <manifest 的 SHA-256>。
    啟動碼只執行雜湊相符的那份位元組；root 端再驗證 manifest 與每個檔案的雜湊。
-5. 結束後刪除暫存目錄。已安裝 .deb 套件時不安裝（兩者擇一），但可以移除。
+5. 結束後刪除暫存目錄。已安裝 .deb 套件時不安裝也不移除（兩者擇一；原始碼版的移除會撤銷
+   兩者共用的無人授權規則並取消喚醒鬧鐘，root 端也再確認一次）。
 """
 import hashlib
 import json
@@ -88,6 +89,10 @@ BAD_TREE = "HEAD 中的管理員元件不是一般檔案，或內容與物件 ID
 UNSAFE_CONFIG = ("原始碼資料夾的 git 設定含 include、includeIf、filter 或 core.attributesFile，"
                  "讀取時可能執行指令或改變內容；為了安全不安裝。")
 DEB_INSTALLED = "已安裝 .deb 套件：管理員元件已包含在套件中，不需要再從原始碼安裝。"
+DEB_INSTALLED_REMOVE = ("已安裝 .deb 套件，沒有移除任何東西：原始碼版的移除會撤銷套件也在用的"
+                        "「允許無人時自動調整」規則並取消喚醒鬧鐘。要改用套件時，請先執行"
+                        " sudo apt remove system-device-monitor，再執行"
+                        " install.py --system-components remove，之後重新安裝套件。")
 NO_PKEXEC = "無法執行 pkexec（需要 policykit-1／polkitd）。"
 STAGE_FAILED = "無法建立暫存目錄，沒有做任何變更。"
 
@@ -282,8 +287,8 @@ def run(action, root, say, git=git_output, call=subprocess.call, make_stage=None
     if make_stage is None:
         make_stage = lambda: tempfile.mkdtemp(prefix=STAGE_PREFIX,  # noqa: E731
                                               dir=stage_parent(os.environ, uid, lstat))
-    if action == "install" and deb_installed():
-        say(DEB_INSTALLED)
+    if deb_installed():
+        say(DEB_INSTALLED if action == "install" else DEB_INSTALLED_REMOVE)
         return REFUSED
     try:
         contents, head = gather(action, root, git, uid, policy, (lstat, listdir, read))

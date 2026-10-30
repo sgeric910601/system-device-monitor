@@ -368,10 +368,22 @@ class Remove(Base):
         self.assertEqual(self.main("remove"), installer.EXIT_OK)
         self.assertEqual(self.main("remove"), installer.EXIT_OK)
 
-    def test_removal_is_allowed_while_the_package_is_installed(self):
-        self.runner.package_status = "install ok installed"
+    def test_removal_is_refused_while_the_package_is_installed(self):
+        """套件與原始碼版共用無人授權的規則與喚醒紀錄：套件在時不移除任何東西。"""
+        self.root.file(RULE, "// rule\n")
+        alarm = self.wake("1800000600\n", "1800000600\n")
+        before = self.installed()
+        for status in ("install ok installed", "install ok unpacked", "hold ok installed"):
+            with self.subTest(status=status):
+                self.runner.package_status = status
+                self.runner.calls.clear()
+                self.assertEqual(self.main("remove"), installer.EXIT_FAILED)
+                self.assertEqual(self.output[-1], {"ok": False, "error": "deb-installed"})
+                self.assertEqual((self.installed(), self.systemctl_calls()), (before, []))
+                self.assertEqual(alarm.read_text(), "1800000600\n")
+        self.runner.package_status = "deinstall ok config-files"
         self.assertEqual(self.main("remove"), installer.EXIT_OK)
-        self.assertEqual(self.installed(), [])
+        self.assertFalse((self.root.path/RULE).exists())
 
     def wake(self, alarm, record, record_mode=0o600):
         """假的 RTC（rtc0 是指向 sys/devices 的符號連結）與 sdm-wake 記下的時間。"""
