@@ -346,6 +346,37 @@ class ScriptRuns(unittest.TestCase):
         self.assertEqual(alarm.read_text(), "1800000600\n")
         self.assertTrue((run/"wake").exists() and rule.exists())
 
+    def populate_smart_charging(self):
+        alarm, run = self.populate_wake("1800000600\n", "1800000600\n")
+        rule = self.root/RULE
+        rule.parent.mkdir(parents=True)
+        rule.write_text("// rule\n")
+        self.populate_limit()
+        return alarm, run, rule
+
+    def test_prerm_downgrade_without_smart_charging_revokes_the_rule_and_alarm(self):
+        """降級到沒有 sdm-unattended 的版本：那個版本不會再管理規則與鬧鐘，所以和移除時一樣清掉。"""
+        for older in ("0.2.0", "0.2.9", "0.3.0~~", "0.1.0", ""):
+            with self.subTest(older=older):
+                shutil.rmtree(self.root, ignore_errors=True)
+                alarm, run, rule = self.populate_smart_charging()
+                self.run_script("prerm", "upgrade", older)
+                self.assertFalse(rule.exists())
+                self.assertEqual(alarm.read_text(), "0")
+                self.assertFalse((run/"wake").exists())
+                self.assertTrue(all(os.path.lexists(link) for link in self.limit_wants))
+                self.assertTrue((self.state/"charge-limit.json").exists())
+
+    def test_prerm_upgrade_to_a_version_with_smart_charging_keeps_the_rule(self):
+        for newer in ("0.3.0~", "0.3.0~beta.1", "0.3.0~beta.12", "0.3.0", "0.3.1", "1.0"):
+            with self.subTest(newer=newer):
+                shutil.rmtree(self.root, ignore_errors=True)
+                alarm, run, rule = self.populate_smart_charging()
+                self.run_script("prerm", "upgrade", newer)
+                self.assertTrue(rule.exists())
+                self.assertEqual(alarm.read_text(), "1800000600\n")
+                self.assertTrue((run/"wake").exists())
+
     def test_remove_and_purge_delete_only_the_unattended_rule(self):
         rules = self.root/RULE
         rules.parent.mkdir(parents=True)

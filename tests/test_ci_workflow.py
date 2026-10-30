@@ -143,6 +143,16 @@ class SmartCharging(unittest.TestCase):
                      "as_rules revoke", 'sudo test ! -e "$rule"'):
             self.assertIn(text, WORKFLOW)
 
+    def test_downgrade_revokes_the_rule_before_the_alarm_is_left_for_removal(self):
+        """真正的 dpkg 版本比較：降級到 0.3.0~ 以前撤銷規則，升級到測試版時保留。"""
+        keep = WORKFLOW.index('sudo "$prerm" upgrade 0.3.0~beta.1')
+        drop = WORKFLOW.index('sudo "$prerm" upgrade 0.2.0')
+        self.assertIn("prerm=/var/lib/dpkg/info/system-device-monitor.prerm", WORKFLOW)
+        self.assertLess(keep, WORKFLOW.index('sudo test -e "$rule"', keep))
+        self.assertLess(drop, WORKFLOW.index('sudo test ! -e "$rule"', drop))
+        self.assertLess(keep, drop)
+        self.assertLess(drop, WORKFLOW.index("sdm-wake-left"))
+
     def test_removal_clears_the_alarm_and_the_rule(self):
         for text in ("test ! -e /run/system-device-monitor/wake\n",
                      "sudo test ! -e /etc/polkit-1/rules.d/49-system-device-monitor.rules",

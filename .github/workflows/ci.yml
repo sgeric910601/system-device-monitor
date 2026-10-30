@@ -267,22 +267,6 @@ jobs:
           set +e; out=$(as_wake set "$(( $(date +%s) + 30 ))"); got=$?; set -e
           test "$got" = 3
           printf '%s\n' "$out" | one_json
-          # 執行器（虛擬機）有可用的 RTC 時：真的排定、取消，再留一個給 prerm 取消（只在 CI 執行）
-          if [ -e /sys/class/rtc/rtc0/wakealarm ] && [ -z "$(cat /sys/class/rtc/rtc0/wakealarm)" ]; then
-            epoch=$(( $(date +%s) + 3600 ))
-            set +e; out=$(as_wake set "$epoch"); got=$?; set -e
-            echo "$out"
-            if [ "$got" = 0 ]; then
-              test "$(cat /sys/class/rtc/rtc0/wakealarm)" = "$epoch"
-              test "$(sudo stat -c '%U %a' /run/system-device-monitor/wake)" = "root 600"
-              sleep 11
-              as_wake clear | grep -q '"cleared":true'
-              test -z "$(cat /sys/class/rtc/rtc0/wakealarm)"
-              sleep 11
-              as_wake set "$epoch" | grep -q '"ok":true'
-              echo "$epoch" > "$RUNNER_TEMP/sdm-wake-left"
-            fi
-          fi
           # 無人授權規則：產生、範本的條件、polkit 載入時沒有錯誤、撤銷只刪那一個檔案
           as_rules status | grep -q '"granted":false'
           as_rules grant | grep -q '"ok":true'
@@ -309,6 +293,29 @@ jobs:
           test "$got" = 1
           as_rules revoke | grep -q '"removed":true'
           sudo test ! -e "$rule"
+          # 降級到沒有智慧充電的版本（0.3.0~ 以前）時 prerm 撤銷規則；升級到測試版時保留
+          prerm=/var/lib/dpkg/info/system-device-monitor.prerm
+          as_rules grant | grep -q '"ok":true'
+          sudo "$prerm" upgrade 0.3.0~beta.1
+          sudo test -e "$rule"
+          sudo "$prerm" upgrade 0.2.0
+          sudo test ! -e "$rule"
+          # 執行器（虛擬機）有可用的 RTC 時：真的排定、取消，再留一個給 prerm 取消（只在 CI 執行）
+          if [ -e /sys/class/rtc/rtc0/wakealarm ] && [ -z "$(cat /sys/class/rtc/rtc0/wakealarm)" ]; then
+            epoch=$(( $(date +%s) + 3600 ))
+            set +e; out=$(as_wake set "$epoch"); got=$?; set -e
+            echo "$out"
+            if [ "$got" = 0 ]; then
+              test "$(cat /sys/class/rtc/rtc0/wakealarm)" = "$epoch"
+              test "$(sudo stat -c '%U %a' /run/system-device-monitor/wake)" = "root 600"
+              sleep 11
+              as_wake clear | grep -q '"cleared":true'
+              test -z "$(cat /sys/class/rtc/rtc0/wakealarm)"
+              sleep 11
+              as_wake set "$epoch" | grep -q '"ok":true'
+              echo "$epoch" > "$RUNNER_TEMP/sdm-wake-left"
+            fi
+          fi
           # 留下規則：移除套件時 prerm 必須刪除它
           as_rules grant | grep -q '"ok":true'
       - name: Remove and purge

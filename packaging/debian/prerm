@@ -4,7 +4,8 @@
 # 並刪除保留的值（之後重新安裝時從頭開始，不會悄悄套回舊的上限）、小程式的鎖檔與寫入時間
 # （/run/system-device-monitor 空了才刪除目錄）。
 # 智慧充電：取消 sdm-wake 排定的喚醒鬧鐘（只有目前的鬧鐘等於它記下的時間時才寫 0，別人的鬧鐘不動），
-# 並撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個檔案）。升級時（upgrade）不動任何東西。
+# 並撤銷「允許無人時自動調整」的 polkit 規則（只刪除那一個檔案）。升級時（upgrade）不動任何東西；
+# 只有降級到沒有智慧充電的版本時，撤銷規則並取消鬧鐘（那個版本不會再管理它們）。
 # DPKG_ROOT 不是空的時不碰執行中的 systemd，只處理該目錄底下的檔案。
 set -e
 
@@ -16,6 +17,8 @@ STATE_DIR="${DPKG_ROOT:-}/var/lib/system-device-monitor"
 RUN_DIR="${DPKG_ROOT:-}/run/system-device-monitor"
 RTC_ALARM="${DPKG_ROOT:-}/sys/class/rtc/rtc0/wakealarm"
 RULE="${DPKG_ROOT:-}/etc/polkit-1/rules.d/49-system-device-monitor.rules"
+# 第一個附有 sdm-wake 與 sdm-unattended 的版本；結尾的「~」讓 0.3.0~beta.N 也算在內。
+SMART_CHARGING_SINCE="0.3.0~"
 
 clear_wake() {
     record="$RUN_DIR/wake"
@@ -34,6 +37,18 @@ clear_wake() {
     fi
 }
 
+remove_smart_charging() {
+    clear_wake
+    if [ -f "$RULE" ] || [ -L "$RULE" ]; then
+        rm -f "$RULE"
+    fi
+    rm -f "$RUN_DIR/wake"
+}
+
+if [ "$1" = "upgrade" ] && dpkg --compare-versions "${2:-}" lt "$SMART_CHARGING_SINCE"; then
+    remove_smart_charging
+fi
+
 if [ "$1" = "remove" ]; then
     if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
         systemctl disable --now "$SOCKET" >/dev/null 2>&1 || true
@@ -47,10 +62,7 @@ if [ "$1" = "remove" ]; then
     rm -f "$UNIT_DIR/sleep.target.wants/$LIMIT_UNIT"
     rm -f "$STATE_DIR/charge-limit.json"
     rmdir "$STATE_DIR" 2>/dev/null || true
-    clear_wake
-    if [ -f "$RULE" ] || [ -L "$RULE" ]; then
-        rm -f "$RULE"
-    fi
+    remove_smart_charging
     rm -f "$RUN_DIR/charge-limit.lock" "$RUN_DIR/charge-limit.times"
     rm -f "$RUN_DIR/wake" "$RUN_DIR/wake.lock" "$RUN_DIR/wake.times" "$RUN_DIR/unattended.lock"
     rmdir "$RUN_DIR" 2>/dev/null || true
