@@ -81,23 +81,44 @@ def target_row(controls, snapshot):
     return row, sync
 
 
+def hold_note(controls, current):
+    """驅動不接受設定的值（只支援部分上限，或拒絕過、選項變少）時，實際使用的保養上限與提高時的上限。"""
+    hold, options = controls.store.value(HOLD), percent_options(current)
+    target = controls.store.value(TARGET) or current.original_limit
+    return text.fitted_note(target, min(hold, target), options) \
+        or text.unsupported_hold(hold, options)
+
+
 def hold_row(controls, snapshot):
-    """保養上限；驅動不接受設定的值（只支援部分上限，或拒絕過、選項變少）時，下方說明實際使用的
-    保養上限與提高時的上限。"""
-    options = [(value, f"{value}%") for value in percent_options(snapshot)]
-    container = box(spacing=4)
-    container.pack_start(controls.choice(HOLD, "保養上限（等待時維持；不會高於完成目標）",
-                                         options), False, False, 0)
+    """保養上限：驅動接受的選項，另外一定包含設定裡的值（選單不會是空的）；選項或設定改變時重建清單。
+    下方說明實際使用的值。"""
+    row = box(False, ROW_SPACING)
+    row.pack_start(wrapped("保養上限（等待時維持；不會高於完成目標）"), True, True, 0)
+    combo = Gtk.ComboBoxText(valign=Gtk.Align.CENTER)
+    row.pack_end(combo, False, False, 0)
     note = wrapped("", "muted")
+    container = box(spacing=4)
+    container.pack_start(row, False, False, 0)
     container.pack_start(note, False, False, 0)
-    state = {"snapshot": snapshot}
+    state = {"key": None, "snapshot": snapshot}
+
+    def chosen(widget):
+        if widget.get_active_id() is not None:
+            controls.apply(**{HOLD: int(widget.get_active_id())})
+    handler = combo.connect("changed", chosen)
 
     def refresh():
         current, hold = state["snapshot"], controls.store.value(HOLD)
-        options = percent_options(current)
-        target = controls.store.value(TARGET) or current.original_limit
-        line = text.fitted_note(target, min(hold, target), options) \
-            or text.unsupported_hold(hold, options)
+        choices = text.hold_choices(hold, percent_options(current))
+        combo.handler_block(handler)
+        if choices != state["key"]:
+            state["key"] = choices
+            combo.remove_all()
+            for value, name in choices:
+                combo.append(str(value), name)
+        combo.set_active_id(str(hold))
+        combo.handler_unblock(handler)
+        line = hold_note(controls, current)
         set_text(note, line)
         show_if(note, bool(line))
 
@@ -105,6 +126,7 @@ def hold_row(controls, snapshot):
         state["snapshot"] = current
         refresh()
     controls.bind({TARGET, HOLD}, refresh)
+    controls.enable_when(row, HOLD)
     return container, sync
 
 

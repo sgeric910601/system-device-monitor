@@ -100,6 +100,15 @@ class Fitted(unittest.TestCase):
         self.assertEqual(text.unsupported_hold(80, (80, 100)), "")
         self.assertEqual(text.unsupported_hold(85, ()), "")
 
+    def test_hold_menu_always_contains_the_saved_value(self):
+        """保養上限的選單一定包含設定裡的值（不在驅動的選項中時寫出實際會用的值），不會是空的。"""
+        self.assertEqual(text.hold_choices(85, (80, 100)),
+                         ((80, "80%"), (85, "85%（實際 80%）"), (100, "100%")))
+        self.assertEqual(text.hold_choices(80, (80, 100)), ((80, "80%"), (100, "100%")))
+        self.assertEqual(text.hold_choices(70, ()), ((70, "70%"),))
+        self.assertEqual(text.hold_choices(55, (80, 100)),
+                         ((55, "55%（實際 80%）"), (80, "80%"), (100, "100%")))
+
     def test_nothing_to_explain(self):
         self.assertEqual(text.fitted_note(100, 80, (80, 85, 90, 95, 100)), "")
         self.assertEqual(text.fitted_note(77, 77, ()), "")

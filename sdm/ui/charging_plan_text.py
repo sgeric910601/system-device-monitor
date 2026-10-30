@@ -119,6 +119,16 @@ def unsupported_hold(hold, options):
             f"會改用 {fit_limit(hold, options, False)}%")
 
 
+def hold_choices(saved, options):
+    """保養上限選單的（值、名稱）：驅動接受的選項，另外一定包含設定裡的值（不在選項中時寫出實際
+    會用的值，例如「85%（實際 80%）」），選單不會是空的。"""
+    def name(value):
+        if not options or value in options:
+            return f"{value}%"
+        return f"{value}%（實際 {fit_limit(value, options, False)}%）"
+    return tuple((value, name(value)) for value in sorted(set(options) | {saved}))
+
+
 def plan_fitted_note(plan, charge):
     """目前排程的說明；沒有排程或不知道驅動接受哪些值時為空字串。"""
     if plan is None or charge is None:
