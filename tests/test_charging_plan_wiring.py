@@ -7,6 +7,7 @@
 """
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from sdm.constants import SmartCharging
 from sdm.core.battery import CHARGING, DISCHARGING, PLUGGED_IDLE, BatterySnapshot
@@ -197,6 +198,17 @@ class Building(Base):
         self.assertIsInstance(host.plan_unattended, DemoUnattended)
         self.assertIsNotNone(host.plan_controller.plan)
         self.assertEqual(host.plan_controller.plan.strategy, PRECISE_WAKE)
+
+    def test_preview_never_creates_a_helper_runner_or_a_logind_gate(self):
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("preview must not run helpers or talk to logind")
+        host = Host(preview="laptop-battery")
+        with patch.object(wiring, "HelperRunner", refuse), patch.object(wiring, "SleepGate",
+                                                                         refuse):
+            host.build_charging_plan()
+            host.start_plan_components()
+            host.plan_will_sleep(lambda: None)
+        self.assertEqual(host.charge_control.writes[-1][1:2], [False])
 
     def test_smoke_test_keeps_the_plan_in_memory_without_logind(self):
         host = Host(smoke=True)
