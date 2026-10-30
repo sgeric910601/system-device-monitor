@@ -3,7 +3,8 @@
 假根目錄的擁有者是執行測試的使用者（代替 root）；sys/devices 底下放電池的屬性檔，
 sys/class/power_supply 底下放指向它們的相對符號連結，與真正的 sysfs 相同。
 假驅動取代 os.write：像 sysfs 一樣整段取代檔案內容（不受 O_TRUNC 影響），並可模擬
-起點必須小於上限、只接受固定幾個值、拒絕某些值（EINVAL）。
+起點必須小於上限、只接受固定幾個值、拒絕某些值（EINVAL）；hook 在每次寫入前呼叫
+（可以檢查當時的狀態，或拋出例外模擬中斷）。
 """
 import errno
 import os
@@ -35,9 +36,11 @@ class Driver:
 
     def __init__(self, ordered=True, steps=None, refuse=()):
         self.ordered, self.steps, self.refuse = ordered, steps, set(refuse)
-        self.writes = []
+        self.writes, self.hook = [], None
 
     def __call__(self, fd, data):
+        if self.hook is not None:
+            self.hook()
         path = os.readlink(f"/proc/self/fd/{fd}")
         name, value = os.path.basename(path), int(data.decode("ascii"))
         self.writes.append((name, value))

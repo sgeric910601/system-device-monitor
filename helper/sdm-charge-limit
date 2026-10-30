@@ -8,10 +8,10 @@
 - set、status：root，而且 PKEXEC_UID 是 /etc/login.defs 範圍內、存在的一般帳號。restore：root、
   沒有 PKEXEC_UID、有 systemd 的 INVOCATION_ID、父程序是 PID 1。否則結束碼 4。
 - 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己、單元檔與每一層上層目錄
-  都屬於 root 且群組與其他人不可寫。
+  都屬於 root 且群組與其他人不可寫。執行期間忽略 SIGINT、SIGTSTP、SIGQUIT、SIGHUP。
 - 一次只執行一個：先以 flock 取得 /run/system-device-monitor/charge-limit.lock（root 0600），
   最多等 10 秒（busy）；同一顆電池兩次 set 至少相隔 10 秒（rate-limited），所有電池合計最近一小時
-  最多開始寫入 30 次（hourly-limit）；開機後的時鐘記在 charge-limit.times。
+  最多寫入 30 次（hourly-limit）；寫入之前就把開機後的時鐘記在 charge-limit.times（中斷也算）。
 - 電池的實際位置在 /sys/devices 之下、type 為 Battery、scope 不是 Device、有 charge_control_end_threshold；
   屬性檔以 O_NOFOLLOW 開啟並必須是一般檔案；寫入十進位數字後讀回確認（3 次、間隔 0.3 秒）。
 - --persist on 寫入 /var/lib/system-device-monitor 的狀態檔（0644，暫存檔＋fsync＋整檔取代）並啟用單元，
@@ -26,6 +26,7 @@ import os
 import pwd
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -42,8 +43,8 @@ FROM_UNIT = "--from-unit"
 OPTION_PERSIST = "--persist"
 PERSIST_ON, PERSIST_OFF, PERSIST_UNCHANGED = "on", "off", "unchanged"
 NOT_APPLIED, PERSIST_FAILED = "not-applied", "persist-failed"
-RATE_LIMITED, HOURLY_LIMIT = "rate-limited", "hourly-limit"
-LOGGED_ERRORS = ("busy", HOURLY_LIMIT)  # 會寫進系統日誌的錯誤代號；其他一律記成 failed
+RATE_LIMITED, HOURLY_LIMIT, INTERRUPTED = "rate-limited", "hourly-limit", "interrupted"
+LOGGED_ERRORS = ("busy", HOURLY_LIMIT, INTERRUPTED)     # 寫進系統日誌的錯誤代號；其他記成 failed
 SAFE_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 SAFE_ENV = {"PATH": SAFE_PATH, "LANG": "C"}
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -68,8 +69,7 @@ PERCENT_MAX_DIGITS = 3
 MIN_END, MAX_END = 50, 100
 MAX_BATTERIES = 32
 START_GAP = 5                           # 必須先降低起點、又沒有指定時：上限 − 5
-READBACK_ATTEMPTS = 3
-READBACK_INTERVAL_S = 0.3
+READBACK_ATTEMPTS, READBACK_INTERVAL_S = 3, 0.3     # 讀回確認的次數與間隔
 STATE_PARENT = "var/lib"
 STATE_DIR = STATE_PARENT + "/system-device-monitor"
 STATE_FORMAT = 1
@@ -78,8 +78,7 @@ STATE_KEYS = frozenset({"format", "supply", "end"})
 RUN_DIR = "run/system-device-monitor"   # 與 CPU 功耗的 socket 共用；單元以 RuntimeDirectory= 保留
 LOCK_NAME = "charge-limit.lock"
 LOCK_MODE = 0o600
-LOCK_WAIT_S = 10.0
-LOCK_POLL_S = 0.1
+LOCK_WAIT_S, LOCK_POLL_S = 10.0, 0.1
 TIMES_NAME = "charge-limit.times"       # 各電池最近一小時開始寫入的開機後秒數
 MIN_WRITE_GAP_S = 10.0
 HOURLY_WRITES, HOUR_S = 30, 3600.0      # 所有電池合計
@@ -162,6 +161,12 @@ class Context(NamedTuple):
 def log(message):
     syslog.openlog(LOG_IDENT, syslog.LOG_PID, syslog.LOG_AUTHPRIV)
     syslog.syslog(syslog.LOG_INFO, message)
+
+
+def ignore_terminal_signals():
+    """整個執行期間忽略終端機的中斷、暫停、結束與掛斷：不能打斷寫入與記錄來繞過寫入的限制。"""
+    for number in (signal.SIGINT, signal.SIGTSTP, signal.SIGQUIT, signal.SIGHUP):
+        signal.signal(number, signal.SIG_IGN)
 
 
 def run_command(argv):
@@ -657,14 +662,14 @@ def load_state(context, layout):
 # ── 動作 ───────────────────────────────────────────────────
 
 def set_limit(context, layout, request):
-    """寫入之前確認間隔；只要開始嘗試寫入（不論結果）就記下時間。"""
+    """確認間隔與每小時的上限；找到電池後、寫入之前就記下這次（不論結果或是否被中斷）。"""
     check_rate(context, request.supply)
     fd = open_battery(context, request.supply)
     try:
+        recent_writes(context, request.supply)
         end, start = apply_request(context, fd, request)
     finally:
         os.close(fd)
-        recent_writes(context, request.supply)
     try:
         persist(context, layout, request)
     except (Failed, OSError):
@@ -673,26 +678,21 @@ def set_limit(context, layout, request):
             "persist": request.persist}
 
 
-def restored(value):
-    return {"ok": True, "action": "restore", "restored": value}
-
-
 def restore(context, layout, _request):
     """重新套用保留的值；沒有保留、電池不在或不再支援時略過。"""
     request = load_state(context, layout)
-    if request is None:
-        return restored(False)
     try:
-        fd = open_battery(context, request.supply)
+        fd = None if request is None else open_battery(context, request.supply)
     except Failed:
-        return restored(False)
+        fd = None
     try:
-        if read_attribute(fd, END_FILE) is None:
-            return restored(False)
-        apply_request(context, fd, request)
+        applied = fd is not None and read_attribute(fd, END_FILE) is not None
+        if applied:
+            apply_request(context, fd, request)
     finally:
-        os.close(fd)
-    return restored(True)
+        if fd is not None:
+            os.close(fd)
+    return {"ok": True, "action": "restore", "restored": applied}
 
 
 def battery_entry(context, name):
@@ -770,6 +770,8 @@ def outcome_of(command, request, env, context):
         return EXIT_FAILED, {"ok": False, "error": str(error)}, logged
     except OSError:
         return EXIT_FAILED, {"ok": False, "error": "failed"}, "failed"
+    except KeyboardInterrupt:
+        return EXIT_FAILED, {"ok": False, "error": INTERRUPTED}, INTERRUPTED
     return EXIT_OK, result, "skipped" if result.get("restored") is False else "ok"
 
 
@@ -789,6 +791,7 @@ def main(argv, env, context=None, emit=emit_json, report=log):
 
 
 if __name__ == "__main__":
+    ignore_terminal_signals()
     ENVIRONMENT = dict(os.environ)
     os.environ.clear()
     os.environ.update(SAFE_ENV)

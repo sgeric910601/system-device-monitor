@@ -6,10 +6,13 @@ ASUS 型的假驅動只接受 60／80／100，其他值改成最接近的一個�
 import fcntl
 import json
 import os
+import signal
+import unittest.mock
 
 from sdm.constants import ChargeLimit
 from tests.fixtures.charge_root import (DEB_STATE, DEB_UNIT, END, ENV, LOCAL_STATE, LOCAL_UNIT,
                                         LOCK, START, TIMES, UNIT_ENV, Base, Driver, helper)
+from tests.fixtures.helpers import ROOT
 
 
 class Ordering(Base):
@@ -551,3 +554,55 @@ class HourlyLimit(Base):
         """使用者放開滑桿最快 10 秒一次；智慧充電一小時最多提高與還原各一次。"""
         self.assertGreaterEqual(ChargeLimit.HOURLY_WRITES, 30)
         self.assertEqual(ChargeLimit.HOURLY_WINDOW, 3600.0)
+
+
+class Interruptions(Base):
+    """寫入之前就記下這次（中斷也算一次）；執行期間忽略終端機的訊號；仍收到 KeyboardInterrupt
+    時是一行 JSON（interrupted，結束碼 3）。用 Ctrl-C 打斷不能繞過 10 秒間隔與每小時上限。"""
+
+    def setUp(self):
+        super().setUp()
+        self.battery(end=80, start=75)
+        self.boot_step = 0.0
+
+    def test_stamp_is_stored_before_the_driver_is_written(self):
+        seen = []
+        self.driver.hook = lambda: seen.append(json.loads((self.root.path/TIMES).read_text()))
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_OK)
+        self.assertEqual(seen, [{"BAT0": [self.boot]}])
+
+    def test_interrupt_is_one_json_line_and_still_counts(self):
+        def interrupt():
+            raise KeyboardInterrupt
+        self.driver.hook = interrupt
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output, [{"ok": False, "error": "interrupted"}])
+        self.assertEqual(self.logged, ["set interrupted"])
+        self.driver.hook = None
+        self.boot += 4
+        self.assertEqual(self.main(["set", "BAT0", "85"]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["error"], "rate-limited")
+
+    def test_interrupting_every_write_cannot_pass_the_hourly_limit(self):
+        def interrupt():
+            raise KeyboardInterrupt
+        self.driver.hook = interrupt
+        errors = []
+        for _ in range(ChargeLimit.HOURLY_WRITES + 10):
+            self.main(["set", "BAT0", "85"])
+            errors.append(self.output[-1]["error"])
+            self.boot += ChargeLimit.MIN_WRITE_GAP + 1
+        self.assertEqual(errors, ["interrupted"] * ChargeLimit.HOURLY_WRITES
+                         + ["hourly-limit"] * 10)
+
+    def test_terminal_signals_are_ignored_for_the_whole_run(self):
+        calls = []
+        with unittest.mock.patch.object(helper.signal, "signal",
+                                        lambda number, handler: calls.append((number, handler))):
+            helper.ignore_terminal_signals()
+        self.assertEqual(set(calls), {(number, signal.SIG_IGN) for number in
+                                      (signal.SIGINT, signal.SIGTSTP, signal.SIGQUIT,
+                                       signal.SIGHUP)})
+        text = (ROOT/"helper/sdm-charge-limit").read_text(encoding="utf-8")
+        entry = text[text.index('if __name__ == "__main__":'):]
+        self.assertLess(entry.index("ignore_terminal_signals()"), entry.index("main("))
