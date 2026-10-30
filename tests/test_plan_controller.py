@@ -86,6 +86,24 @@ class FullCycle(Base):
         self.assertIsNone(self.store.load())
         self.assertTrue(any("排程結束" in line for line in self.lines))
 
+    def test_cancel_during_a_write_restores_after_it_ends(self):
+        """寫入進行中取消：不同時寫兩個值；那個寫入結束（成功或失敗）後還原，最後一定結束排程。"""
+        for success, later in ((True, 3), (False, 61)):
+            with self.subTest(success=success):
+                self.start(current=90)
+                self.assertEqual(self.evaluate(EVENING, 70, limit=90), 80)
+                self.assertIsNone(self.controller.cancel(data(EVENING + 1, 70, limit=90)))
+                self.assertTrue(self.controller.plan.restoring)
+                self.finished(80, success=success, now=EVENING + 2)
+                limit = 80 if success else 90
+                if not success:
+                    self.assertIsNone(self.evaluate(EVENING + 30, 70, limit=limit))
+                    self.assertIsNone(self.controller.plan)     # 上限本來就是原本的 90%
+                    continue
+                self.assertEqual(self.evaluate(EVENING + later, 70, limit=limit), 90)
+                self.finished(90, now=EVENING + later)
+                self.assertIsNone(self.controller.plan)
+
     def test_cancel_when_the_limit_is_already_the_original(self):
         self.start(current=80)
         self.assertIsNone(self.controller.cancel(data(EVENING, 70, limit=80)))

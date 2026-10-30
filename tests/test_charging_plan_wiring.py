@@ -269,6 +269,18 @@ class Ticks(Base):
         self.assertIsNone(self.controller.plan)
         self.assertEqual(self.host.fakes.gate.active[-1], False)
 
+    def test_cancel_while_writing_restores_after_the_write(self):
+        self.charge.state = ChargeState(supply="BAT0", limit=67, protocol=True, demo=True)
+        self.start()
+        self.assertEqual(self.charge.writes[-1][:2], [80, False])
+        self.host.cancel_plan()
+        self.assertEqual(len(self.charge.writes), 1)            # 不同時寫兩個值
+        self.charge.finish()
+        self.host.plan_tick()
+        self.assertEqual(self.charge.writes[-1][:2], [67, True])
+        self.charge.finish()
+        self.assertIsNone(self.controller.plan)
+
     def test_original_limit_prefers_the_persisted_value(self):
         self.charge.saved = SimpleNamespace(supply="BAT0", end=85)
         self.host.preferences.charging_target_percent = 0
