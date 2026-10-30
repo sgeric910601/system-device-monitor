@@ -221,8 +221,10 @@
   （在檢查權限之前）。
 - set、clear、status 都必須以 root 執行，PKEXEC_UID 的規則與其他小程式相同，否則結束碼 4；
   執行路徑必須與兩個安裝位置之一一字不差，自己與路徑上每一層目錄都屬於 root 且群組與其他人不可寫。
-- 一次只執行一個（/run/system-device-monitor/wake.lock，root 0600，最多等 10 秒）；set 與 clear
+- 一次只執行一個（/run/system-device-monitor/wake.lock，root 0600，最多等 10 秒）；兩次 set
   至少相隔 10 秒（開機後的時鐘記在 wake.times，root 0600；太快時結束碼 3、rate-limited）。
+  clear 不受這個間隔限制，關機、撤銷或移除前一定能立即取消；它只在鬧鐘就是記下的時間時寫一次 "0"，
+  之後紀錄就刪除，所以寫入 RTC 的次數仍受 set 的間隔限制。
 - RTC：/sys/class/rtc/rtc0 的實際位置必須在 /sys/devices 之下，wakealarm 必須是一般檔案（no-rtc）；
   硬體時鐘（since_epoch）與系統時間相差超過 5 分鐘時拒絕（rtc-offset：核心把 RTC 當成 UTC，
   硬體時鐘存本地時間的雙系統電腦會差好幾個小時）。

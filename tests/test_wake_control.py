@@ -2,7 +2,7 @@
 
 - 只在選了精準喚醒、元件可用而且已允許無人時自動調整時才排定；
 - 喚醒時間只能在 60 秒後到 7 天內；與已排定的時間相差 5 分鐘以上才重排，1 秒內視為同一個；
-- 不需要時取消；失敗後 1 分鐘內不再試；兩次執行小程式至少相隔 10 秒；
+- 不需要時取消；失敗後 1 分鐘內不再試；兩次 set 至少相隔 10 秒，取消不必等；
 - 已排定的鬧鐘不見了（已經響過或被別人換掉）就不算排好。
 pkexec 以假的執行器代替，RTC 讀值以假函式代替，時間以假時鐘代替。
 """
@@ -147,6 +147,19 @@ class Scheduling(Base):
         self.sync(NOW + 7200)
         self.assertEqual(len(self.runner.helper_calls()), 1)
         self.advance(Wake.MIN_WRITE_GAP)
+        self.assertEqual(self.runner.helper_calls()[-1], ["set", str(int(NOW) + 7200)])
+
+    def test_clear_runs_at_once_but_set_waits_ten_seconds_after_the_last_set(self):
+        self.sync(NOW + 3600)
+        self.scheduled(int(NOW) + 3600)
+        self.sync(None)
+        self.assertEqual(self.runner.helper_calls()[-1], ["clear"])
+        self.alarm = None
+        self.runner.finish(0, json.dumps({"ok": True, "action": "clear", "cleared": True}))
+        self.advance(4)
+        self.sync(NOW + 7200)
+        self.assertEqual(len(self.runner.helper_calls()), 2)
+        self.advance(Wake.MIN_WRITE_GAP - 4)
         self.assertEqual(self.runner.helper_calls()[-1], ["set", str(int(NOW) + 7200)])
 
     def test_one_run_at_a_time_then_the_latest_request(self):

@@ -163,6 +163,12 @@ class SmartCharging(unittest.TestCase):
                      "sudo ls /etc/polkit-1/rules.d"):
             self.assertIn(text, WORKFLOW)
 
+    def test_clear_right_after_set_is_not_rate_limited(self):
+        start = WORKFLOW.index('as_wake set "$epoch"); got=$?')
+        clear = WORKFLOW.index("as_wake clear | grep -q '\"cleared\":true'", start)
+        self.assertNotIn("sleep", WORKFLOW[start:clear])
+        self.assertIn("sleep 11", WORKFLOW[clear:WORKFLOW.index("sdm-wake-left", clear)])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,8 +6,8 @@ sdm-wake 小程式寫 RTC 喚醒鬧鐘（/sys/class/rtc/rtc0/wakealarm），經�
   否則不執行任何程式，排程在睡眠前改用準備優先（看板顯示原因）。
 - 喚醒時間只能在 60 秒後到 7 天內；與已排定的時間相差不到 1 秒視為同一個，相差 5 分鐘以上
   才重排；不需要時取消。失敗後 1 分鐘內不再試。
-- 小程式要求 set 與 clear 至少相隔 10 秒：距離上次執行不到 10 秒時，先等滿再執行最新的要求；
-  同一時間只執行一個。關機前（clear_now）立即取消，不等這個間隔（盡力而為）。
+- 小程式要求兩次 set 至少相隔 10 秒：距離上次 set 不到 10 秒時，先等滿再執行最新的要求；
+  取消（clear）不受限，立即執行。同一時間只執行一個。關機前（clear_now）不等失敗後的 1 分鐘。
 - 已排定的鬧鐘以一般權限讀 wakealarm 確認還在；響過或被別人換掉就不算排好。
 所有方法都在主執行緒呼叫。
 """
@@ -92,7 +92,7 @@ class WakeControl:
         self.read_alarm = read_alarm
         self.state, self.generation, self.stopped = WakeState(), 0, False
         self.target = (None, False, False)  # 最新的（喚醒時間、精準喚醒、已授權）
-        self.last_run = self.retry_at = self.timer = None
+        self.last_set = self.retry_at = self.timer = None
 
     def update(self, **changes):
         state = replace(self.state, **changes)
@@ -161,8 +161,7 @@ class WakeControl:
     def run(self, arguments, done=None, urgent=False):
         if self.retry_at is not None and self.clock() < self.retry_at and not urgent:
             return
-        wait = 0 if self.last_run is None or urgent else \
-            self.last_run + Wake.MIN_WRITE_GAP - self.clock()
+        wait = self.gap_left() if arguments[0] == "set" else 0
         if wait > 0:
             self.timer = self.schedule(wait, self.gap_passed)
             return
@@ -170,6 +169,10 @@ class WakeControl:
         argv = [CpuPower.PKEXEC, self.state.layout.helper, *arguments]
         self.runner.run(argv, Wake.PKEXEC_TIMEOUT,
                         lambda status, output: self.finished(arguments, status, output, done))
+
+    def gap_left(self):
+        """距離上次 set 還要等的秒數（小程式只限制兩次 set 的間隔）。"""
+        return 0 if self.last_set is None else self.last_set + Wake.MIN_WRITE_GAP - self.clock()
 
     def gap_passed(self):
         self.timer = None
@@ -179,7 +182,8 @@ class WakeControl:
     def finished(self, arguments, status, output, done):
         if self.stopped:
             return
-        self.last_run = self.clock()
+        if arguments[0] == "set":
+            self.last_set = self.clock()
         result = parse_result(output)
         if status == 0 and result is not None and result["ok"]:
             setting = arguments[0] == "set"
@@ -198,7 +202,7 @@ class WakeControl:
             self.sync(*self.target)
 
     def clear_now(self, done):
-        """關機前：有排定的鬧鐘就立即取消（不等 10 秒的間隔）；done() 在結束後呼叫。"""
+        """關機前：有排定的鬧鐘就立即取消（不等失敗後的 1 分鐘）；done() 在結束後呼叫。"""
         if self.state.scheduled is None or self.state.busy or not self.state.component:
             done()
             return

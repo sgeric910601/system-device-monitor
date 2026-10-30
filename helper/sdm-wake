@@ -8,7 +8,8 @@
 - 執行路徑（sys.argv[0]，不正規化）必須剛好是兩個安裝位置之一；自己與每一層上層目錄都屬於 root
   且群組與其他人不可寫。
 - 一次只執行一個：flock /run/system-device-monitor/wake.lock（root 0600），最多等 10 秒（busy）；
-  set 與 clear 至少相隔 10 秒（rate-limited，開機後的時鐘記在 wake.times）。
+  兩次 set 至少相隔 10 秒（rate-limited，開機後的時鐘記在 wake.times）；clear 不受限，
+  才能在關機、撤銷或移除前立即取消（clear 只會寫一次 "0"，次數受 set 限制）。
 - RTC：/sys/class/rtc/rtc0 的實際位置必須在 /sys/devices 之下，wakealarm 是一般檔案（no-rtc）；
   硬體時鐘（since_epoch）與系統時間相差超過 5 分鐘時拒絕（rtc-offset，例如硬體時鐘存本地時間）。
 - set：時間（系統時鐘）必須在 60 秒後到 7 天內（out-of-range）；目前有不是這個小程式記下的鬧鐘時
@@ -88,7 +89,7 @@ class Failed(Exception):
 
 
 class RateLimited(Failed):
-    """距離上次 set 或 clear 不到 10 秒；retry_after 為還要等的秒數（無條件進位）。"""
+    """距離上次 set 不到 10 秒；retry_after 為還要等的秒數（無條件進位）。"""
 
     def __init__(self, retry_after):
         super().__init__(RATE_LIMITED)
@@ -457,7 +458,7 @@ def write_alarm(context, dir_fd, text):
 # ── 動作 ───────────────────────────────────────────────────
 
 def program(context, dir_fd, epoch):
-    """先取消再寫入時間並讀回；不符時取消並刪除紀錄。只要開始寫入（不論結果）就記下時間。"""
+    """先取消再寫入時間並讀回；不符時取消並刪除紀錄。只要開始寫入（不論結果）就記下 set 的時間。"""
     try:
         write_alarm(context, dir_fd, CLEAR)
         write_alarm(context, dir_fd, str(epoch))
@@ -487,17 +488,14 @@ def set_alarm(context, epoch):
 
 
 def clear_alarm(context, _epoch):
-    """只取消這個小程式記下的鬧鐘；之後刪除紀錄（鬧鐘已經響過或被別人換掉時只刪紀錄）。"""
-    check_rate(context)
+    """只取消這個小程式記下的鬧鐘；之後刪除紀錄（鬧鐘已經響過或被別人換掉時只刪紀錄）。
+    不受 10 秒的間隔限制：有紀錄而且鬧鐘就是它時才寫一次 "0"，之後紀錄就刪除了。"""
     fd = open_rtc(context)
     try:
         recorded = read_record(context)
         cleared = recorded is not None and read_alarm(fd) == recorded
         if cleared:
-            try:
-                write_alarm(context, fd, CLEAR)
-            finally:
-                record_time(context)
+            write_alarm(context, fd, CLEAR)
             if read_alarm(fd) is not None:
                 raise Failed("not-applied")
     finally:

@@ -272,16 +272,22 @@ class SetAndClear(Base):
 
 
 class Serialization(Base):
-    def test_set_and_clear_share_a_ten_second_gap(self):
+    def test_only_set_waits_ten_seconds_after_the_last_set(self):
+        """取消隨時可以（關機或撤銷前不能被擋）；只有兩次 set 之間至少相隔 10 秒。"""
         self.boot_step = 0.0
         self.assertEqual(self.main(["set", str(NOW + 600)]), helper.EXIT_OK)
         self.boot += 4
-        self.assertEqual(self.main(["clear"]), helper.EXIT_FAILED)
+        self.assertEqual(self.main(["set", str(NOW + 900)]), helper.EXIT_FAILED)
         self.assertEqual(self.output[-1], {"ok": False, "error": "rate-limited",
                                            "retry_after": 6})
-        self.assertEqual(self.main(["status"]), helper.EXIT_OK)
-        self.boot += Wake.MIN_WRITE_GAP
         self.assertEqual(self.main(["clear"]), helper.EXIT_OK)
+        self.assertEqual(self.output[-1], {"ok": True, "action": "clear", "cleared": True})
+        self.assertEqual(self.alarm(), "")
+        self.assertEqual(self.main(["clear"]), helper.EXIT_OK)
+        self.assertEqual(self.main(["set", str(NOW + 900)]), helper.EXIT_FAILED)
+        self.assertEqual(self.output[-1]["retry_after"], 6)
+        self.boot += 6
+        self.assertEqual(self.main(["set", str(NOW + 900)]), helper.EXIT_OK)
 
     def test_busy_when_another_run_holds_the_lock(self):
         self.main(["status"])

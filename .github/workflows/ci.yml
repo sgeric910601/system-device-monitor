@@ -308,7 +308,7 @@ jobs:
             if [ "$got" = 0 ]; then
               test "$(cat /sys/class/rtc/rtc0/wakealarm)" = "$epoch"
               test "$(sudo stat -c '%U %a' /run/system-device-monitor/wake)" = "root 600"
-              sleep 11
+              # 取消不受 10 秒的間隔限制；之後的 set 仍要等滿
               as_wake clear | grep -q '"cleared":true'
               test -z "$(cat /sys/class/rtc/rtc0/wakealarm)"
               sleep 11
