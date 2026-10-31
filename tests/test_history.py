@@ -248,6 +248,24 @@ class ImportedPoints(unittest.TestCase):
         self.assertLessEqual(len(points), History.MAX_POINTS)
         self.assertLessEqual({p.pct for p in points}, {80, 30})     # 沒有平均出來的 55
 
+    def test_bridge_at_exactly_six_hours_but_not_one_second_more(self):
+        """空白兩側相隔剛好 6 小時（GAP_SECONDS）仍以虛線相接，多 1 秒就斷開、不加複製點。"""
+        gap = History.GAP_SECONDS
+        first = NOW - 3 * gap
+        for before, after in ((0, 0), (1, 0), (0, 1)):
+            filled_t = first + gap + before
+            own = (sample(first, pct=80), sample(filled_t + gap + after, pct=40))
+            points = chart_points(own, 7 * DAY, NOW, imported=(imported(filled_t, pct=60),))
+            expected = [(first, False, 0)]
+            if not before:
+                expected.append((first, True, 1))          # 自己的最後一點複製到補回段
+            expected.append((filled_t, True, 1))
+            if not after:
+                expected.append((own[1].t, True, 1))       # 下一筆自己的紀錄先複製到補回段
+            expected.append((own[1].t, False, 2))
+            with self.subTest(before=before, after=after):
+                self.assertEqual(self.flags(points), expected)
+
     def test_imported_far_from_own_samples_is_not_bridged(self):
         own = (sample(NOW - 20 * 3600, pct=80), sample(NOW - 60, pct=40))
         filled = (imported(NOW - 10 * 3600, pct=60),)
