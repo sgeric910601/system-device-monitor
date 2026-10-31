@@ -386,3 +386,11 @@ jobs:
           sudo test ! -e /etc/polkit-1/rules.d/49-system-device-monitor.rules
           sudo apt-get purge -y system-device-monitor
           bash scripts/ci_leftovers.sh "$old_deb" "$new_deb"
+      - name: Unit logs after a failure
+        if: failure()
+        run: |
+          # 任何一步失敗時印出本套件的單元狀態與紀錄（包括小程式寫進系統紀錄的訊息），方便找原因
+          sudo systemctl status --no-pager --full 'system-device-monitor*' || true
+          sudo journalctl -b --no-pager -o short-precise -u 'system-device-monitor*' \
+            -t sdm-cpu-power -t sdm-cpu-power-service -t sdm-charge-limit -t sdm-wake \
+            -t sdm-unattended -t sdm-update | tail -n 300 || true

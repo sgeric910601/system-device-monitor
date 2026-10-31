@@ -144,6 +144,16 @@ class Upgrade(unittest.TestCase):
                 self.assertIn(text, step)
 
 
+class FailureLogs(unittest.TestCase):
+    def test_unit_logs_are_printed_when_a_step_fails(self):
+        """執行器上沒辦法事後登入查看：失敗時把單元狀態與小程式的系統紀錄印進 CI 紀錄。"""
+        step = WORKFLOW.split("- name: Unit logs after a failure", 1)[1]
+        self.assertIn("if: failure()", step)
+        for text in ("journalctl", "-t sdm-cpu-power-service", "systemctl status"):
+            with self.subTest(text=text):
+                self.assertIn(text, step)
+
+
 @unittest.skipUnless(yaml is not None and shutil.which("bash"), "needs PyYAML and bash")
 class Syntax(unittest.TestCase):
     def test_every_step_is_valid_yaml_and_bash(self):
