@@ -25,10 +25,10 @@ jobs:
           /usr/bin/python3 scripts/privacy_check.py --tree /tmp/package-check
           /usr/bin/python3 scripts/scan_secrets.py --tree /tmp/package-check
           desktop-file-validate /tmp/package-check/usr/share/applications/system-device-monitor.desktop
-      - name: Install, run, upgrade
+      - name: Install, run, reinstall
         run: |
           sudo apt-get install -y ./dist/*.deb
-          /usr/bin/system-device-monitor --version
+          test "$(/usr/bin/system-device-monitor --version)" = "System Device Monitor $(cat VERSION)"
           xvfb-run -a dbus-run-session -- /usr/bin/system-device-monitor --smoke-test --output-dir /tmp/monitor-smoke
           sudo apt-get install -y --reinstall ./dist/*.deb
       - name: Admin components
@@ -298,6 +298,9 @@ jobs:
           as_rules grant | grep -q '"ok":true'
           sudo "$prerm" upgrade 0.3.0~beta.1
           sudo test -e "$rule"
+          # 重新安裝同一版時 dpkg 也以 upgrade 執行舊的 prerm：規則留著
+          sudo "$prerm" upgrade "$(cat VERSION)"
+          sudo test -e "$rule"
           sudo "$prerm" upgrade 0.2.0
           sudo test ! -e "$rule"
           # 執行器（虛擬機）有可用的 RTC 時：真的排定、取消，再留一個給 prerm 取消（只在 CI 執行）
@@ -321,6 +324,33 @@ jobs:
       - name: Remove and purge
         run: |
           set -eu
+          # 完全移除後什麼都不能留下：套件列出的每個檔案、小程式、polkit 動作、systemd 單元、
+          # /run 與 /var 的狀態、rules.d 的規則檔，以及任何名稱含本套件的項目（之後的升級步驟也用它）
+          cat > "$RUNNER_TEMP/leftovers.sh" <<'EOF'
+          set -euo pipefail
+          if dpkg-query -W system-device-monitor >/dev/null 2>&1; then echo "dpkg still lists the package"; exit 1; fi
+          for deb in "$@"; do
+            dpkg-deb --fsys-tarfile "$deb" | tar -t | while read -r entry; do
+              path="/${entry#./}"
+              case "$path" in */) continue ;; esac
+              if [ -e "$path" ] || [ -L "$path" ]; then echo "left behind: $path"; exit 1; fi
+            done
+          done
+          for path in /usr/share/system-device-monitor /usr/share/doc/system-device-monitor \
+                      /usr/libexec/system-device-monitor /run/system-device-monitor \
+                      /var/lib/system-device-monitor /var/cache/system-device-monitor \
+                      /etc/systemd/system/system-device-monitor-cpu-power.socket.d \
+                      /etc/polkit-1/rules.d/49-system-device-monitor.rules; do
+            if sudo test -e "$path"; then echo "left behind: $path"; exit 1; fi
+          done
+          # systemd 自己的執行期紀錄（/run/systemd）、使用者的執行期目錄與 apt 的快取不屬於套件
+          found=$(sudo find /etc /usr/bin /usr/libexec /usr/local/libexec /usr/lib/systemd /usr/share/applications \
+                    /usr/share/doc /usr/share/icons /usr/share/polkit-1 /usr/local/share/polkit-1 /var /run \
+                    \( -path /run/user -o -path /run/systemd -o -path /var/cache/apt -o -path /var/lib/docker \) -prune -o \
+                    \( -name '*system-device-monitor*' -o -name 'sdm-cpu-power*' -o -name 'sdm-charge-limit' \
+                       -o -name 'sdm-wake' -o -name 'sdm-unattended' -o -name 'sdm-update' \) -print 2>/dev/null || true)
+          if [ -n "$found" ]; then printf 'left behind:\n%s\n' "$found"; exit 1; fi
+          EOF
           sudo apt-get remove -y system-device-monitor
           test ! -e /var/lib/system-device-monitor/charge-limit.json
           test ! -e /run/system-device-monitor/charge-limit.lock
@@ -352,3 +382,33 @@ jobs:
           test ! -e /usr/libexec/system-device-monitor
           if sudo ls /etc/polkit-1/rules.d | grep -q system-device-monitor; then exit 1; fi
           if dpkg-query -W system-device-monitor 2>/dev/null; then exit 1; fi
+          bash "$RUNNER_TEMP/leftovers.sh" dist/system-device-monitor_"$(cat VERSION)"_all.deb
+      - name: Upgrade from the last release
+        run: |
+          set -euo pipefail
+          # 從最後一個發布的版本升級。GitHub 上的 Release 目前只有 v0.1.0；以它自己的建置腳本從 git 標籤
+          # 重新建置（checkout 的 fetch-depth: 0 已經取得標籤），不需要下載權杖，內容由標籤固定。
+          # 發布新版本之後把 previous 改成新的標籤。
+          previous=v0.1.0
+          git rev-parse --verify --quiet "refs/tags/$previous^{commit}" >/dev/null || { echo "missing tag $previous"; exit 1; }
+          old="$RUNNER_TEMP/previous"
+          mkdir "$old"
+          git archive "$previous" | tar -x -C "$old"
+          /usr/bin/python3 -B "$old/scripts/build_deb.py"
+          old_deb="$old/dist/system-device-monitor_${previous#v}_all.deb"
+          new_deb="dist/system-device-monitor_$(cat VERSION)_all.deb"
+          sudo apt-get install -y "$old_deb"
+          test "$(dpkg-query -W -f='${Version}' system-device-monitor)" = "${previous#v}"
+          test -e /usr/share/system-device-monitor/runtime.py
+          sudo apt-get install -y "./$new_deb"
+          test "$(dpkg-query -W -f='${Version}' system-device-monitor)" = "$(cat VERSION)"
+          test "$(/usr/bin/system-device-monitor --version)" = "System Device Monitor $(cat VERSION)"
+          # 舊版才有的檔案已經換掉；升級不啟用任何服務，也不寫入無人授權的規則
+          for name in app.py collectors.py model.py runtime.py; do
+            test ! -e "/usr/share/system-device-monitor/$name"
+          done
+          test "$(systemctl is-enabled system-device-monitor-cpu-power.socket || true)" = "disabled"
+          test "$(systemctl is-enabled system-device-monitor-charge-limit.service || true)" = "disabled"
+          sudo test ! -e /etc/polkit-1/rules.d/49-system-device-monitor.rules
+          sudo apt-get purge -y system-device-monitor
+          bash "$RUNNER_TEMP/leftovers.sh" "$old_deb" "$new_deb"

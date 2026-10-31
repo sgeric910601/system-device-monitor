@@ -1,9 +1,25 @@
-"""CI 安裝 .deb 後必須實際檢查管理員元件；避免之後的修改不小心拿掉這些檢查。"""
+"""CI 安裝 .deb 後必須實際檢查管理員元件；避免之後的修改不小心拿掉這些檢查。
+
+這裡只能做靜態檢查（文字、YAML 結構與 bash -n）；工作流程本身要在 GitHub 上執行才知道結果。
+"""
 from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
 import unittest
+
+from sdm.core.update_logic import AppVersion
+from sdm.paths import VERSION
+
+try:
+    import yaml
+except ImportError:         # 沒有 PyYAML 時略過結構檢查，文字檢查照常
+    yaml = None
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT/".github/workflows/ci.yml").read_text(encoding="utf-8")
+PREVIOUS = re.compile(r"^ +previous=v([0-9][^\s]*)$", re.M)
 HELPER = "/usr/libexec/system-device-monitor/sdm-cpu-power"
 LIMIT = "/usr/libexec/system-device-monitor/sdm-charge-limit"
 
@@ -62,6 +78,92 @@ class Workflow(unittest.TestCase):
                      "/usr/share/polkit-1/actions/tw.local.system-device-monitor.policy"):
             self.assertIn(f"test ! -e {path}", WORKFLOW)
 
+
+
+class Leftovers(unittest.TestCase):
+    """完全移除之後什麼都不能留下：套件列出的每個檔案、狀態目錄、規則檔與名稱含本套件的項目。"""
+
+    def test_the_check_covers_files_state_and_names(self):
+        for text in ('cat > "$RUNNER_TEMP/leftovers.sh" <<\'EOF\'', "dpkg-deb --fsys-tarfile",
+                     "dpkg-query -W system-device-monitor", "/usr/libexec/system-device-monitor",
+                     "/run/system-device-monitor", "/var/lib/system-device-monitor",
+                     "/var/cache/system-device-monitor", "/usr/share/system-device-monitor",
+                     "/etc/polkit-1/rules.d/49-system-device-monitor.rules",
+                     "/etc/systemd/system/system-device-monitor-cpu-power.socket.d",
+                     "-name '*system-device-monitor*'", "-name 'sdm-unattended'", "sudo find /etc"):
+            with self.subTest(text=text):
+                self.assertIn(text, WORKFLOW)
+
+    def test_the_check_runs_after_every_purge(self):
+        purges = [match.start() for match in
+                  re.finditer(r"sudo apt-get purge -y system-device-monitor", WORKFLOW)]
+        checks = [match.start() for match in re.finditer(r'bash "\$RUNNER_TEMP/leftovers.sh"', WORKFLOW)]
+        self.assertEqual(len(purges), 2)
+        self.assertEqual(len(checks), 2)
+        for purge, check in zip(purges, checks):
+            self.assertLess(purge, check)
+        self.assertLess(WORKFLOW.index("leftovers.sh\" <<"), purges[0])
+
+
+class Upgrade(unittest.TestCase):
+    """從最後一個發布的版本（git 標籤）升級到這次建置的套件。"""
+
+    def step(self):
+        start = WORKFLOW.index("- name: Upgrade from the last release")
+        return WORKFLOW[start:]
+
+    def test_the_previous_release_is_older_and_documented(self):
+        previous = PREVIOUS.search(self.step()).group(1)
+        self.assertLess(AppVersion.current(previous), AppVersion.current(VERSION))
+        changelog = (ROOT/"CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(f"\n## {previous}\n", changelog)
+
+    def test_the_old_package_is_rebuilt_from_its_tag_and_upgraded(self):
+        step = self.step()
+        order = ['git rev-parse --verify --quiet "refs/tags/$previous^{commit}"',
+                 'git archive "$previous" | tar -x -C "$old"',
+                 '/usr/bin/python3 -B "$old/scripts/build_deb.py"',
+                 'sudo apt-get install -y "$old_deb"',
+                 '= "${previous#v}"',
+                 'sudo apt-get install -y "./$new_deb"',
+                 '= "$(cat VERSION)"',
+                 'test ! -e "/usr/share/system-device-monitor/$name"',
+                 "sudo apt-get purge -y system-device-monitor",
+                 'bash "$RUNNER_TEMP/leftovers.sh" "$old_deb" "$new_deb"']
+        positions = [step.index(text) for text in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("set -euo pipefail", step)
+        self.assertIn("System Device Monitor $(cat VERSION)", step)
+
+    def test_the_upgrade_runs_after_the_component_checks(self):
+        self.assertLess(WORKFLOW.index("- name: Remove and purge"),
+                        WORKFLOW.index("- name: Upgrade from the last release"))
+
+    def test_the_upgrade_enables_nothing(self):
+        step = self.step()
+        for text in ("systemctl is-enabled system-device-monitor-cpu-power.socket",
+                     "systemctl is-enabled system-device-monitor-charge-limit.service",
+                     "sudo test ! -e /etc/polkit-1/rules.d/49-system-device-monitor.rules"):
+            with self.subTest(text=text):
+                self.assertIn(text, step)
+
+
+@unittest.skipUnless(yaml is not None and shutil.which("bash"), "needs PyYAML and bash")
+class Syntax(unittest.TestCase):
+    def test_every_step_is_valid_yaml_and_bash(self):
+        jobs = yaml.safe_load(WORKFLOW)["jobs"]
+        steps = [step for job in jobs.values() for step in job["steps"]]
+        self.assertGreater(len(steps), 5)
+        with tempfile.TemporaryDirectory() as tmp:
+            for number, step in enumerate(steps):
+                if "run" not in step:
+                    continue
+                script = Path(tmp)/f"step{number}.sh"
+                script.write_text(step["run"], encoding="utf-8")
+                with self.subTest(step=step.get("name")):
+                    result = subprocess.run(["bash", "-n", str(script)], capture_output=True,
+                                            text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class ChargeLimit(unittest.TestCase):
@@ -146,9 +248,14 @@ class SmartCharging(unittest.TestCase):
     def test_downgrade_revokes_the_rule_before_the_alarm_is_left_for_removal(self):
         """真正的 dpkg 版本比較：降級到 0.3.0~ 以前撤銷規則，升級到測試版時保留。"""
         keep = WORKFLOW.index('sudo "$prerm" upgrade 0.3.0~beta.1')
+        same = WORKFLOW.index('sudo "$prerm" upgrade "$(cat VERSION)"')
         drop = WORKFLOW.index('sudo "$prerm" upgrade 0.2.0')
         self.assertIn("prerm=/var/lib/dpkg/info/system-device-monitor.prerm", WORKFLOW)
         self.assertLess(keep, WORKFLOW.index('sudo test -e "$rule"', keep))
+        # 重新安裝同一版時 dpkg 也以 upgrade 執行舊的 prerm：規則必須留著
+        self.assertLess(same, WORKFLOW.index('sudo test -e "$rule"', same))
+        self.assertLess(keep, same)
+        self.assertLess(same, drop)
         self.assertLess(drop, WORKFLOW.index('sudo test ! -e "$rule"', drop))
         self.assertLess(keep, drop)
         self.assertLess(drop, WORKFLOW.index("sdm-wake-left"))
