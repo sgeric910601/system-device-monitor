@@ -9,8 +9,9 @@
    全部為 0、NoNewPrivs 為 1，否則結束。
 2. 依 LISTEN_FDNAMES 找出描述子：listen（正在監聽的 AF_UNIX 串流 socket，必須有）、
    package 與 core（energy_uj，可以沒有）；名稱或數量不符就結束。計數器描述子必須正是
-   /sys/class/powercap 中對應區域的 energy_uj（比對 st_ino 與 st_dev 的主編號：服務的 /sys 因
-   PrivateNetwork=yes 重新掛載，次編號不同），區域名稱也要相符；
+   /sys/class/powercap 中對應區域的 energy_uj（/proc/self/fd 的開啟路徑相同，inode、權限、擁有者、
+   大小、連結數與裝置的主編號也相同；服務的 /sys 因 PrivateNetwork=yes 重新掛載，次編號不同），
+   區域名稱也要相符；
    計數上限（max_energy_range_uj，所有人可讀）直接讀取。之後只對這些描述子做 pread()。
 3. 記下 socket 檔的擁有者（drop-in 的 SocketUser）。
 4. 取樣與個別請求無關：1 秒刻度的相位在服務啟動時決定（啟動時間＋k 秒）；讀取只發生在
@@ -48,6 +49,8 @@ LISTEN_FD = 3                           # sd_listen_fds 的第一個描述子
 LISTEN_VARIABLES = ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES")
 FD_LISTEN, FD_PACKAGE, FD_CORE = "listen", "package", "core"   # 單元設定的描述子名稱
 FD_NAMES = (FD_LISTEN, FD_PACKAGE, FD_CORE)
+PROC_FD = "/proc/self/fd"                # 描述子的開啟路徑
+STAT_FIELDS = ("st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_nlink")   # 必須相同的欄位
 PROC_STATUS = "/proc/self/status"
 CAPABILITY_FIELDS = ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")
 MICROJOULES = 1_000_000
@@ -147,17 +150,25 @@ def core_zone(base):
     return matches[0] if len(matches) == 1 else None
 
 
-def same_file(fd, path):
-    """描述子是不是 path 這個一般檔案（比對 inode 與裝置的主編號）。
+def stats_match(opened, expected):
+    """同一個一般檔案：inode、類型與權限、擁有者、大小、連結數與裝置的主編號都相同。
 
-    PrivateNetwork=yes 讓服務的 /sys 重新掛載成另一個 sysfs：裝置的次編號不同，inode 相同；
-    描述子卻是 systemd 在原本的 /sys 開的，所以不比對次編號。"""
+    PrivateNetwork=yes 讓服務的 /sys 重新掛載成另一個 sysfs，只有裝置的次編號不同（描述子是
+    systemd 在原本的 /sys 開的），所以不比對次編號。sysfs 的主編號固定是 0，區分不了檔案系統，
+    所以 same_file 另外比對開啟路徑。"""
+    return stat.S_ISREG(opened.st_mode) and os.major(opened.st_dev) == os.major(expected.st_dev) \
+        and all(getattr(opened, name) == getattr(expected, name) for name in STAT_FIELDS)
+
+
+def same_file(fd, path):
+    """描述子是不是 path 這個一般檔案：stat 欄位相符，而且核心記錄的開啟路徑（/proc/self/fd）
+    就是 path 的真實路徑（排除同一個 inode 從別的路徑開啟，例如硬連結）。"""
     try:
         opened, expected = os.fstat(fd), os.stat(path)
+        where = os.readlink(f"{PROC_FD}/{fd}")
     except OSError:
         return False
-    return stat.S_ISREG(opened.st_mode) and opened.st_ino == expected.st_ino and \
-        os.major(opened.st_dev) == os.major(expected.st_dev)
+    return stats_match(opened, expected) and where == os.path.realpath(path)
 
 
 def accept_channel(fd, base, zone, label):
