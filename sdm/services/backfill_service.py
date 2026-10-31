@@ -55,6 +55,13 @@ class BackfillService:
         self.busy = False
         if self.closed:
             return
+        try:
+            self.process(plan, result)
+        except Exception as error:      # 補上時出錯（例如存檔出問題）也延後再試，不會每分鐘重讀
+            LOG.warning("Filling history from UPower failed (%s)", type(error).__name__)
+            self.failed(type(error).__name__)
+
+    def process(self, plan, result):
         if result.error is not None:
             self.failed(result.error)
             return
@@ -78,8 +85,9 @@ class BackfillService:
             self.skip(request.series, "UPower readings differ from the app's own")
             return 0
         samples = accept(request.series, points, request.gaps, now)
-        self.attempted = self.attempted | {(request.series, gap.end) for gap in request.gaps}
         self.history.add_imported(request.series, request.gaps, samples)
+        # 補進去之後才記成這次讀過：出錯時這些空白在延後之後還會再讀
+        self.attempted = self.attempted | {(request.series, gap.end) for gap in request.gaps}
         LOG.info("Filled %d gap(s) in the %s history with %d point(s) from UPower",
                  len(request.gaps), request.series, len(samples))
         return len(samples)

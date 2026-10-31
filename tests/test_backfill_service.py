@@ -191,6 +191,23 @@ class Replanning(Base):
         self.assertEqual(len(self.reader.requests), 1)
 
 
+class OwnErrors(Base):
+    def test_error_while_filling_backs_off_instead_of_reading_again(self):
+        """補上時出錯（例如存檔出問題）也照讀取失敗處理：延後再試，不會每記一筆就重讀。"""
+        self.record(NOW - 3 * 3600, NOW)
+        self.service.check()
+        with patch.object(self.history, "add_imported", side_effect=RuntimeError("disk")), \
+                self.assertLogs(LOGGER, "WARNING"):
+            self.reader.answer(self.battery((NOW - 7200, 70.0, 2)))
+        self.assertEqual((self.service.busy, self.service.failures), (False, 1))
+        self.now += 60
+        self.record(self.now)
+        self.assertFalse(self.service.check())
+        self.assertEqual(len(self.reader.requests), 1)
+        self.mono += Backfill.RETRY_SECONDS[0]
+        self.assertTrue(self.service.check())
+
+
 class PartialFailure(Base):
     def test_series_that_was_read_is_kept_and_the_other_retries_later(self):
         self.history.add(HistorySample(NOW - 3 * 3600, 80, 10.0, False, False, 100.0, True))

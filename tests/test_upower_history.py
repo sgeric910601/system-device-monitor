@@ -219,6 +219,33 @@ class Failures(Base):
         self.fetch(bus)
         self.assertEqual(self.results, [FetchResult(missing=(SERIES_BATTERY,))])
 
+    def test_deadline_keeps_series_already_read_and_retries_the_rest(self):
+        bus = Bus({BATTERY: (2, True), UPS: (3, True)}, {BATTERY: POINTS, UPS: POINTS})
+        reader = self.reader(bus)
+        reader.fetch((SERIES_BATTERY, SERIES_UPS), 3600, self.results.append)
+
+        def waiting_for_ups_history():
+            return bool(bus.pending) and \
+                (bus.pending[0]["path"], bus.pending[0]["method"]) == (UPS, "GetHistory")
+        while bus.pending and not waiting_for_ups_history():
+            bus.run(limit=1)
+        self.timers.advance(Backfill.DEADLINE_SECONDS)       # 不斷電系統的紀錄還沒回覆
+        self.assertEqual(self.results, [FetchResult(points=((SERIES_BATTERY, POINTS),),
+                                                    failed=(SERIES_UPS,))])
+
+    def test_error_in_the_callers_handler_is_not_reported_as_a_reply_error(self):
+        """done() 在解析回覆的 try 外面呼叫：呼叫端自己的錯誤不會被當成 UPower 回覆錯誤吞掉。"""
+        bus = Bus({BATTERY: (2, True)}, {BATTERY: POINTS})
+        reader = self.reader(bus)
+
+        def failing(result):
+            self.results.append(result)
+            raise ValueError("caller")
+        reader.fetch((SERIES_BATTERY,), 3600, failing)
+        with self.assertRaises(ValueError), self.assertNoLogs(LOGGER, "WARNING"):
+            bus.run()
+        self.assertEqual(self.results, [FetchResult(points=((SERIES_BATTERY, POINTS),))])
+
     def test_deadline_gives_up_and_ignores_late_replies(self):
         bus = Bus({BATTERY: (2, True)}, {BATTERY: POINTS})
         reader = self.reader(bus)

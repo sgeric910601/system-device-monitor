@@ -6,8 +6,9 @@
 - 只呼叫 EnumerateDevices、每個裝置的 Type（電池再讀 PowerSupply）與 GetHistory("charge")；
   絕不讀序號、型號或原生路徑。裝置的物件路徑只在這次讀取中使用，不寫進日誌、結果或檔案
   （藍牙裝置的路徑可能含有硬體位址）；日誌只記 D-Bus 錯誤名稱，不記錯誤訊息。
-- 某個系列的 GetHistory 逾時時只把它列為 failed（之後再試），其他系列照常讀；回覆內容出乎意料
-  （處理時拋出例外）時立即回報失敗並記警告，不必等到 15 秒的時限。
+- 某個系列的 GetHistory 逾時時只把它列為 failed（之後再試），其他系列照常讀；整次的 15 秒時限到了
+  時，已讀到的系列照常回報，其餘的列為 failed。回覆內容出乎意料（解析時拋出例外）時立即回報失敗
+  並記警告，不必等到時限。done() 一律在解析的 try 外面呼叫，呼叫端自己的錯誤不會被當成回覆錯誤。
 - 筆電電池：類型為電池且 PowerSupply 為真的裝置剛好一個；不斷電系統：類型為不斷電系統的裝置
   剛好一個。沒有或不只一個時回報該系列 missing（多顆電池時本程式記錄的是合計的電量）。
   DisplayDevice 不提供紀錄（UPower 回覆 device does not support getting history），不使用。
@@ -59,6 +60,7 @@ class HistoryRequest:
         self.found = {SERIES_BATTERY: [], SERIES_UPS: []}
         self.chosen, self.missing, self.points, self.timed_out = [], [], [], []
         self.finished, self.timer = False, None
+        self.outcome, self.delivered = None, False
 
     def start(self):
         self.timer = self.schedule(Backfill.DEADLINE_SECONDS, self.expired)
@@ -78,10 +80,15 @@ class HistoryRequest:
             values = bus.call_finish(result).unpack()
         except GLib.Error as error:
             on_error(error)
-            return
+        else:
+            self.parse(on_reply, values[0])
+        self.deliver()
+
+    def parse(self, on_reply, value):
+        """解析回覆並送出下一個呼叫；出乎意料的內容立即結束（結果由 deliver 在 try 外面送出）。"""
         try:
-            on_reply(values[0])
-        except Exception as error:      # 回覆內容出乎意料：立即結束，不等時限
+            on_reply(value)
+        except Exception as error:
             LOG.warning("Unexpected UPower reply (%s)", type(error).__name__)
             self.finish(FetchResult(error=type(error).__name__))
 
@@ -164,15 +171,30 @@ class HistoryRequest:
         self.finish(FetchResult(error=error_name(error)))
 
     def expired(self):
+        """時限到了：已讀到的系列照常回報，其餘的列為 failed 之後再試；什麼都沒讀到時整次失敗。"""
         self.timer = None
-        self.finish(FetchResult(error=DEADLINE))
+        if self.points:
+            answered = {series for series, _ in self.points} | set(self.missing)
+            remaining = tuple(series for series in self.series if series not in answered
+                              and series not in self.timed_out)
+            self.finish(FetchResult(tuple(self.points), tuple(self.missing),
+                                    tuple(self.timed_out) + remaining))
+        else:
+            self.finish(FetchResult(error=DEADLINE))
+        self.deliver()
         return False
 
     def finish(self, result):
+        """記下結果並停止；結果由 deliver() 在解析回覆的 try 外面交給呼叫端。"""
         if self.finished:
             return
         self.abort()
-        self.done(result)
+        self.outcome = result
+
+    def deliver(self):
+        if self.outcome is not None and not self.delivered:
+            self.delivered = True
+            self.done(self.outcome)
 
     def abort(self):
         """停止：取消時限與還沒回覆的呼叫，之後的回覆都忽略。"""
