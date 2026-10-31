@@ -126,7 +126,8 @@ remove、之後重新安裝套件），不自動刪除任何東西。
   OpenFile= 會跟隨連結，所以安全前提是連結與它所在的每一層目錄（/run、/run/system-device-monitor）
   都只有 root 能寫：服務的臨時帳號、擁有 socket 的使用者與其他使用者都無法新增、改名或替換連結。
   服務端的比對只是事後防禦（描述子已經交到服務手上，不符才關閉）。服務依 LISTEN_FDNAMES 找出 listen、package、core 三個描述子（名稱或數量不符就結束），
-  確認計數器描述子正是 /sys/class/powercap 中對應區域的 energy_uj（比對裝置與 inode）而且
+  確認計數器描述子正是 /sys/class/powercap 中對應區域的 energy_uj（比對 inode 與裝置的主編號；
+  PrivateNetwork=yes 讓服務的 /sys 重新掛載成另一個 sysfs，次編號會不同）而且
   區域名稱相符，計數上限 max_energy_range_uj（所有人可讀）直接讀取；之後只做 `pread()`。
 - 啟動時的防禦性斷言：/proc/self/status 必須顯示不是 root、CapInh／CapPrm／CapEff／CapBnd／CapAmb
   全部為 0、NoNewPrivs 為 1，否則以結束碼 4 結束；所以在 systemd 之外（root 或一般使用者）

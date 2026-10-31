@@ -9,8 +9,11 @@ import json
 import os
 from pathlib import Path
 import socket
+import stat
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 from tests.fixtures.helpers import load_helper
 
@@ -204,6 +207,25 @@ class Zones(unittest.TestCase):
     def test_missing_descriptors_mean_no_channels(self):
         self.zone("intel-rapl:0", "package-0")
         self.assertEqual(service.channels_from({}, str(self.base)), (None, None))
+
+    @staticmethod
+    def same_with_stats(opened, expected):
+        """只在呼叫期間讓 os.fstat 與 os.stat 回傳（裝置編號、inode）指定的一般檔案。"""
+        def result(dev, ino):
+            return types.SimpleNamespace(st_mode=stat.S_IFREG | 0o400, st_dev=dev, st_ino=ino)
+        with mock.patch.object(service.os, "fstat", lambda fd: result(*opened)), \
+                mock.patch.object(service.os, "stat", lambda path: result(*expected)):
+            return service.same_file(3, "/sys/class/powercap/intel-rapl:0/energy_uj")
+
+    def test_remounted_sysfs_is_the_same_file(self):
+        """PrivateNetwork=yes 讓服務的 /sys 重新掛載成另一個 sysfs：次編號不同、inode 相同。
+        描述子是 systemd 在原本的 /sys 開的，仍然是同一個檔案。"""
+        self.assertTrue(self.same_with_stats((os.makedev(0, 25), 82397), (os.makedev(0, 61), 82397)))
+
+    def test_another_inode_or_device_major_is_another_file(self):
+        for opened in ((os.makedev(0, 25), 82398), (os.makedev(259, 2), 82397)):
+            with self.subTest(opened=opened):
+                self.assertFalse(self.same_with_stats(opened, (os.makedev(0, 61), 82397)))
 
     def test_non_regular_descriptor_is_rejected(self):
         self.zone("intel-rapl:0", "package-0")

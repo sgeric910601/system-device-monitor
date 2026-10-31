@@ -9,7 +9,8 @@
    全部為 0、NoNewPrivs 為 1，否則結束。
 2. 依 LISTEN_FDNAMES 找出描述子：listen（正在監聽的 AF_UNIX 串流 socket，必須有）、
    package 與 core（energy_uj，可以沒有）；名稱或數量不符就結束。計數器描述子必須正是
-   /sys/class/powercap 中對應區域的 energy_uj（比對 st_dev、st_ino），區域名稱也要相符；
+   /sys/class/powercap 中對應區域的 energy_uj（比對 st_ino 與 st_dev 的主編號：服務的 /sys 因
+   PrivateNetwork=yes 重新掛載，次編號不同），區域名稱也要相符；
    計數上限（max_energy_range_uj，所有人可讀）直接讀取。之後只對這些描述子做 pread()。
 3. 記下 socket 檔的擁有者（drop-in 的 SocketUser）。
 4. 取樣與個別請求無關：1 秒刻度的相位在服務啟動時決定（啟動時間＋k 秒）；讀取只發生在
@@ -147,13 +148,16 @@ def core_zone(base):
 
 
 def same_file(fd, path):
-    """描述子是不是 path 這個一般檔案（比對裝置與 inode）。"""
+    """描述子是不是 path 這個一般檔案（比對 inode 與裝置的主編號）。
+
+    PrivateNetwork=yes 讓服務的 /sys 重新掛載成另一個 sysfs：裝置的次編號不同，inode 相同；
+    描述子卻是 systemd 在原本的 /sys 開的，所以不比對次編號。"""
     try:
         opened, expected = os.fstat(fd), os.stat(path)
     except OSError:
         return False
-    return stat.S_ISREG(opened.st_mode) and \
-        (opened.st_dev, opened.st_ino) == (expected.st_dev, expected.st_ino)
+    return stat.S_ISREG(opened.st_mode) and opened.st_ino == expected.st_ino and \
+        os.major(opened.st_dev) == os.major(expected.st_dev)
 
 
 def accept_channel(fd, base, zone, label):
