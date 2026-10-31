@@ -34,7 +34,7 @@ HELPER_NAME, HELPER_DIR = "sdm-update", "/usr/libexec/system-device-monitor"
 HELPER_PATH = HELPER_DIR + "/" + HELPER_NAME
 PACKAGE = "system-device-monitor"
 # 維護者發布金鑰的 Ed25519 公鑰（base64 的 32 位元組原始公鑰），與 Update.PUBLIC_KEYS 相同
-PUBLIC_KEYS = ()
+PUBLIC_KEYS = ("ql//yZ19eozb4k4li+1LfcAc4L2nchiY0Z3vht/Mw38=",)     # 2026-10 起的發布金鑰
 SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 KEY_BYTES, SIGNATURE_BYTES, PEM_LINE = 32, 64, 64
 DEB_PATTERN = re.compile(r"system-device-monitor_([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}"

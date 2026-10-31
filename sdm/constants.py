@@ -163,7 +163,7 @@ class Update:
     （換金鑰時新舊並存）；任何一把驗證通過即可。空的時候一律拒絕安裝更新。
     helper/sdm-update 以 root 執行、不載入本套件，所以保留同樣的值；tests/test_update_helper 確認一致。
     """
-    PUBLIC_KEYS = ()
+    PUBLIC_KEYS = ("ql//yZ19eozb4k4li+1LfcAc4L2nchiY0Z3vht/Mw38=",)     # 2026-10 起的發布金鑰
     PACKAGE = "system-device-monitor"
     REPOSITORY = "sgeric910601/system-device-monitor"
     RELEASES_API = "https://api.github.com/repos/" + REPOSITORY + "/releases?per_page=20"
