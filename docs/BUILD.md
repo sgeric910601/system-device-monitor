@@ -168,7 +168,8 @@ PUBLIC_KEYS（兩個 tuple 必須相同，測試會檢查），提交後才發�
 
 ### 每次發布
 
-先更新 VERSION、CHANGELOG.md（標題寫成「## 版本（日期）」）與 README、本文件裡的套件檔名
+先更新 VERSION、CHANGELOG.md（第一則的標題寫成「## 版本（日期）」；測試版可以先寫「## 0.4.0~beta.1」、
+不寫日期）與 README、本文件裡的套件檔名
 （Beta 的 VERSION 寫成 0.4.0~beta.1，tag 為 v0.4.0-beta.1，GitHub 上標成 pre-release；
 正式版的 tag 為 v0.4.0），執行測試及隱私檢查，只提交 package-files.json 中的來源檔案。
 還沒有發布金鑰時，完整的 make release-assets 會拒絕（見上一節）；Update.PUBLIC_KEYS 加入公鑰之後，
