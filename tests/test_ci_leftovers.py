@@ -125,7 +125,8 @@ class Leftovers(unittest.TestCase):
 
     def test_bad_arguments(self):
         for argv in ([], ["--root"], ["--root", str(self.root)],
-                     ["--root", str(self.root), str(self.tmp/"missing.deb")]):
+                     ["--root", str(self.root), str(self.tmp/"missing.deb")],
+                     ["--root", "", str(self.deb)]):     # 空的根目錄不能被當成 /
             with self.subTest(argv=argv):
                 result = subprocess.run(["bash", str(SCRIPT), *argv], capture_output=True,
                                         text=True, timeout=60)

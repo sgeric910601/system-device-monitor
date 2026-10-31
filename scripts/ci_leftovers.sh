@@ -12,7 +12,7 @@ NAME=system-device-monitor
 USAGE="usage: $0 [--root DIR] PACKAGE.deb..."
 root=/
 if [ "${1:-}" = "--root" ]; then
-    if [ $# -lt 2 ]; then echo "$USAGE" >&2; exit 2; fi
+    if [ $# -lt 2 ] || [ -z "$2" ]; then echo "$USAGE" >&2; exit 2; fi
     root=$2
     shift 2
 fi
@@ -65,18 +65,21 @@ note_names() {
     done < <(timeout 300 "${as_root[@]}" find "${scan[@]}" \
                  \( -path "$base/run/user" -o -path "$base/var/lib/docker" -o -path "$base/var/cache/apt" \) \
                  -prune -o \( -name "*$NAME*" -o -name 'sdm-cpu-power*' -o -name sdm-charge-limit \
-                 -o -name sdm-wake -o -name sdm-unattended -o -name sdm-update \) -print 2>/dev/null || true)
+                 -o -name sdm-wake -o -name sdm-unattended -o -name sdm-update \) -print 2>/dev/null ||
+             echo "note: name scan incomplete (exit $?; 124 means it timed out)" >&2)
 }
 
 if [ -z "$base" ] && dpkg-query -W "$NAME" >/dev/null 2>&1; then
     report "dpkg still lists $NAME"
 fi
 for deb in "$@"; do
+    # 先取得清單：pipefail 讓 dpkg-deb 或 tar 的失敗結束腳本，不會少檢查而通過
+    entries=$(dpkg-deb --fsys-tarfile "$deb" | tar -t)
     while IFS= read -r entry; do
         path=/${entry#./}
         case "$path" in */) continue ;; esac
         check_path "$path"
-    done < <(dpkg-deb --fsys-tarfile "$deb" | tar -t)
+    done <<< "$entries"
 done
 for path in /usr/libexec/$NAME /usr/local/libexec/$NAME /usr/share/$NAME /usr/share/doc/$NAME \
             /run/$NAME /var/lib/$NAME /var/cache/$NAME; do
