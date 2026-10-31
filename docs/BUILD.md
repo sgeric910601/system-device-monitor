@@ -17,7 +17,8 @@ install-dependencies.sh 與 CI 也會安裝它。
 
 套件安裝：
 - /usr/bin/system-device-monitor：啟動器（--version、--dump、--charging-plan-status、
-  --test-notification、--smoke-test 與 --help 的結果印在終端機，看板本身的輸出寫進 app.log）。
+  --test-notification、--smoke-test 與 --help 的結果一定印在終端機；其他指令從終端機執行時也印在
+  終端機，登入自啟（--background）與從應用程式選單啟動時寫進 app.log）。
 - /usr/share/system-device-monitor：執行期程式（device_monitor.py 與 sdm/ 套件）、圖示與
   assets/（夥伴圖片與四種顏色的程式圖示）。
 - /usr/share/applications/system-device-monitor.desktop：桌面入口（Icon=system-device-monitor）。

@@ -539,8 +539,8 @@ class Preview:
 
 
 class Launcher:
-    """啟動器腳本：等待專案磁碟掛載的最長秒數，以及把輸出留在終端機的一次性指令
-    （其他情況是看板本身，輸出寫進快取目錄的 app.log）。"""
+    """啟動器腳本：等待專案磁碟掛載的最長秒數，以及一定把輸出留在終端機的一次性指令
+    （其他指令從終端機執行時也留在終端機；登入自啟與從應用程式選單啟動時寫進快取目錄的 app.log）。"""
     WAIT_SECONDS = 60
     TERMINAL_OPTIONS = ("--version", "--smoke-test", "--dump", "--charging-plan-status",
                         "--test-notification", "--help", "-h")

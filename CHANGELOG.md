@@ -111,8 +111,9 @@
 - .deb 新增管理員小程式、polkit 動作、systemd 單元與安裝前後腳本，安裝時不啟用任何東西；移除時
   停用服務、撤銷無人授權的規則、取消排定的喚醒並刪除保留的充電上限。原始碼資料夾以
   install.py --system-components install｜remove 安裝或移除同樣的元件（只安裝已提交的版本）。
-- 啟動器把一次性指令（--dump、--charging-plan-status、--test-notification、--help）的輸出留在
-  終端機，看板本身的輸出照舊寫進 app.log。
+- 啟動器把一次性指令（--dump、--charging-plan-status、--test-notification、--help）與從終端機執行的
+  指令（包括打錯選項時的說明）的輸出留在終端機；登入自啟與從應用程式選單啟動時照舊寫進 app.log。
+  命令列選項不再接受縮寫。
 - .deb 的說明改為「No telemetry; optional update check against GitHub.」。
 - 新增 docs/SECURITY.md；README 與使用說明改成依安裝、使用、移除的順序，並列出刻意不做的功能。
 - 隱私檢查允許清單中 assets/ 底下不含附屬資訊的 PNG；新增開發用的 scripts/make_assets.py。

@@ -47,7 +47,9 @@ def initialize_preferences():
 
 
 def launcher_script(project):
-    """一次性的指令（Launcher.TERMINAL_OPTIONS）把輸出留在終端機，看板本身的輸出寫進 app.log。"""
+    """輸出留在終端機：一次性的指令（Launcher.TERMINAL_OPTIONS），或標準輸出、標準錯誤有一個是
+    終端機而且不是 --background（從終端機執行，打錯選項時看得到說明）。登入自啟（--background）與
+    從應用程式選單啟動（沒有終端機）時，看板的輸出寫進 app.log。"""
     return """#!/bin/bash
 set -eu
 project=%s
@@ -55,11 +57,16 @@ for attempt in {1..%d}; do
     if [ -f "$project/device_monitor.py" ]; then
         cache="${XDG_CACHE_HOME:-$HOME/.cache}/system-device-monitor"
         mkdir -p "$cache"
+        background=false
         for argument in "$@"; do
             case "$argument" in
                 %s) exec /usr/bin/python3 -B "$project/device_monitor.py" "$@" ;;
+                --background) background=true ;;
             esac
         done
+        if ! "$background" && { [ -t 1 ] || [ -t 2 ]; }; then
+            exec /usr/bin/python3 -B "$project/device_monitor.py" "$@"
+        fi
         exec /usr/bin/python3 -B "$project/device_monitor.py" "$@" >>"$cache/app.log" 2>&1
     fi
     sleep 1

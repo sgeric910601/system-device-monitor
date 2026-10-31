@@ -19,7 +19,8 @@ from sdm.paths import VERSION
 
 
 def build_parser():
-    parser = argparse.ArgumentParser()
+    # 不接受縮寫（--dum）：啟動器只認得完整的選項名稱，縮寫會讓輸出跑到 app.log
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--background", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--version", action="version", version=VERSION)

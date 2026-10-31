@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pty
 import subprocess
 import sys
 import tempfile
@@ -129,26 +130,66 @@ class Portability(unittest.TestCase):
         self.assertEqual(output.splitlines(),
                          ["System Device Monitor " + version, "exit 0 False"])
 
+def read_terminal(master):
+    """讀出虛擬終端機收到的全部輸出（另一端都關閉後，Linux 以 EIO 表示結束）。"""
+    chunks = []
+    while True:
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks).decode().replace("\r\n", "\n")
+
+
 class Launcher(unittest.TestCase):
-    """啟動器：一次性的指令（--dump、--charging-plan-status、--test-notification 等）把輸出印在
-    終端機，讓使用者看得到；看板本身（含背景執行與示範模式）的輸出寫進快取目錄的 app.log。"""
+    """啟動器：一次性的指令（--dump、--charging-plan-status、--test-notification 等）與從終端機
+    執行的指令把輸出印在終端機，讓使用者看得到（包括打錯選項時的說明）；登入自啟（--background）
+    與從應用程式選單啟動（沒有終端機）時，看板的輸出寫進快取目錄的 app.log。"""
+
+    def make_launcher(self, tmp):
+        root = Path(tmp)/"checkout"
+        root.mkdir()
+        (root/"device_monitor.py").write_text(
+            "import sys\nprint('out', *sys.argv[1:], flush=True)\n"
+            "print('err', file=sys.stderr)\n")
+        launcher = Path(tmp)/"launcher"
+        launcher.write_text(autostart.launcher_script(root))
+        launcher.chmod(0o755)
+        # 啟動器會建立快取目錄；指向暫存目錄，避免碰到真實的使用者快取。
+        env = {**os.environ, "XDG_CACHE_HOME": str(Path(tmp)/"cache")}
+        return launcher, env, Path(tmp)/"cache/system-device-monitor/app.log"
 
     def run_launcher(self, *args):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)/"checkout"
-            root.mkdir()
-            (root/"device_monitor.py").write_text(
-                "import sys\nprint('out', *sys.argv[1:], flush=True)\n"
-                "print('err', file=sys.stderr)\n")
-            launcher = Path(tmp)/"launcher"
-            launcher.write_text(autostart.launcher_script(root))
-            launcher.chmod(0o755)
-            # 啟動器會建立快取目錄；指向暫存目錄，避免碰到真實的使用者快取。
-            env = {**os.environ, "XDG_CACHE_HOME": str(Path(tmp)/"cache")}
+            launcher, env, log = self.make_launcher(tmp)
             result = subprocess.run([str(launcher), *args], capture_output=True, text=True,
-                                    env=env, timeout=30)
-            log = Path(tmp)/"cache/system-device-monitor/app.log"
+                                    env=env, timeout=30, stdin=subprocess.DEVNULL)
             return result, (log.read_text() if log.exists() else "")
+
+    def run_in_terminal(self, *args, streams=("stdout", "stderr")):
+        """在虛擬終端機裡執行；streams 是接到終端機的輸出，其他的接到管線。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher, env, log = self.make_launcher(tmp)
+            master, slave = pty.openpty()
+            try:
+                targets = {name: slave if name in streams else subprocess.PIPE
+                           for name in ("stdout", "stderr")}
+                process = subprocess.Popen([str(launcher), *args], stdin=subprocess.DEVNULL,
+                                           env=env, **targets)
+                os.close(slave)
+                slave = None
+                shown = read_terminal(master)
+                piped = [stream.read().decode() for stream in (process.stdout, process.stderr)
+                         if stream is not None]
+                process.communicate(timeout=30)
+            finally:
+                os.close(master)
+                if slave is not None:
+                    os.close(slave)
+            return shown, "".join(piped), (log.read_text() if log.exists() else "")
 
     def test_one_shot_commands_print_in_the_terminal(self):
         for args in (("--version",), ("--dump",), ("--charging-plan-status",),
@@ -161,11 +202,33 @@ class Launcher(unittest.TestCase):
                 self.assertEqual(log, "")
 
     def test_the_dashboard_writes_its_output_to_the_log(self):
-        for args in ((), ("--background",), ("--preview", "desktop")):
+        """沒有終端機（應用程式選單）時，看板與打錯的選項都寫進 app.log。"""
+        for args in ((), ("--background",), ("--preview", "desktop"), ("--bogus",)):
             with self.subTest(args=args):
                 result, log = self.run_launcher(*args)
                 self.assertEqual((result.stdout, result.stderr), ("", ""))
                 self.assertEqual(log, " ".join(("out",) + args) + "\nerr\n")
+
+    def test_runs_from_a_terminal_print_there(self):
+        """從終端機執行（包括打錯的選項與示範模式）時，輸出與錯誤說明都留在終端機。"""
+        for args in ((), ("--preview", "desktop"), ("--bogus",), ("--dum",),
+                     ("--capture",)):
+            with self.subTest(args=args):
+                shown, piped, log = self.run_in_terminal(*args)
+                self.assertEqual(shown, " ".join(("out",) + args) + "\nerr\n")
+                self.assertEqual((piped, log), ("", ""))
+
+    def test_either_output_on_a_terminal_is_enough(self):
+        for streams in (("stdout",), ("stderr",)):
+            with self.subTest(streams=streams):
+                shown, piped, log = self.run_in_terminal("--bogus", streams=streams)
+                self.assertEqual(sorted((shown, piped)), ["err\n", "out --bogus\n"])
+                self.assertEqual(log, "")
+
+    def test_autostart_logs_even_from_a_terminal(self):
+        shown, piped, log = self.run_in_terminal("--background")
+        self.assertEqual((shown, piped), ("", ""))
+        self.assertEqual(log, "out --background\nerr\n")
 
 
 class Publication(unittest.TestCase):

@@ -148,6 +148,19 @@ class EntryPoint(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--preview", "tablet"])
 
+    def test_abbreviated_options_are_rejected(self):
+        """argparse 預設接受縮寫（--dum）；啟動器只認得完整的選項，所以縮寫一律當成錯誤。"""
+        parser = self.load().build_parser()
+        for argv in (["--dum"], ["--vers"], ["--back"], ["--charging-plan"], ["--test-notif"],
+                     ["--prev", "desktop"], ["--smoke"]):
+            with self.subTest(argv=argv):
+                with contextlib.redirect_stderr(io.StringIO()), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        self.assertRaises(SystemExit) as stop:
+                    parser.parse_args(argv)
+                self.assertEqual(stop.exception.code, 2)     # 參數錯誤，不是執行了 --version
+        self.assertTrue(parser.parse_args(["--dump"]).dump)
+
     def test_preview_rejects_options_it_cannot_honour(self):
         module = self.load()
         for argv in (["--preview", "desktop", "--background"],

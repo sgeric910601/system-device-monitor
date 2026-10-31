@@ -33,8 +33,9 @@
 | --test-notification | 請正在執行的看板送出一則測試通知後結束 | [通知](#通知) |
 | --smoke-test --output-dir 資料夾 | 本機診斷，約 25 秒後結束 | [本機診斷](#本機診斷) |
 
---version、--dump、--charging-plan-status、--test-notification、--smoke-test 與 --help 的結果印在
-終端機；看板本身（含 --background 與 --preview）的訊息寫進 ~/.cache/system-device-monitor/app.log。
+--version、--dump、--charging-plan-status、--test-notification、--smoke-test 與 --help 的結果一定印在
+終端機；其他指令（包括打錯的選項）從終端機執行時也印在終端機。登入自啟（--background）與從應用程式
+選單啟動時，看板的訊息寫進 ~/.cache/system-device-monitor/app.log。選項必須寫完整，不接受縮寫。
 --test-notification 與 --charging-plan-status 只能單獨使用，--preview 不能搭配 --background。
 
 ## 視窗與設定
@@ -696,7 +697,7 @@ purge 另外刪除一鍵更新的執行鎖，並再確認一次上面的系統�
 - 狀態：~/.local/state/system-device-monitor/ 底下的 state.json（最後一頁）、pet.json
   （桌面寵物的位置）、charging-plan.log（智慧充電的紀錄）、update-state.json（上次檢查更新的時間）
   與 cpu-calibration.json（APU 校正是否已確認）。
-- 日誌：~/.cache/system-device-monitor/app.log。
+- 日誌：~/.cache/system-device-monitor/app.log（登入自啟與從應用程式選單啟動時）。
 - 頂端列的耗電圖示：$XDG_RUNTIME_DIR/system-device-monitor/icons/（登出就清除）。
 - 換色的程式圖示：~/.local/share/icons/hicolor 底下 128x128 與 512x512 的 apps/system-device-monitor.png。
 - 系統檔案（管理員元件與它們的狀態）見 [SECURITY.md](SECURITY.md#安裝的檔案)。
