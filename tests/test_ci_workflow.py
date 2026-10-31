@@ -81,28 +81,24 @@ class Workflow(unittest.TestCase):
 
 
 class Leftovers(unittest.TestCase):
-    """完全移除之後什麼都不能留下：套件列出的每個檔案、狀態目錄、規則檔與名稱含本套件的項目。"""
+    """完全移除之後什麼都不能留下：兩次 purge 之後都執行 scripts/ci_leftovers.sh（它的行為由
+    tests/test_ci_leftovers.py 以假的根目錄測試）。"""
 
-    def test_the_check_covers_files_state_and_names(self):
-        for text in ('cat > "$RUNNER_TEMP/leftovers.sh" <<\'EOF\'', "dpkg-deb --fsys-tarfile",
-                     "dpkg-query -W system-device-monitor", "/usr/libexec/system-device-monitor",
-                     "/run/system-device-monitor", "/var/lib/system-device-monitor",
-                     "/var/cache/system-device-monitor", "/usr/share/system-device-monitor",
-                     "/etc/polkit-1/rules.d/49-system-device-monitor.rules",
-                     "/etc/systemd/system/system-device-monitor-cpu-power.socket.d",
-                     "-name '*system-device-monitor*'", "-name 'sdm-unattended'", "sudo find /etc"):
-            with self.subTest(text=text):
-                self.assertIn(text, WORKFLOW)
+    def test_the_check_is_a_committed_script(self):
+        self.assertNotIn("leftovers.sh\" <<", WORKFLOW)
+        self.assertNotIn("$RUNNER_TEMP/leftovers.sh", WORKFLOW)
+        self.assertTrue((ROOT/"scripts/ci_leftovers.sh").is_file())
 
     def test_the_check_runs_after_every_purge(self):
         purges = [match.start() for match in
                   re.finditer(r"sudo apt-get purge -y system-device-monitor", WORKFLOW)]
-        checks = [match.start() for match in re.finditer(r'bash "\$RUNNER_TEMP/leftovers.sh"', WORKFLOW)]
+        checks = [match.start() for match in re.finditer(r"bash scripts/ci_leftovers\.sh ", WORKFLOW)]
         self.assertEqual(len(purges), 2)
         self.assertEqual(len(checks), 2)
         for purge, check in zip(purges, checks):
             self.assertLess(purge, check)
-        self.assertLess(WORKFLOW.index("leftovers.sh\" <<"), purges[0])
+        self.assertIn('bash scripts/ci_leftovers.sh dist/system-device-monitor_"$(cat VERSION)"_all.deb',
+                      WORKFLOW)
 
 
 class Upgrade(unittest.TestCase):
@@ -129,7 +125,7 @@ class Upgrade(unittest.TestCase):
                  '= "$(cat VERSION)"',
                  'test ! -e "/usr/share/system-device-monitor/$name"',
                  "sudo apt-get purge -y system-device-monitor",
-                 'bash "$RUNNER_TEMP/leftovers.sh" "$old_deb" "$new_deb"']
+                 'bash scripts/ci_leftovers.sh "$old_deb" "$new_deb"']
         positions = [step.index(text) for text in order]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("set -euo pipefail", step)

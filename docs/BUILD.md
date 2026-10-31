@@ -132,10 +132,13 @@ CI 安裝 .deb 後另外檢查權限、pkaction 的預設授權、以 sudo 執�
 開啟後服務確實以臨時帳號 sdm-cpu-power 執行、所有能力欄位都是 0，以及充電上限、喚醒與無人授權的
 小程式與規則。更新小程式只信任內建公鑰，所以 CI 只以會被拒絕的輸入測試
 （沒有簽章、檔名不對、符號連結、超過大小、不是自己的檔案）。
-移除與完全移除（purge）之後，CI 確認套件裡列出的每個檔案、小程式、polkit 動作、systemd 單元與
-wants 連結、/run、/var/lib 與 /var/cache 的狀態以及 rules.d 的規則檔都已刪除，並在 /etc、/var、/run 與
-/usr 底下套件用到的目錄找不到任何名稱含 system-device-monitor 或小程式名稱的項目（systemd 自己的
-/run/systemd、使用者的 /run/user、apt 的快取與 Docker 的資料除外）。最後從標籤 v0.1.0（GitHub 上最後一個發布的版本）
+移除與完全移除（purge）之後，CI 執行 scripts/ci_leftovers.sh：套件裡列出的每個檔案、小程式的目錄
+（含原始碼安裝的 /usr/local/libexec）、polkit 動作（含 /usr/local/share/polkit-1）、rules.d 的規則檔、
+systemd 單元、drop-in 與 wants 連結、/run、/var/lib 與 /var/cache 的狀態，以及
+/var/lib/dpkg/info 的紀錄都必須已刪除；每個留下的項目都先印出，才讓這一步失敗。另外在幾個系統目錄以
+名稱掃描，結果只印成提示，不會讓這一步失敗（執行器上可能有無關的同名項目）。這個腳本可以用 --root
+指向假的根目錄，tests/test_ci_leftovers.py 就這樣測試每一種留下的情況。
+最後從標籤 v0.1.0（GitHub 上最後一個發布的版本）
 以它自己的 scripts/build_deb.py 重新建置舊版套件、安裝、再以 apt-get 升級到這次建置的套件，確認版本、
 舊版才有的檔案已經換掉，之後再完全移除並做同樣的檢查。這個步驟不需要下載權杖，舊版的內容與發布時
 相同（由 git 標籤固定）。新的版本發布之後，把工作流程裡的 previous 改成新的標籤。
