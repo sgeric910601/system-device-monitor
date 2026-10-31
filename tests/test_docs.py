@@ -153,14 +153,34 @@ class Readme(unittest.TestCase):
         # 補回安裝前的電池歷史不是刻意不做：UPower 有紀錄，只是還沒有實作
         self.assertNotIn("電池歷史", skipped)
 
-    def test_not_yet_implemented_backfill(self):
-        """UPower 在 /var/lib/upower 保存各裝置的電量變化紀錄，可以補回安裝前的歷史，這一版還沒有使用。"""
-        notes = {"README.md": self.sections["尚未實作"],
-                 "docs/USAGE.md": sections(read("docs/USAGE.md"))["筆電電池"]}
+    def test_backfill_from_upower_is_described_honestly(self):
+        """補上空白時段：來源是 UPower 自己的電量紀錄，圖上是「系統紀錄補上」的虛線；
+        只以私人匯流排上的假 UPower 與一台桌機的不斷電系統（唯讀）驗證，沒有在真正的筆電上測試。"""
+        notes = {"README.md": self.sections["功能"],
+                 "docs/USAGE.md": sections(read("docs/USAGE.md"))["電源頁與耗電歷史"]}
         for name, text in notes.items():
             with self.subTest(document=name):
-                for words in ("尚未實作", "/var/lib/upower", "GetHistory", "補回", "還沒有使用"):
+                for words in ("UPower", "系統紀錄補上", "虛線", "7 天", "假的 UPower", "私人匯流排",
+                              "不斷電系統", "唯讀", "尚未在真正的筆電上測試"):
                     self.assertIn(words, text)
+
+    def test_backfill_is_no_longer_listed_as_missing(self):
+        self.assertNotIn("尚未實作", self.sections)
+        laptop = sections(read("docs/USAGE.md"))["筆電電池"]
+        self.assertNotIn("尚未實作", laptop)
+        self.assertIn("補上", laptop)
+        changelog = read("CHANGELOG.md").split("\n## 0.3.0", 1)[1].split("\n## ", 1)[0]
+        self.assertNotIn("尚未實作", changelog)
+        self.assertIn("系統紀錄補上", changelog)
+        for name in DOCUMENTS:
+            with self.subTest(document=name):
+                self.assertNotIn("系統紀錄補回", read(name))
+
+    def test_privacy_lists_what_backfill_reads_and_stores(self):
+        stored = sections(read("docs/PRIVACY.md"))["本機保存的資料"]
+        for words in ("UPower", "pct", "ups_pct", "序號", "裝置路徑", "history.json"):
+            with self.subTest(words=words):
+                self.assertIn(words, stored)
 
     def test_laptop_features_are_marked_as_unverified(self):
         for name in ("README.md", "docs/USAGE.md"):
