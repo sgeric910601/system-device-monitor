@@ -98,6 +98,11 @@ jobs:
           assert fields["NoNewPrivs"].strip() == "1"
           user = subprocess.check_output(["ps", "-o", "user=", "-p", pid], text=True).strip()
           assert user == "sdm-cpu-power", user
+          import os
+          for name, zone in (("rapl-package", "intel-rapl:0"), ("rapl-core", "intel-rapl:0:0")):
+              link = "/run/system-device-monitor/" + name
+              assert os.lstat(link).st_uid == 0, link
+              assert os.readlink(link) == f"/sys/class/powercap/{zone}/energy_uj", link
           EOF
           sudo env PKEXEC_UID="$(id -u)" "$helper" status | grep -q '"enabled":true'
           sudo env PKEXEC_UID="$(id -u)" "$helper" disable

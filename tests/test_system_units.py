@@ -142,6 +142,7 @@ class ServiceUnits(unittest.TestCase):
             self.assertEqual(path, LINKS[name])
             self.assertEqual(TARGETS[name], f"{service.POWERCAP}/{expected[name]}/energy_uj")
             self.assertEqual(options, "read-only,graceful")
+        self.assertEqual(SOCKET["FileDescriptorName"], service.FD_LISTEN)
 
     def test_open_file_paths_have_no_colons(self):
         """systemd 255 把 OpenFile= 交給 systemd-executor 時，路徑裡的冒號（即使寫成 \\x3a）會讓
@@ -161,7 +162,6 @@ class ServiceUnits(unittest.TestCase):
                 for link in LINKS.values():
                     # socket 建立的 root 0755 目錄：服務（唯讀的檔案系統、臨時帳號）改不到連結
                     self.assertTrue(link.startswith(CpuPower.DEB_SOCKET.rsplit("/", 1)[0] + "/"))
-        self.assertEqual(SOCKET["FileDescriptorName"], service.FD_LISTEN)
 
     def test_dynamic_user_name_is_short_enough(self):
         self.assertLessEqual(len(HARDENING["User"]), 31)
