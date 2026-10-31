@@ -84,6 +84,10 @@ class Timing(unittest.TestCase):
     def test_default_rate_is_within_the_limit(self):
         self.assertLessEqual(Companion.FPS, Companion.MAX_FPS)
 
+    def test_eye_redraws_stay_within_the_limit(self):
+        """眼睛跟著游標時每讀一次游標位置最多重畫一次，所以讀取頻率也不能超過每秒 12 格。"""
+        self.assertLessEqual(Companion.POINTER_HZ, Companion.MAX_FPS)
+
 
 class TickerTests(unittest.TestCase):
     def setUp(self):

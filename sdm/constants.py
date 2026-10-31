@@ -615,7 +615,7 @@ class Companion:
     BLINK_MAX_SECONDS = 6.0
     DOUBLE_BLINK_ONE_IN = 5
     BLINK_HALF_SECONDS = 0.09       # 閉眼 0.09 秒、張眼 0.09 秒
-    POINTER_HZ = 15                 # 眼睛跟著游標時，看得到才讀游標位置，每秒最多 15 次
+    POINTER_HZ = 12                 # 眼睛跟著游標時，看得到才讀游標位置，每秒最多 12 次（不超過 MAX_FPS）
     PHOTO_FILE = "companion-photo.png"
     PHOTO_PIXELS = 512              # 我的照片裁成正方形、存成 512 × 512
     PHOTO_DECODE_PIXELS = 2048      # 解碼時先縮到不超過 2048 px，大照片也不佔太多記憶體
