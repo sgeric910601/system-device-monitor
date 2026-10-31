@@ -63,9 +63,11 @@ class Documents(unittest.TestCase):
         self.check("docs/USAGE.md", "設定 → 更新", "git pull --ff-only", "立即檢查", "安裝更新")
 
     def test_changelog(self):
-        unreleased = read("CHANGELOG.md").split("\n## ", 2)[1]
-        self.assertTrue(unreleased.startswith("未發布"))
-        self.assertIn("一鍵更新", unreleased)
+        """0.3.0 的更新紀錄寫出一鍵更新，以及這個版本還沒有發布公鑰、不能一鍵安裝。"""
+        entry = read("CHANGELOG.md").split("\n## 0.3.0", 1)[1].split("\n## ", 1)[0]
+        for words in ("一鍵更新", "未設定簽章金鑰", "Ed25519"):
+            with self.subTest(words=words):
+                self.assertIn(words, entry)
 
 
 if __name__ == "__main__":

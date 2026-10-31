@@ -706,6 +706,7 @@
     "tests/test_updater.py",
     "tests/test_upower.py",
     "tests/test_ups.py",
+    "tests/test_version.py",
     "tests/test_wake_control.py",
     "tests/test_wake_helper.py",
     "tests/test_widgets.py"

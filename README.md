@@ -105,7 +105,7 @@ GNOME 必須啟用 AppIndicator 擴充功能才能顯示頂端列。
 下載 .deb 與 SHA256SUMS，在下載目錄執行：
 
     sha256sum --ignore-missing -c SHA256SUMS
-    sudo apt install ./system-device-monitor_0.1.0_all.deb
+    sudo apt install ./system-device-monitor_0.3.0_all.deb
 
 在應用程式選單搜尋「系統與裝置監看」，或執行：
 

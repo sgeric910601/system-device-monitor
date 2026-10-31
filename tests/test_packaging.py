@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 
+from sdm.paths import VERSION
 from tests.fixtures.helpers import ROOT, load_script
 
 build = load_script("build_deb")
@@ -390,7 +391,8 @@ class ScriptRuns(unittest.TestCase):
                 self.assertTrue((self.state/"charge-limit.json").exists())
 
     def test_prerm_upgrade_to_a_version_with_smart_charging_keeps_the_rule(self):
-        for newer in ("0.3.0~", "0.3.0~beta.1", "0.3.0~beta.12", "0.3.0", "0.3.1", "1.0"):
+        """含這個版本本身（重新安裝同一版時 dpkg 也以 upgrade 執行舊的 prerm）。"""
+        for newer in ("0.3.0~", "0.3.0~beta.1", "0.3.0~beta.12", "0.3.0", "0.3.1", "1.0", VERSION):
             with self.subTest(newer=newer):
                 shutil.rmtree(self.root, ignore_errors=True)
                 alarm, run, rule = self.populate_smart_charging()
@@ -473,10 +475,13 @@ class ScriptRuns(unittest.TestCase):
         self.assertTrue((run/"wake.lock").exists())
 
     def test_postrm_upgrade_to_a_version_with_smart_charging_keeps_everything(self):
-        alarm, run, rule = self.populate_smart_charging()
-        self.run_script("postrm", "upgrade", "0.3.0~beta.1")
-        self.assertTrue(rule.exists() and (run/"wake").exists())
-        self.assertEqual(alarm.read_text(), "1800000600\n")
+        for newer in ("0.3.0~beta.1", "0.3.0", VERSION):
+            with self.subTest(newer=newer):
+                shutil.rmtree(self.root, ignore_errors=True)
+                alarm, run, rule = self.populate_smart_charging()
+                self.run_script("postrm", "upgrade", newer)
+                self.assertTrue(rule.exists() and (run/"wake").exists())
+                self.assertEqual(alarm.read_text(), "1800000600\n")
 
     def test_remove_and_purge_delete_only_the_unattended_rule(self):
         rules = self.root/RULE
