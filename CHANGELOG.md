@@ -88,7 +88,8 @@
 - 「精準喚醒」：root 小程式 sdm-wake 在該開始充電前以 RTC 鬧鐘叫醒電腦（60 秒後到 7 天內、
   不覆寫別人的鬧鐘、硬體時鐘不是 UTC 時拒絕），關機前與移除套件時取消它排定的鬧鐘。
 - 「允許無人時自動調整」：sdm-unattended（每次都要管理員密碼）寫入只給你的 polkit 規則，只在本機、
-  正在使用時讓充電上限與喚醒時間免密碼，可隨時撤銷；移除套件或原始碼版的 remove 都會刪除它。
+  正在使用時讓智慧充電自動調整的充電上限與喚醒時間免密碼（手動拖動滑桿照常要密碼），可隨時撤銷；
+  移除套件或原始碼版的 remove 都會刪除它。
 - 排程存在 charging-plan.json，事件記在 charging-plan.log；--charging-plan-status 以 JSON 唯讀查詢。
 
 ### 一鍵更新（.deb）
@@ -113,6 +114,7 @@
   install.py --system-components install｜remove 安裝或移除同樣的元件（只安裝已提交的版本）。
 - 啟動器把一次性指令（--dump、--charging-plan-status、--test-notification、--help）與從終端機執行的
   指令（包括打錯選項時的說明）的輸出留在終端機；登入自啟與從應用程式選單啟動時照舊寫進 app.log。
+  原始碼資料夾在 git pull 之後要再執行一次 /usr/bin/python3 install.py，才會換上新的啟動器。
   命令列選項不再接受縮寫。
 - .deb 的說明改為「No telemetry; optional update check against GitHub.」。
 - 新增 docs/SECURITY.md；README 與使用說明改成依安裝、使用、移除的順序，並列出刻意不做與尚未實作的功能。

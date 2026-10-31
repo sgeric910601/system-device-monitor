@@ -173,7 +173,8 @@ class Readme(unittest.TestCase):
 
 
 class PasswordRows(unittest.TestCase):
-    """充電上限與喚醒的動作預設是 auth_admin_keep：沒有授權時要密碼，允許無人時自動調整之後才免密碼。"""
+    """充電上限與喚醒的動作預設是 auth_admin_keep：沒有授權時要密碼，允許無人時自動調整之後才免密碼。
+    手動拖動滑桿一定帶 --persist，不符合無人授權的規則，所以充電上限那一列要寫出手動調整一律要密碼。"""
 
     def rows(self, name, section, helper):
         body = sections(read(name))[section]
@@ -188,6 +189,9 @@ class PasswordRows(unittest.TestCase):
                     self.assertIn("沒有授權時要密碼（約 5 分鐘內不必重輸）", rows[0])
                     self.assertIn("允許無人時自動調整之後免密碼", rows[0])
                     self.assertNotIn("不需要", rows[0])
+                    if helper == "sdm-charge-limit":
+                        self.assertIn("手動拖動滑桿", rows[0])
+                        self.assertIn("一律要密碼", rows[0])
 
 
 class Usage(unittest.TestCase):
