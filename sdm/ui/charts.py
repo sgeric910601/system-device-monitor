@@ -3,6 +3,7 @@
 電量線在桌機是不斷電系統電量，在筆電是電池電量（level 參數）。
 座標與刻度在 set_points() 算好，繪圖時只畫線與文字。
 耗電曲線依 watts_segment 斷開；電量曲線依 segment 斷開，接電與改用電池分色。
+由 UPower 補回的電量（本程式沒有記錄的時段）畫成較淡的虛線，圖表下方顯示「系統紀錄補回」說明。
 """
 import math
 from typing import Callable, NamedTuple
@@ -13,8 +14,8 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gtk, PangoCairo
 
 from sdm.constants import Chart, History
-from sdm.core.chart_layout import (axis_ticks, linear, nice_axis_max, pct_segments,
-                                   ups_segments, watts_segments, watts_summary)
+from sdm.core.chart_layout import (axis_ticks, level_segments, linear, nice_axis_max,
+                                   pct_segments, ups_segments, watts_segments, watts_summary)
 from sdm.ui.theme import COLORS, WARNING, rgb
 from sdm.ui.widgets import box, label
 
@@ -30,6 +31,11 @@ MIN_WATT_POINTS = 2              # 至少兩點才畫得出線（參考專案相
 DOT_RADIUS = 2.5                 # 前後都斷開的單獨一點畫成圓點
 LEVEL_UPS = "ups"
 LEVEL_BATTERY = "battery"
+FILLED_TEXT = "┄┄ 系統紀錄補回"
+FILLED_TOOLTIP = ("虛線是看板沒有記錄的時段（例如還沒安裝或沒在執行時），"
+                  "由系統電源服務 UPower 自己的電量紀錄補回")
+FILLED_DASH = (4.0, 3.0)        # 補回電量的虛線：線段與間隔（px）
+FILLED_ALPHA = 0.7              # 補回電量較淡，與自己的紀錄區分
 
 
 class Level(NamedTuple):
@@ -62,7 +68,7 @@ class HistoryChart(Gtk.Box):
         self.on_range, self.level = on_range, LEVELS[level]
         self.range_s = History.RANGES[0]
         self.points, self.ticks, self.axis_max, self.has_level = (), (), 0.0, False
-        self.watts_runs, self.level_runs = [], []
+        self.watts_runs, self.level_runs, self.filled_runs = [], [], []
         self.start = self.end = 0.0
         self.pack_start(self.build_toolbar(), False, False, 0)
         self.stack = Gtk.Stack()
@@ -75,8 +81,18 @@ class HistoryChart(Gtk.Box):
         empty.set_size_request(-1, Chart.HEIGHT)
         self.stack.add_named(empty, "empty")
         self.pack_start(self.stack, False, False, 0)
+        self.pack_start(self.build_footer(), False, False, 0)
+
+    def build_footer(self):
+        """下方一列：左邊是耗電摘要，右邊是補回電量的說明（有補回的線時才顯示）。"""
+        footer = box(False, 12)
         self.summary = label("", "muted")
-        self.pack_start(self.summary, False, False, 0)
+        footer.pack_start(self.summary, False, False, 0)
+        self.filled_note = label(FILLED_TEXT, "muted")
+        self.filled_note.set_tooltip_text(FILLED_TOOLTIP)
+        self.filled_note.set_no_show_all(True)
+        footer.pack_end(self.filled_note, False, False, 0)
+        return footer
 
     def build_toolbar(self):
         toolbar = box(False, 12)
@@ -110,10 +126,15 @@ class HistoryChart(Gtk.Box):
         self.has_level = bool(levels)
         self.watts_runs = watts_segments(self.points)
         self.level_runs = self.level.segments(self.points)
-        enough = len(watts) >= MIN_WATT_POINTS or (
-            self.level.drawable_alone and len(levels) >= MIN_WATT_POINTS)
+        self.filled_runs = level_segments(self.points, self.level.value, imported=True)
+        # 補回的電量本身就能畫圖（剛安裝時還沒有自己的耗電紀錄）
+        alone = self.level.drawable_alone or bool(self.filled_runs)
+        enough = len(watts) >= MIN_WATT_POINTS or (alone and len(levels) >= MIN_WATT_POINTS)
         self.stack.set_visible_child_name("chart" if enough else "empty")
         self.summary.set_text((watts_summary(self.points) or "") if enough else "")
+        filled = enough and bool(self.filled_runs)
+        self.filled_note.set_visible(filled)
+        self.area.set_tooltip_text(FILLED_TOOLTIP if filled else None)
         self.area.queue_draw()
 
     def frame(self):
@@ -172,13 +193,19 @@ class HistoryChart(Gtk.Box):
     def draw_level(self, cr, frame):
         cr.set_line_width(Chart.UPS_LINE_WIDTH)
         for run in self.level_runs:
-            color = self.level.plugged_color if run[0][2] else self.level.battery_color
-            self.draw_run(cr, run, 100, frame, color)
+            self.draw_run(cr, run, 100, frame, self.level_color(run))
+        cr.set_dash(FILLED_DASH)
+        for run in self.filled_runs:
+            self.draw_run(cr, run, 100, frame, self.level_color(run), FILLED_ALPHA)
+        cr.set_dash(())
 
-    def draw_run(self, cr, run, top_value, frame, color):
+    def level_color(self, run):
+        return self.level.plugged_color if run[0][2] else self.level.battery_color
+
+    def draw_run(self, cr, run, top_value, frame, color, alpha=1):
         """一段連續資料：兩點以上畫線，只有一點畫圓點。"""
         left, right, top, bottom = frame
-        cr.set_source_rgba(*color, 1)
+        cr.set_source_rgba(*color, alpha)
         for index, (stamp, value, _) in enumerate(run):
             x = linear(stamp, self.start, self.end, left, right)
             y = linear(value, 0, top_value, bottom, top)
