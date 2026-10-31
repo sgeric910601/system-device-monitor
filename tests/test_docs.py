@@ -146,10 +146,21 @@ class Readme(unittest.TestCase):
 
     def test_features_left_out_on_purpose(self):
         skipped = self.sections["刻意不做的功能"]
-        for words in ("觸控板", "GNOME", "DMG", ".deb", "電池歷史", "GPU 耗電", "每個程序",
+        for words in ("觸控板", "GNOME", "DMG", ".deb", "GPU 耗電", "每個程序",
                       "耳機", "充電盒", "一個電量"):
             with self.subTest(words=words):
                 self.assertIn(words, skipped)
+        # 補回安裝前的電池歷史不是刻意不做：UPower 有紀錄，只是還沒有實作
+        self.assertNotIn("電池歷史", skipped)
+
+    def test_not_yet_implemented_backfill(self):
+        """UPower 在 /var/lib/upower 保存各裝置的電量變化紀錄，可以補回安裝前的歷史，這一版還沒有使用。"""
+        notes = {"README.md": self.sections["尚未實作"],
+                 "docs/USAGE.md": sections(read("docs/USAGE.md"))["筆電電池"]}
+        for name, text in notes.items():
+            with self.subTest(document=name):
+                for words in ("尚未實作", "/var/lib/upower", "GetHistory", "補回", "還沒有使用"):
+                    self.assertIn(words, text)
 
     def test_laptop_features_are_marked_as_unverified(self):
         for name in ("README.md", "docs/USAGE.md"):

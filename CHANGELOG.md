@@ -115,7 +115,7 @@
   指令（包括打錯選項時的說明）的輸出留在終端機；登入自啟與從應用程式選單啟動時照舊寫進 app.log。
   命令列選項不再接受縮寫。
 - .deb 的說明改為「No telemetry; optional update check against GitHub.」。
-- 新增 docs/SECURITY.md；README 與使用說明改成依安裝、使用、移除的順序，並列出刻意不做的功能。
+- 新增 docs/SECURITY.md；README 與使用說明改成依安裝、使用、移除的順序，並列出刻意不做與尚未實作的功能。
 - 隱私檢查允許清單中 assets/ 底下不含附屬資訊的 PNG；新增開發用的 scripts/make_assets.py。
 - CI 新增從 0.1.0 升級，以及移除與完全移除後什麼都不留下的檢查。
 
