@@ -118,7 +118,11 @@ remove、之後重新安裝套件），不自動刪除任何東西。
   CapabilityBoundingSet= 與 AmbientCapabilities= 都是空的，所以沒有任何能力，也無法再取得。
 - 只有 root 能讀的 energy_uj 由 systemd（PID 1）依 OpenFile= 以唯讀開好交給服務：
   intel-rapl:0（名稱 package）與 intel-rapl:0:0（名稱 core），加上 graceful，沒有 RAPL 的電腦
-  直接略過。服務依 LISTEN_FDNAMES 找出 listen、package、core 三個描述子（名稱或數量不符就結束），
+  直接略過。systemd 255 的 OpenFile= 路徑不能含冒號（交給 systemd-executor 時無法還原，服務在執行前
+  就失敗），所以啟動前由 systemd 以 root 執行固定參數的 `ln -sfnT`（ExecStartPre=+），在 socket 建立的
+  /run/system-device-monitor（root 0755；服務的檔案系統是唯讀的）放 rapl-package、rapl-core 兩個
+  符號連結，OpenFile= 開的是這兩個連結；服務停止後以 `rm -f` 刪除（ExecStopPost=+），移除套件時也會刪。
+  連結只有 root 能改。服務依 LISTEN_FDNAMES 找出 listen、package、core 三個描述子（名稱或數量不符就結束），
   確認計數器描述子正是 /sys/class/powercap 中對應區域的 energy_uj（比對裝置與 inode）而且
   區域名稱相符，計數上限 max_energy_range_uj（所有人可讀）直接讀取；之後只做 `pread()`。
 - 啟動時的防禦性斷言：/proc/self/status 必須顯示不是 root、CapInh／CapPrm／CapEff／CapBnd／CapAmb

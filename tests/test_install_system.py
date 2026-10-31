@@ -357,6 +357,13 @@ class Remove(Base):
         self.assertFalse((self.root.path/"run/system-device-monitor").exists())
         self.assertTrue((self.root.path/"run").is_dir())
 
+    def test_removes_the_cpu_power_links(self):
+        run = self.root.file("run/system-device-monitor/charge-limit.lock", "").parent
+        for name in ("rapl-package", "rapl-core"):
+            (run/name).symlink_to("/sys/class/powercap/missing/energy_uj")
+        self.assertEqual(self.main("remove"), installer.EXIT_OK)
+        self.assertFalse(run.exists())
+
     def test_keeps_other_runtime_files(self):
         self.root.file("run/system-device-monitor/charge-limit.lock", "")
         other = self.root.file("run/system-device-monitor/cpu-power.sock", "")

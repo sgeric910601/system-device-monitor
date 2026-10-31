@@ -94,6 +94,8 @@ WAKE_FILES = (WAKE_RECORD, WAKE_LOCK, RUN_DIR + "/wake.times")
 WAKE_LOCK_WAIT_S = 15.0         # 等正在執行的 sdm-wake 或 sdm-unattended（它們自己最多等鎖 10 秒）
 LOCK_POLL_S = 0.1
 UNATTENDED_LOCK = RUN_DIR + "/unattended.lock"
+# 取樣服務啟動前由 root 建立、停止後刪除的計數器符號連結（異常結束時可能留下）
+RAPL_LINKS = (RUN_DIR + "/rapl-package", RUN_DIR + "/rapl-core")
 UNATTENDED_RULE = "etc/polkit-1/rules.d/49-system-device-monitor.rules"
 RTC_ALARM = "sys/class/rtc/rtc0/wakealarm"      # rtc0 是指向 /sys/devices 的符號連結
 NUMBER = re.compile(r"[1-9][0-9]{0,11}")
@@ -523,6 +525,8 @@ def remove(context, stage, digest, uid):
     remove_smart_charging(context, final=True)
     remove_entry(context, LIMIT_LOCK)
     remove_entry(context, LIMIT_TIMES)
+    for link in RAPL_LINKS:
+        remove_entry(context, link, allowed=(stat.S_IFLNK,))
     remove_empty_directory(context, RUN_DIR)
     remove_empty_directory(context, HELPER_DIR)
     systemctl(context, "daemon-reload")

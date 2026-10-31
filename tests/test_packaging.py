@@ -247,6 +247,16 @@ class ScriptRuns(unittest.TestCase):
         self.run_script("postrm", "remove")
         self.assertFalse(run.exists())
 
+    def test_postrm_deletes_the_cpu_power_links(self):
+        """取樣服務停止時自己會刪；異常結束留下的符號連結由 postrm 刪除，目錄才刪得掉。"""
+        run = self.root/"run/system-device-monitor"
+        run.mkdir(parents=True)
+        for name in ("rapl-package", "rapl-core"):
+            (run/name).symlink_to("/sys/class/powercap/missing/energy_uj")
+        self.run_script("prerm", "remove")
+        self.run_script("postrm", "remove")
+        self.assertFalse(run.exists())
+
     def test_remove_keeps_other_runtime_files(self):
         run = self.root/"run/system-device-monitor"
         run.mkdir(parents=True)

@@ -102,6 +102,9 @@ jobs:
           sudo env PKEXEC_UID="$(id -u)" "$helper" status | grep -q '"enabled":true'
           sudo env PKEXEC_UID="$(id -u)" "$helper" disable
           test ! -e /run/system-device-monitor/cpu-power.sock
+          # 服務停止後刪除計數器的符號連結（沒有 RAPL 的執行器上是指向不存在檔案的連結）
+          test ! -L /run/system-device-monitor/rapl-package
+          test ! -L /run/system-device-monitor/rapl-core
           test ! -e /etc/systemd/system/system-device-monitor-cpu-power.socket.d
           # 開著移除套件：prerm 必須停用並清除
           sudo env PKEXEC_UID="$(id -u)" "$helper" enable

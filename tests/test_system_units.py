@@ -25,10 +25,18 @@ HARDENING = {
     "LockPersonality": "yes", "RestrictRealtime": "yes", "RestrictSUIDSGID": "yes",
     "UMask": "0077",
 }
-OPEN_FILES = [r"/sys/class/powercap/intel-rapl\x3a0/energy_uj:package:read-only,graceful",
-              r"/sys/class/powercap/intel-rapl\x3a0\x3a0/energy_uj:core:read-only,graceful"]
-REPEATED = {"SystemCallFilter": ["@system-service", "~@resources"], "OpenFile": OPEN_FILES}
-SERVICE_KEYS = set(HARDENING) | set(REPEATED) | {"Type", "ExecStart"}
+# systemd 255 的 OpenFile= 路徑不能含冒號（交給 systemd-executor 時無法還原，服務還沒執行就失敗），
+# 所以先由 root 在 /run/system-device-monitor 建立不含冒號的符號連結，停止後刪除
+LINKS = {"package": "/run/system-device-monitor/rapl-package",
+         "core": "/run/system-device-monitor/rapl-core"}
+TARGETS = {"package": "/sys/class/powercap/intel-rapl:0/energy_uj",
+           "core": "/sys/class/powercap/intel-rapl:0:0/energy_uj"}
+LINK_COMMANDS = [f"+/usr/bin/ln -sfnT {TARGETS[name]} {LINKS[name]}" for name in ("package", "core")]
+OPEN_FILES = [f"{LINKS[name]}:{name}:read-only,graceful" for name in ("package", "core")]
+REPEATED = {"SystemCallFilter": ["@system-service", "~@resources"], "OpenFile": OPEN_FILES,
+            "ExecStartPre": LINK_COMMANDS}
+SERVICE_KEYS = set(HARDENING) | set(REPEATED) | {"Type", "ExecStart", "ExecStopPost"}
+STOP_COMMAND = "+/usr/bin/rm -f " + " ".join(LINKS[name] for name in ("package", "core"))
 SOCKET = {"SocketMode": "0600", "DirectoryMode": "0755", "RemoveOnStop": "yes", "Accept": "no",
           "FileDescriptorName": "listen"}
 
@@ -64,9 +72,9 @@ def imported_modules(path):
 
 
 def decode_open_file(value):
-    """OpenFile= 的值：以「:」分隔，欄位內的 \\x3a 是路徑中的冒號。"""
+    """OpenFile= 的值：路徑、描述子名稱與選項以「:」分隔（路徑本身不能有冒號）。"""
     path, name, options = value.split(":")
-    return path.replace("\\x3a", ":"), name, options
+    return path, name, options
 
 
 def single(entries, section, key):
@@ -131,8 +139,28 @@ class ServiceUnits(unittest.TestCase):
         expected = {service.FD_PACKAGE: service.PACKAGE_ZONE, service.FD_CORE: service.CORE_ZONE}
         for value in OPEN_FILES:
             path, name, options = decode_open_file(value)
-            self.assertEqual(path, f"{service.POWERCAP}/{expected[name]}/energy_uj")
+            self.assertEqual(path, LINKS[name])
+            self.assertEqual(TARGETS[name], f"{service.POWERCAP}/{expected[name]}/energy_uj")
             self.assertEqual(options, "read-only,graceful")
+
+    def test_open_file_paths_have_no_colons(self):
+        """systemd 255 把 OpenFile= 交給 systemd-executor 時，路徑裡的冒號（即使寫成 \\x3a）會讓
+        服務在執行前就以 Failed to deserialize 失敗。"""
+        for name in (DEB, LOCAL):
+            entries = parse_unit(UNITS/(name + ".service"))
+            for value in entries[("Service", "OpenFile")]:
+                with self.subTest(unit=name, value=value):
+                    self.assertEqual(value.count(":"), 2)
+                    self.assertNotIn("\\x3a", value)
+
+    def test_links_are_made_by_root_in_its_own_directory_and_removed_after_stopping(self):
+        for name in (DEB, LOCAL):
+            entries = parse_unit(UNITS/(name + ".service"))
+            with self.subTest(unit=name):
+                self.assertEqual(single(entries, "Service", "ExecStopPost"), STOP_COMMAND)
+                for link in LINKS.values():
+                    # socket 建立的 root 0755 目錄：服務（唯讀的檔案系統、臨時帳號）改不到連結
+                    self.assertTrue(link.startswith(CpuPower.DEB_SOCKET.rsplit("/", 1)[0] + "/"))
         self.assertEqual(SOCKET["FileDescriptorName"], service.FD_LISTEN)
 
     def test_dynamic_user_name_is_short_enough(self):

@@ -1,7 +1,8 @@
 #!/bin/sh
 # 系統與裝置監看：移除後重新載入 systemd。移除（remove）時小程式已經刪除：再取得鎖、撤銷一次
 # 「允許無人時自動調整」的規則並取消喚醒鬧鐘（處理 prerm 之後才完成、授權在規則刪除前就給了的
-# grant 或 sdm-wake set），之後才刪除紀錄、鎖檔與寫入時間（/run/system-device-monitor 空了才刪除
+# grant 或 sdm-wake set），之後才刪除紀錄、鎖檔、寫入時間與取樣服務的計數器符號連結
+# （/run/system-device-monitor 空了才刪除
 # 目錄）；降級到沒有智慧充電的版本時也盡力再清一次（失敗只在標準錯誤說明）。
 # 完全移除（purge）時再刪除本套件的 drop-in
 # （目錄裡沒有其他檔案時連同目錄），並再確認一次 sdm-charge-limit 保留的充電上限與
@@ -96,6 +97,8 @@ if [ "$1" = "remove" ]; then
     remove_smart_charging || echo "system-device-monitor: 移除後沒能完全撤銷無人授權的規則或取消喚醒鬧鐘" >&2
     rm -f "$RUN_DIR/charge-limit.lock" "$RUN_DIR/charge-limit.times"
     rm -f "$RUN_DIR/wake.lock" "$RUN_DIR/wake.times" "$RUN_DIR/unattended.lock"
+    # 取樣服務的計數器符號連結（服務停止時自己會刪；異常結束時可能留下）
+    rm -f "$RUN_DIR/rapl-package" "$RUN_DIR/rapl-core"
     rmdir "$RUN_DIR" 2>/dev/null || true
 fi
 if downgrading "$@"; then

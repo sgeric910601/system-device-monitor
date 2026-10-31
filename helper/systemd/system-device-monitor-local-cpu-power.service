@@ -1,6 +1,7 @@
 # 系統與裝置監看：CPU 功耗取樣服務，只由同名的 socket 啟動（沒有 [Install]）。
 # 從不以 root 執行：DynamicUser 的臨時帳號，沒有任何能力。只有 root 能讀的 RAPL 計數器
-# 由 systemd 以 OpenFile= 唯讀開好交給服務（路徑中的冒號寫成 \x3a）；讀不到時略過。
+# 由 systemd 以 OpenFile= 唯讀開好交給服務；讀不到時略過。systemd 255 的 OpenFile= 路徑不能有冒號，
+# 所以啟動前由 root（ExecStartPre=+）在 socket 建立的 root 0755 目錄放固定的符號連結，停止後刪除。
 # 沒有網路、看不到其他程序與家目錄，整個檔案系統唯讀。
 [Unit]
 Description=System Device Monitor CPU power sampler
@@ -12,8 +13,11 @@ Type=simple
 ExecStart=/usr/local/libexec/system-device-monitor/sdm-cpu-power-service
 DynamicUser=yes
 User=sdm-cpu-power
-OpenFile=/sys/class/powercap/intel-rapl\x3a0/energy_uj:package:read-only,graceful
-OpenFile=/sys/class/powercap/intel-rapl\x3a0\x3a0/energy_uj:core:read-only,graceful
+ExecStartPre=+/usr/bin/ln -sfnT /sys/class/powercap/intel-rapl:0/energy_uj /run/system-device-monitor/rapl-package
+ExecStartPre=+/usr/bin/ln -sfnT /sys/class/powercap/intel-rapl:0:0/energy_uj /run/system-device-monitor/rapl-core
+ExecStopPost=+/usr/bin/rm -f /run/system-device-monitor/rapl-package /run/system-device-monitor/rapl-core
+OpenFile=/run/system-device-monitor/rapl-package:package:read-only,graceful
+OpenFile=/run/system-device-monitor/rapl-core:core:read-only,graceful
 CapabilityBoundingSet=
 AmbientCapabilities=
 NoNewPrivileges=yes

@@ -2,7 +2,8 @@
 """系統與裝置監看：CPU 功耗取樣服務（由 systemd socket 啟動，Accept=no）。
 
 從不以 root 執行：單元以 DynamicUser=yes 取得臨時帳號，沒有任何能力（CapabilityBoundingSet=
-與 AmbientCapabilities= 都是空的）。只有 root 能讀的 RAPL 計數器由 systemd 以 OpenFile=
+與 AmbientCapabilities= 都是空的）。只有 root 能讀的 RAPL 計數器由 systemd 以 OpenFile=（經過單元
+啟動前在 /run/system-device-monitor 建立的符號連結，因為 systemd 255 的 OpenFile= 路徑不能有冒號）
 唯讀開好，連同監聽 socket 一起交給服務：
 1. 防禦性斷言：/proc/self/status 必須顯示不是 root、CapInh／CapPrm／CapEff／CapBnd／CapAmb
    全部為 0、NoNewPrivs 為 1，否則結束。
@@ -39,7 +40,7 @@ PROTOCOL = 1
 EXIT_OK, EXIT_USAGE, EXIT_FAILED, EXIT_NOT_PERMITTED = 0, 2, 3, 4
 POWERCAP = "/sys/class/powercap"
 PACKAGE_ZONE = "intel-rapl:0"           # 第一個處理器插槽
-CORE_ZONE = "intel-rapl:0:0"            # 單元的 OpenFile= 固定開這兩個區域
+CORE_ZONE = "intel-rapl:0:0"            # 單元的 OpenFile= 經由符號連結固定開這兩個區域
 PACKAGE_NAME = "package-0"
 CORE_NAME = "core"
 LISTEN_FD = 3                           # sd_listen_fds 的第一個描述子
