@@ -1,7 +1,8 @@
 """歷史紀錄純邏輯：列驗證、7 天保留、圖表降採樣與分段、拔電時間。
 
 參考專案 HistoryTests.testUnpluggedTimeStartsAtBootAfterShutdown 全部案例以相同數字移植
-（LastUnplugged 類別）。參考專案的 pmset 回填只適用 macOS，Linux 沒有對應來源，不移植。
+（LastUnplugged 類別）。參考專案的 pmset 回填只適用 macOS，不移植；Linux 改由 UPower
+自己的電量紀錄補回空白時段（見 test_backfill）。
 """
 import dataclasses
 import json
@@ -12,7 +13,7 @@ import unittest
 from sdm.constants import History
 from sdm.core.history import (HistorySample, NewerFormat, Undecodable, chart_points,
                               clamp_to_boot, decode_history, encode_history, last_unplugged,
-                              parse_boot_time, sample_from_row, trim)
+                              parse_boot_time, sample_from_row, trim, valid_sample)
 
 NOW = 1_800_000_000.0
 DAY = 24 * 3600
@@ -62,6 +63,15 @@ class Rows(unittest.TestCase):
     def test_sample_is_frozen(self):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             sample(NOW).watts = 1.0
+
+    def test_imported_flag_is_not_part_of_the_row(self):
+        row = HistorySample(NOW, 80, None, True, False, None, None, imported=True).to_row()
+        self.assertEqual(row, [NOW, 80, None, True, False, None, None])
+        self.assertFalse(sample_from_row(row, NOW).imported)
+
+    def test_imported_flag_must_be_a_boolean(self):
+        self.assertIsNone(sample_from_row([NOW, 80, None, True, False, None, None, 1], NOW))
+        self.assertFalse(valid_sample(dataclasses.replace(sample(NOW), imported=1), NOW))
 
 
 class Files(unittest.TestCase):
@@ -182,6 +192,95 @@ class Points(unittest.TestCase):
         limit = History.WATTS_GAP_SECONDS
         samples = (sample(NOW - 2 * limit - 1), sample(NOW - limit - 1), sample(NOW))
         self.assertEqual([p.watts_segment for p in chart_points(samples, 3600, NOW)], [0, 0, 1])
+
+
+def imported(t, pct=None, ups_pct=None, plugged=True):
+    return HistorySample(t, pct, None, plugged, False, ups_pct, None, imported=True)
+
+
+class ImportedPoints(unittest.TestCase):
+    """由 UPower 補回的紀錄另成一段（畫成虛線），連到空白兩側自己的紀錄；自己的紀錄不受影響。"""
+
+    def flags(self, points):
+        return [(p.t, p.imported, p.segment) for p in points]
+
+    def test_dashed_segment_bridges_the_gap_between_own_samples(self):
+        own = (sample(NOW - 7200, pct=80), sample(NOW - 7140, pct=79),
+               sample(NOW - 3600, pct=60), sample(NOW - 3540, pct=59))
+        filled = (imported(NOW - 6000, pct=70), imported(NOW - 5000, pct=65))
+        points = chart_points(own, 3 * 3600, NOW, imported=filled)
+        self.assertEqual(self.flags(points), [
+            (NOW - 7200, False, 0), (NOW - 7140, False, 0),
+            (NOW - 7140, True, 1), (NOW - 6000, True, 1), (NOW - 5000, True, 1),
+            (NOW - 3600, True, 1),
+            (NOW - 3600, False, 2), (NOW - 3540, False, 2)])
+        self.assertEqual([p.pct for p in points], [80, 79, 79, 70, 65, 60, 60, 59])
+        self.assertEqual([p.id for p in points], list(range(8)))
+
+    def test_without_imported_points_nothing_changes(self):
+        own = tuple(sample(NOW - 3600 + i * 60, pct=50) for i in range(30))
+        self.assertEqual(chart_points(own, 3600, NOW, imported=()), chart_points(own, 3600, NOW))
+        self.assertFalse(any(p.imported for p in chart_points(own, 3600, NOW)))
+
+    def test_imported_points_alone_are_drawn(self):
+        filled = (imported(NOW - 3000, pct=70), imported(NOW - 2000, pct=60))
+        points = chart_points((), 3600, NOW, imported=filled)
+        self.assertEqual(self.flags(points), [(NOW - 3000, True, 0), (NOW - 2000, True, 0)])
+
+    def test_buckets_never_mix_own_and_imported_values(self):
+        now = int(NOW)
+        own = tuple(sample(t, pct=80) for t in range(now - 7 * DAY, now - 2 * DAY, 60)) + \
+            tuple(sample(t, pct=80) for t in range(now - DAY, now, 60))
+        filled = tuple(imported(t, pct=30) for t in range(now - 2 * DAY + 600, now - DAY - 600,
+                                                          120))
+        points = chart_points(own, 7 * DAY, NOW, imported=filled)
+        self.assertLessEqual(len(points), History.MAX_POINTS)
+        self.assertEqual({p.pct for p in points if not p.imported}, {80})
+        inner = [p for p in points if p.imported and NOW - 2 * DAY < p.t < NOW - DAY]
+        self.assertTrue(inner)
+        self.assertEqual({p.pct for p in inner}, {30})
+
+    def test_merged_old_runs_use_only_own_values(self):
+        """段數超過點數上限、最舊的段兩兩合併時，同一區間的補回值不會與自己的值平均。"""
+        own = tuple(sample(NOW - 7 * DAY + i * 1200, pct=80) for i in range(400))
+        filled = tuple(imported(NOW - 7 * DAY + i * 1200 + 300, pct=30) for i in range(400))
+        points = chart_points(own, 7 * DAY, NOW, imported=filled)
+        self.assertLessEqual(len(points), History.MAX_POINTS)
+        self.assertLessEqual({p.pct for p in points}, {80, 30})     # 沒有平均出來的 55
+
+    def test_imported_far_from_own_samples_is_not_bridged(self):
+        own = (sample(NOW - 20 * 3600, pct=80), sample(NOW - 60, pct=40))
+        filled = (imported(NOW - 10 * 3600, pct=60),)
+        points = chart_points(own, DAY, NOW, imported=filled)
+        self.assertEqual(self.flags(points), [(NOW - 20 * 3600, False, 0),
+                                              (NOW - 10 * 3600, True, 1),
+                                              (NOW - 60, False, 2)])
+
+    def test_plug_change_inside_imported_points_stays_dashed(self):
+        filled = (imported(NOW - 3000, pct=50, plugged=False),
+                  imported(NOW - 2000, pct=55, plugged=True))
+        points = chart_points((), 3600, NOW, imported=filled)
+        self.assertEqual([(p.t, p.imported, p.plugged, p.segment) for p in points],
+                         [(NOW - 3000, True, False, 0), (NOW - 3000, True, True, 1),
+                          (NOW - 2000, True, True, 1)])
+
+    def test_random_mixes_never_exceed_the_budget(self):
+        rng = random.Random(20261031)
+        for case in range(200):
+            t, own, filled = NOW - 7 * DAY, [], []
+            for _ in range(rng.randrange(0, 1500)):
+                t += rng.choice((60, 60, 120, 601, 3600, 7 * 3600))
+                if t > NOW:
+                    break
+                target = filled if rng.random() < 0.3 else own
+                target.append((imported if target is filled else sample)(
+                    t, pct=rng.choice((None, 50)), plugged=rng.random() < 0.5))
+            limit = rng.randrange(1, 300)
+            with self.subTest(case=case, limit=limit):
+                points = chart_points(tuple(own), 7 * DAY, NOW, limit, imported=tuple(filled))
+                self.assertLessEqual(len(points), limit)
+                self.assertEqual([p.t for p in points], sorted(p.t for p in points))
+                self.assertEqual([p.segment for p in points], sorted(p.segment for p in points))
 
 
 class PointBudget(unittest.TestCase):

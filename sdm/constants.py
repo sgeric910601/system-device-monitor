@@ -374,6 +374,21 @@ class History:
     RANGES = (3600, 24 * 3600, 7 * 24 * 3600)   # 圖表範圍：1 小時、24 小時、7 天
 
 
+class Backfill:
+    """由 UPower 自己的電量紀錄補回本程式沒有紀錄的時段（只補空白，絕不覆寫自己的紀錄）。"""
+    MIN_GAP_SECONDS = 15 * 60           # 兩筆自己的紀錄相隔超過此秒數才算空白
+    EDGE_SECONDS = 60                   # 空白兩端各留一個記錄間隔不補，補回的點不會緊貼自己的紀錄
+    MAX_POINTS = 2000                   # 每個系列一次最多匯入幾點（也是 GetHistory 的解析度）
+    MAX_STORED = 4000                   # 檔案中補回的紀錄最多幾筆，超過時保留最新的
+    MAX_SPANS = 1000                    # 已處理的空白最多記幾段，超過時保留最新的
+    MAX_DEVICES = 16                    # 最多檢查幾個 UPower 裝置
+    MATCH_TOLERANCE_PCT = 10            # UPower 與自己最新一筆的電量相差超過此值就不補（可能是另一台裝置）
+    CALL_TIMEOUT_MS = 1800              # 每個 D-Bus 呼叫的逾時（毫秒）
+    DEADLINE_SECONDS = 15               # 整次讀取的時限，超過就放棄這一次
+    RETRY_SECONDS = (5 * 60, 15 * 60)   # 讀取失敗後的再試間隔
+    MAX_FAILURES = 3                    # 連續失敗幾次就在這次執行放棄補回
+
+
 class Chart:
     """耗電歷史圖。"""
     REFERENCE_AXIS_MINIMUM = 1000   # 參考專案 niceAxisMax 的預設下限

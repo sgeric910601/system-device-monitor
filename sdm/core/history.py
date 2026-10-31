@@ -2,9 +2,12 @@
 
 檔案格式：{"format": 1, "samples": [[t, pct, watts, plugged, charging, ups_pct, ups_online], ...]}
 t 為 Unix 時間（秒）；桌機沒有電池，pct 為 None。
+由 UPower 補回的紀錄另外放在選用的 "imported" 欄位（見 sdm.core.backfill），格式版本不變：
+舊版只讀 "samples"，照常讀得懂這個檔案（存檔時會把補回的部分丟掉，之後再補一次）。
 圖表的分段與複製點規則沿用參考專案 HistoryStore.points，分區間方式刻意不同（見 chart_points）。
 """
 from dataclasses import dataclass
+import heapq
 import json
 import math
 from typing import Optional
@@ -31,6 +34,7 @@ class HistorySample:
     charging: bool
     ups_pct: Optional[float]
     ups_online: Optional[bool]
+    imported: bool = False      # 由 UPower 的紀錄補回（不寫進列，放在檔案的 "imported" 欄位）
 
     def to_row(self):
         return [self.t, self.pct, self.watts, self.plugged, self.charging, self.ups_pct,
@@ -48,6 +52,7 @@ class ChartPoint:
     plugged: bool
     segment: int
     watts_segment: int
+    imported: bool = False      # 補回的電量（畫成虛線）
 
 
 def is_real(value):
@@ -73,7 +78,8 @@ def valid_sample(sample, now=None):
     return (pct_ok and optional_real(sample.watts, 0, Power.SYSTEM_MAX_W, False)
             and type(sample.plugged) is bool and type(sample.charging) is bool
             and optional_real(sample.ups_pct, 0, 100)
-            and (sample.ups_online is None or type(sample.ups_online) is bool))
+            and (sample.ups_online is None or type(sample.ups_online) is bool)
+            and type(sample.imported) is bool)
 
 
 def sample_from_row(row, now=None):
@@ -84,8 +90,8 @@ def sample_from_row(row, now=None):
     return candidate if valid_sample(candidate, now) else None
 
 
-def decode_history(data):
-    """回傳（依時間排序的有效樣本、捨棄的列數）；無法解讀時拋出 Undecodable。"""
+def load_document(data):
+    """解析檔案並檢查結構與格式版本，回傳 JSON 物件；無法解讀時拋出 Undecodable。"""
     try:
         raw = json.loads(data.decode("utf-8"))
     except (ValueError, RecursionError):
@@ -97,14 +103,30 @@ def decode_history(data):
         raise NewerFormat(str(version))
     if type(version) is not int or version != History.FORMAT:
         raise Undecodable("unknown format")
-    samples = [sample_from_row(row) for row in raw["samples"]]
+    return raw
+
+
+def decode_rows(rows):
+    """回傳（依時間排序的有效樣本、捨棄的列數）。"""
+    samples = [sample_from_row(row) for row in rows]
     valid = [item for item in samples if item is not None]
     return tuple(sorted(valid, key=lambda item: item.t)), len(samples) - len(valid)
 
 
-def encode_history(samples):
-    """精簡 JSON（不縮排），一週約一萬筆時檔案較小、寫入較快。"""
+def decode_history(data):
+    """回傳（依時間排序的有效樣本、捨棄的列數）；無法解讀時拋出 Undecodable。"""
+    return decode_rows(load_document(data)["samples"])
+
+
+def encode_history(samples, imported=None):
+    """精簡 JSON（不縮排），一週約一萬筆時檔案較小、寫入較快。
+
+    imported 是補回紀錄的 JSON 欄位（sdm.core.backfill.imported_section）；None 時不寫這個欄位，
+    沒有補回時檔案與先前的版本完全相同。
+    """
     data = {"format": History.FORMAT, "samples": [item.to_row() for item in samples]}
+    if imported is not None:
+        data["imported"] = imported
     return (json.dumps(data, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
 
 
@@ -122,18 +144,24 @@ def mean(values):
 
 
 def bucket_point(chunk):
-    """一個區間的平均值：時間取第一筆，接電狀態只要有一筆接電就算接電。"""
+    """一個區間的平均值：時間取第一筆，接電狀態只要有一筆接電就算接電。
+
+    同一區間同時有自己的與補回的紀錄時（點數太多、合併最舊的段才會發生）只用自己的紀錄，
+    兩種來源的數值絕不平均在一起。
+    """
+    own = [item for item in chunk if not item.imported]
+    chunk = own or chunk
     return dict(t=chunk[0].t, pct=mean(item.pct for item in chunk),
                 watts=mean(item.watts for item in chunk),
                 ups_pct=mean(item.ups_pct for item in chunk),
-                plugged=any(item.plugged for item in chunk))
+                plugged=any(item.plugged for item in chunk), imported=not own)
 
 
 def split_runs(selected):
-    """在超過 600 秒的空白處切開，空白兩側的資料不會被平均成同一點。"""
+    """在超過 600 秒的空白處與來源（自己的、補回的）改變處切開，不會被平均成同一點。"""
     runs, current = [], [selected[0]]
     for before, item in zip(selected, selected[1:]):
-        if item.t - before.t > History.WATTS_GAP_SECONDS:
+        if item.t - before.t > History.WATTS_GAP_SECONDS or item.imported != before.imported:
             runs.append(current)
             current = []
         current.append(item)
@@ -182,20 +210,41 @@ def bucket_points(buckets):
                 watts_segment += 1
             if elapsed > History.GAP_SECONDS:
                 segment += 1
-            elif values["plugged"] != previous.plugged:
-                # 換顏色時把上一個點複製到新段，線才會接起來
-                segment += 1
-                out.append(ChartPoint(len(out), previous.t, previous.pct, None,
-                                      previous.ups_pct, values["plugged"], segment,
-                                      watts_segment))
+            else:
+                segment = join(out, previous, values, segment, watts_segment)
         previous = ChartPoint(len(out), segment=segment, watts_segment=watts_segment, **values)
         out.append(previous)
         last_t = chunk[-1].t
     return tuple(out)
 
 
-def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
+def join(out, previous, values, segment, watts_segment):
+    """換來源或換顏色時開新的一段，並加一個複製點讓線接起來；回傳這一點的段號。
+
+    自己的 → 補回的：上一點複製到補回段；補回的 → 自己的：這一點先複製到補回段，
+    虛線一直畫到自己的紀錄為止。換顏色時把上一個點複製到新段（參考專案的作法）。
+    """
+    if values["imported"] != previous.imported:
+        if previous.imported:
+            out.append(ChartPoint(len(out), values["t"], values["pct"], None, values["ups_pct"],
+                                  previous.plugged, segment, watts_segment, imported=True))
+        else:
+            out.append(ChartPoint(len(out), previous.t, previous.pct, None, previous.ups_pct,
+                                  values["plugged"], segment + 1, watts_segment, imported=True))
+        return segment + 1
+    if values["plugged"] != previous.plugged:
+        out.append(ChartPoint(len(out), previous.t, previous.pct, None, previous.ups_pct,
+                              values["plugged"], segment + 1, watts_segment,
+                              imported=values["imported"]))
+        return segment + 1
+    return segment
+
+
+def chart_points(samples, range_s, now, max_points=History.MAX_POINTS, imported=()):
     """取 range_s 秒內的樣本並降採樣，點數（含複製點）保證不超過 max_points。
+
+    imported 是由 UPower 補回的樣本（依時間排序）：與自己的紀錄依時間合併，但分段、
+    分區間都依來源切開，補回的點 imported 為 True（圖表畫成虛線）。
 
     分段、斷線與複製點的規則沿用參考專案 HistoryStore.points()，但分區間刻意不同：
     區間不跨越超過 600 秒的空白（參考的作法在 7 天範圍會讓耗電線畫不出來，
@@ -203,7 +252,10 @@ def chart_points(samples, range_s, now, max_points=History.MAX_POINTS):
     超過時縮小區間預算重算。只有在每區間一筆、且樣本加複製點不超過 max_points 時，
     結果才與參考相同。
     """
-    selected = [item for item in samples if item.t >= now - range_s]
+    start = now - range_s
+    selected = list(heapq.merge((item for item in samples if item.t >= start),
+                                (item for item in imported if item.t >= start),
+                                key=lambda item: item.t))
     if not selected:
         return ()
     limit = max(1, max_points)

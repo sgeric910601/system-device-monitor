@@ -8,6 +8,8 @@
 - 個別無效的列（非有限值、超出範圍）在載入時捨棄；時間在未來的列保留。
 - 時鐘落後（現在早於最新一筆）時不修剪；修剪若會刪到既有最新一筆前 24 小時內的
   資料（時鐘大幅往前跳），本次執行第一次發生時先另存備份再修剪。
+- 由 UPower 補回的紀錄（imported）與自己的紀錄分開保存在同一個檔案的 "imported" 欄位，
+  加入時立即存檔；這個欄位無效時只捨棄它（之後會再補一次），自己的紀錄照常載入。
 """
 import logging
 import os
@@ -16,9 +18,11 @@ import time
 
 from sdm import paths
 from sdm.constants import History
-from sdm.core.history import (NewerFormat, Undecodable, chart_points, decode_history,
-                              encode_history, last_unplugged, parse_boot_time, trim,
-                              valid_sample)
+from sdm.core.backfill import (Imported, InvalidImported, decode_imported, imported_section,
+                               merge_imported, trim_imported)
+from sdm.core.history import (NewerFormat, Undecodable, chart_points, decode_rows,
+                              encode_history, last_unplugged, load_document, parse_boot_time,
+                              trim, valid_sample)
 from sdm.core.jsonfile import (create_backup, create_backup_copy, remove_stale_temporaries,
                                write_bytes_atomic)
 from sdm.data.sources import read
@@ -50,6 +54,7 @@ class HistoryService:
             self.path = Path(path) if path is not None else default_path()
         self.clock, self.writer, self.backup = clock, writer, backup
         self.samples = ()
+        self.imported = Imported()     # 由 UPower 補回的紀錄與處理過的空白（不可變）
         self.unsaved = 0
         self.writable = True
         self.jump_backup_done = False
@@ -86,17 +91,28 @@ class HistoryService:
 
     def _decode(self, data, now):
         try:
-            samples, dropped = decode_history(data)
+            raw = load_document(data)
         except NewerFormat:
             self._disable("History file uses a newer format")
             return
         except Undecodable:
             self._recover(data, now)
             return
+        samples, dropped = decode_rows(raw["samples"])
         if dropped:
             LOG.warning("Dropped %d invalid history rows", dropped)
         newest = samples[-1].t if samples else None
         self.samples = self._trim(samples, newest, now, data)
+        self.imported = self._decode_imported(raw.get("imported"), now)
+
+    @staticmethod
+    def _decode_imported(raw, now):
+        """補回的欄位無效時整個捨棄（記警告），自己的紀錄不受影響。"""
+        try:
+            return trim_imported(decode_imported(raw), now)
+        except InvalidImported:
+            LOG.warning("Dropped the invalid imported history section")
+            return Imported()
 
     def _recover_oversized(self):
         """太大的檔案不讀進記憶體：分段複製成備份後從空白開始；備份失敗就停用寫入。"""
@@ -136,6 +152,12 @@ class HistoryService:
         self.unsaved += 1
         return self.unsaved >= History.SAVE_EVERY and self.save()
 
+    def add_imported(self, series, gaps, samples):
+        """加入由 UPower 補回的樣本，並記下這些空白已處理；立即存檔，回傳這次是否寫檔成功。"""
+        self.imported = merge_imported(self.imported, series, gaps, samples, self.clock())
+        self.unsaved += 1
+        return self.save()
+
     def _trim(self, samples, newest_before, now, original=None):
         """修剪到 7 天；會刪到既有最新一筆前 24 小時內的資料時（時鐘往前跳）先備份。"""
         kept = trim(samples, now)
@@ -171,9 +193,11 @@ class HistoryService:
             return False
         if not force and self.retry_at is not None and self.monotonic() < self.retry_at:
             return False
+        self.imported = trim_imported(self.imported, self.clock())
         try:
+            data = encode_history(self.samples, imported_section(self.imported))
             self._ensure_directory()
-            self.writer(self.path, encode_history(self.samples), mode=History.FILE_MODE)
+            self.writer(self.path, data, mode=History.FILE_MODE)
         except (OSError, ValueError) as error:
             self._save_failed(type(error).__name__)
             return False
@@ -203,7 +227,7 @@ class HistoryService:
 
     def points(self, range_s, now=None, max_points=History.MAX_POINTS):
         now = self.clock() if now is None else now
-        return chart_points(self.samples, range_s, now, max_points)
+        return chart_points(self.samples, range_s, now, max_points, self.imported.samples)
 
     def last_unplugged(self, boot_time, now=None):
         now = self.clock() if now is None else now

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from sdm import paths
 from sdm.constants import History
+from sdm.core.backfill import SERIES_BATTERY, SERIES_UPS, Gap, Imported, Span
 from sdm.core.history import HistorySample, encode_history
 from sdm.core.jsonfile import (create_backup, create_backup_copy, write_bytes_atomic,
                                write_exclusive)
@@ -20,6 +21,11 @@ LOGGER = "sdm.services.history_service"
 
 def sample(t, watts=100.0):
     return HistorySample(t, None, watts, True, False, 100.0, True)
+
+
+def filled(t, value=95.0):
+    """由 UPower 補回的不斷電系統電量。"""
+    return HistorySample(t, None, None, True, False, value, True, imported=True)
 
 
 class Writer:
@@ -135,6 +141,87 @@ class Loading(TempData):
         self.assertEqual([s.t for s in service.samples], [NOW - 60])
         self.assertTrue(service.writable)
         self.assertEqual(self.backups(), [])
+
+
+class Imports(TempData):
+    """由 UPower 補回的紀錄：另存在 "imported" 欄位、立即存檔、絕不改動自己的紀錄。"""
+
+    def with_own(self, **options):
+        service = self.service(**options)
+        for t in (NOW - 3600, NOW - 60):
+            service.add(sample(t))
+        return service
+
+    def test_imported_rows_and_handled_gaps_are_saved_at_once_and_reloaded(self):
+        service = self.with_own()
+        gap = Gap(NOW - 3600, NOW - 60)
+        self.assertTrue(service.add_imported(SERIES_UPS, (gap,), (filled(NOW - 2000),)))
+        data = json.loads(self.path.read_text())
+        self.assertEqual(data["samples"], [sample(NOW - 3600).to_row(), sample(NOW - 60).to_row()])
+        self.assertEqual(data["imported"], {
+            "samples": [[NOW - 2000, None, None, True, False, 95.0, True]],
+            "spans": {SERIES_UPS: [[NOW - 3600, NOW - 60]]}})
+        again = self.service()
+        self.assertEqual(again.samples, service.samples)
+        self.assertEqual(again.imported, Imported((filled(NOW - 2000),),
+                                                  (Span(SERIES_UPS, NOW - 3600, NOW - 60),)))
+
+    def test_own_samples_are_never_changed(self):
+        service = self.with_own()
+        before = service.samples
+        service.add_imported(SERIES_UPS, (Gap(NOW - 3600, NOW - 60),), (filled(NOW - 2000),))
+        self.assertIs(service.samples, before)
+        self.assertFalse(any(item.imported for item in service.samples))
+
+    def test_chart_points_include_imported_samples(self):
+        service = self.with_own()
+        service.add_imported(SERIES_UPS, (Gap(NOW - 3600, NOW - 60),), (filled(NOW - 2000, 80.0),))
+        points = service.points(2 * 3600, NOW)
+        self.assertIn((NOW - 2000, 80.0), [(p.t, p.ups_pct) for p in points if p.imported])
+
+    def test_invalid_section_is_dropped_and_own_samples_kept(self):
+        rows = [sample(NOW - 60).to_row()]
+        self.write_file(json.dumps({"format": 1, "samples": rows,
+                                    "imported": {"samples": "x"}}).encode())
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            service = self.service()
+        self.assertIn("imported", " ".join(logs.output))
+        self.assertEqual([s.t for s in service.samples], [NOW - 60])
+        self.assertEqual(service.imported, Imported())
+        self.assertTrue(service.writable)
+        self.assertEqual(self.backups(), [])
+
+    def test_old_imports_are_trimmed(self):
+        old = NOW - History.RETENTION_SECONDS - 60
+        section = {"samples": [filled(old).to_row(), filled(NOW - 120).to_row()],
+                   "spans": {SERIES_BATTERY: [[old - 600, old]]}}
+        self.write_file(json.dumps({"format": 1, "samples": [sample(NOW - 60).to_row()],
+                                    "imported": section}).encode())
+        service = self.service()
+        self.assertEqual([s.t for s in service.imported.samples], [NOW - 120])
+        self.assertEqual(service.imported.spans, ())
+
+    def test_file_without_imports_keeps_the_old_shape(self):
+        service = self.with_own()
+        service.save(force=True)
+        self.assertEqual(sorted(json.loads(self.path.read_text())), ["format", "samples"])
+
+    def test_memory_service_never_writes(self):
+        service = HistoryService.in_memory(clock=self.clock)
+        service.add(sample(NOW - 60))
+        self.assertFalse(service.add_imported(SERIES_UPS, (Gap(NOW - 3600, NOW - 60),),
+                                              (filled(NOW - 2000),)))
+        self.assertEqual(len(service.imported.samples), 1)
+        self.assertFalse(self.path.parent.exists())
+
+    def test_imports_stay_in_memory_when_writes_are_disabled(self):
+        self.write_file(json.dumps({"format": 99, "samples": []}).encode())
+        with self.assertLogs(LOGGER, "WARNING"):
+            service = self.service()
+        self.assertFalse(service.add_imported(SERIES_UPS, (Gap(NOW - 3600, NOW - 60),),
+                                              (filled(NOW - 2000),)))
+        self.assertEqual(len(service.imported.samples), 1)
+        self.assertEqual(json.loads(self.path.read_text()), {"format": 99, "samples": []})
 
 
 class ClockAnomalies(TempData):

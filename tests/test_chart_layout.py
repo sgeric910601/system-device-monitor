@@ -3,10 +3,9 @@ from datetime import datetime, timezone
 import math
 import unittest
 
-from sdm.core.chart_layout import (axis_ticks, band_widths, flow_geometry, line_segments,
-                                   linear, nice_axis_max, pct_segments, ups_segments,
-                                   watts_segments,
-                                   watts_summary)
+from sdm.core.chart_layout import (axis_ticks, band_widths, flow_geometry, level_segments,
+                                   line_segments, linear, nice_axis_max, pct_segments,
+                                   ups_segments, watts_segments, watts_summary)
 from sdm.core.history import ChartPoint
 
 END = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc).timestamp()
@@ -157,6 +156,21 @@ class Segments(unittest.TestCase):
 
     def test_generic_split(self):
         self.assertEqual(line_segments((), lambda p: p.watts, lambda p: 0), [])
+
+    def test_own_and_imported_levels_are_split_apart(self):
+        points = (ChartPoint(0, 0, 80.0, 6.0, None, False, 0, 0),
+                  ChartPoint(1, 0, 80.0, None, None, False, 1, 1, imported=True),   # 接到補回段
+                  ChartPoint(2, 600, 70.0, None, None, False, 1, 1, imported=True),
+                  ChartPoint(3, 1200, 60.0, None, None, False, 1, 1, imported=True),
+                  ChartPoint(4, 1200, 60.0, 5.0, None, False, 2, 2))
+        self.assertEqual(pct_segments(points), [[(0, 80.0, False)], [(1200, 60.0, False)]])
+        self.assertEqual(level_segments(points, lambda p: p.pct, imported=True),
+                         [[(0, 80.0, False), (600, 70.0, False), (1200, 60.0, False)]])
+        ups = tuple(ChartPoint(i, i * 60, None, None, 90.0, True, 0, 0, imported=True)
+                    for i in range(2))
+        self.assertEqual(ups_segments(ups), [])
+        self.assertEqual(level_segments(ups, lambda p: p.ups_pct, imported=True),
+                         [[(0, 90.0, True), (60, 90.0, True)]])
 
 
 class Summary(unittest.TestCase):

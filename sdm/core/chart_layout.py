@@ -186,16 +186,23 @@ def watts_segments(points):
     return line_segments(points, lambda point: point.watts, lambda point: point.watts_segment)
 
 
+def level_segments(points, value, imported=False):
+    """電量線：只取自己的（或只取補回的）點，依 segment 斷開，讀不到電量時也斷開。
+
+    補回段的頭尾複製點已經接到兩側自己的紀錄，兩種來源分開取也不會斷線。
+    """
+    chosen = [point for point in points if point.imported == imported]
+    return line_segments(chosen, value, lambda point: point.segment, break_on_missing=True)
+
+
 def ups_segments(points):
-    """不斷電系統電量線：依 segment 斷開（接電與改用電池分色），讀不到電量時也斷開。"""
-    return line_segments(points, lambda point: point.ups_pct, lambda point: point.segment,
-                         break_on_missing=True)
+    """不斷電系統電量線（自己的紀錄）：依 segment 斷開（接電與改用電池分色），讀不到電量時也斷開。"""
+    return level_segments(points, lambda point: point.ups_pct)
 
 
 def pct_segments(points):
-    """筆電電量線：與不斷電系統電量線相同，依接電與用電池分色，讀不到電量時斷開。"""
-    return line_segments(points, lambda point: point.pct, lambda point: point.segment,
-                         break_on_missing=True)
+    """筆電電量線（自己的紀錄）：與不斷電系統電量線相同，依接電與用電池分色，讀不到電量時斷開。"""
+    return level_segments(points, lambda point: point.pct)
 
 
 def watts_summary(points):
