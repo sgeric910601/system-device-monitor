@@ -28,6 +28,7 @@ from sdm.services.ui_state import PageMemory
 from sdm.ui.alert_wiring import AlertMixin
 from sdm.ui.app_names import AppNames
 from sdm.ui.appearance_wiring import AppearanceMixin
+from sdm.ui.backfill_wiring import BackfillMixin
 from sdm.ui.charge_limit_wiring import ChargeLimitMixin
 from sdm.ui.charging_plan_wiring import ChargingPlanMixin
 from sdm.ui.companion_wiring import CompanionMixin
@@ -62,9 +63,9 @@ class RunResult(NamedTuple):
     report: Optional[dict]
 
 
-class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, MonitorMixin,
-              AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin, ChargeLimitMixin,
-              ChargingPlanMixin, UpdateMixin, Gtk.Application):
+class Monitor(PowerMixin, BackfillMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin,
+              MonitorMixin, AlertMixin, CpuPowerMixin, AppearanceMixin, CompanionMixin,
+              ChargeLimitMixin, ChargingPlanMixin, UpdateMixin, Gtk.Application):
     preview = None          # 示範情境（--preview）；None 為一般執行
     power_refresh = None    # 插拔電源後的重新讀取排程
     boot_time = None
@@ -137,6 +138,7 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
         self.collector.nvidia.start()
         self.history = create_history(self.smoke, self.preview)
         self.history.load()
+        self.start_backfill()       # 只建立；第一筆紀錄之後才非同步讀 UPower（示範模式不建立）
         self.boot_time = read_boot_time()
         self.build_window()
         if not self.preview:     # 示範模式沒有頂端列，也不監看裝置事件
@@ -347,7 +349,8 @@ class Monitor(PowerMixin, SettingsMixin, ScheduleMixin, TrayMixin, SmokeMixin, M
             return
         self.closing = True
         try:
-            for name, action in (("history", self.save_history), ("settings", self.flush_settings),
+            for name, action in (("history", self.save_history), ("backfill", self.stop_backfill),
+                                 ("settings", self.flush_settings),
                                  ("page", self.remember_page), ("pet", self.close_pet),
                                  ("sources", self.remove_sources),
                                  ("alerts", self.stop_alerts),

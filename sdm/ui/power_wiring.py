@@ -67,6 +67,7 @@ class PowerMixin:
         if sample is not None and sample.t != self.last_recorded:
             self.last_recorded = sample.t
             self.history.add(sample)
+            self.check_backfill()       # 這一筆之前若有空白（剛啟動、剛喚醒），向 UPower 補回
             if self.power_page is not None:
                 self.power_page.history_changed()
         return True
