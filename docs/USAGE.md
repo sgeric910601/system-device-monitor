@@ -1,5 +1,10 @@
 # 使用、更新與移除
 
+安裝、系統需求與移除步驟的摘要見 [README](../README.md)；這份文件是各功能的詳細說明。
+
+**筆電功能（電池、充電上限、智慧充電、精準喚醒）都只以合成的 /sys 資料、假的 logind 與私人匯流排
+驗證，尚未在真正的筆電上測試。** 遇到問題請依「[回報筆電問題（--dump）](#回報筆電問題--dump)」附上輸出。
+
 ## 桌面與背景執行
 
 從應用程式選單啟動看板。關閉視窗會隱藏到頂端列，
@@ -14,6 +19,23 @@
 預設 preserve：首次安裝啟用，以後保留使用者選擇。
 .deb 不在安裝過程修改任何人的家目錄；第一次啟動時才建立該使用者設定。
 桌面啟動項目使用絕對路徑，不依賴互動式 shell 的 PATH 或 Conda。
+
+## 命令列選項
+
+| 選項 | 用途 | 詳細說明 |
+|---|---|---|
+| （沒有選項） | 開啟看板；已經在執行時開啟同一個視窗 | 上一節 |
+| --background | 只在頂端列執行、不開視窗（登入自啟使用） | 上一節 |
+| --version | 印出版本後結束（不載入 GTK） | — |
+| --preview 情境 | 示範模式：以記憶體中的示範資料開啟視窗 | [示範模式](#示範模式--preview) |
+| --dump | 印出硬體摘要（JSON）後結束 | [回報筆電問題](#回報筆電問題--dump) |
+| --charging-plan-status | 唯讀印出智慧充電的狀態（JSON）後結束 | [紀錄與查詢](#紀錄與查詢) |
+| --test-notification | 請正在執行的看板送出一則測試通知後結束 | [通知](#通知) |
+| --smoke-test --output-dir 資料夾 | 本機診斷，約 25 秒後結束 | [本機診斷](#本機診斷) |
+
+--version、--dump、--charging-plan-status、--test-notification、--smoke-test 與 --help 的結果印在
+終端機；看板本身（含 --background 與 --preview）的訊息寫進 ~/.cache/system-device-monitor/app.log。
+--test-notification 與 --charging-plan-status 只能單獨使用，--preview 不能搭配 --background。
 
 ## 視窗與設定
 
@@ -55,7 +77,8 @@
   「297 W｜CPU 12%｜54°C｜RAM 34%｜GPU 30%｜↓340K ↑12K」；筆電的時間放在括號裡，
   例如「82%（3:25）｜CPU 12%」。頂端列太擠時使用。切換模式不會多出新的圖示。
 - 選單：每個項目一行（點一下開啟它的頁面，不論是否顯示在頂端列；關閉的監控模組不列出）、
-  設備電量、電源模式、開啟看板、設定…、退出。
+  設備電量、電源模式、開啟看板、設定…、退出。「設備電量」每台有回報電量的設備一行，不斷電系統
+  另有一行；不斷電系統的詳細資料在看板中，不另外建立頂端列圖示。
 - 耗電項目的顯示格式（參考 macOS 版）：
   - 圖示＋百分比「82%」；只有圖示；只有百分比（充電中為「⚡82%」，GNOME 仍會保留圖示的位置）。
   - 圖示＋剩餘時間「3:25」：用電池時是剩餘時間、充電時是充滿（或到上限）的時間，
@@ -144,52 +167,67 @@ history-<時間>.json.bak（不覆寫既有備份）再從空白開始；
   以「CPU 功耗 × 該 App 佔所有 App CPU 時間的比例」估算瓦數並註明「依 CPU 佔比估算」；
   沒有 CPU 功耗時依 CPU 使用率排序並註明原因。只在「電源」頁顯示時取樣。
 
-## 管理員功能：CPU 功耗取樣
+## 管理員元件
+
+需要 root 才能做的事交給幾個很小的管理員小程式，看板本身一律以一般使用者執行。元件都是選用的，
+開啟程式或設定視窗時不會要求密碼。威脅模型與每個元件的限制見 [SECURITY.md](SECURITY.md)。
+
+| 小程式 | 功能 | 授權 |
+|---|---|---|
+| sdm-cpu-power（與取樣服務 sdm-cpu-power-service） | [CPU 功耗取樣](#cpu-功耗取樣)：開關讀取 RAPL 的系統服務 | 開啟、關閉每次都要管理員密碼 |
+| sdm-charge-limit | [充電上限](#充電上限)：寫入電池的充電門檻、開關「開機與喚醒後保留」 | 調整上限時要密碼（約 5 分鐘內不必重輸）；開關保留時要密碼 |
+| sdm-wake | [精準喚醒](#智慧充電)：設定、取消 RTC 喚醒鬧鐘 | 允許無人時自動調整之後免密碼 |
+| sdm-unattended | [允許無人時自動調整](#允許無人時自動調整)：寫入或刪除只給你的 polkit 規則 | 開啟、關閉每次都要管理員密碼 |
+| sdm-update（只有 .deb） | [一鍵更新](#更新)：以 apt-get 安裝驗證過簽章的新版本 | 每次都要管理員密碼 |
+
+允許無人時自動調整之後，只有充電上限的設定與喚醒的設定、取消在你登入並使用這台電腦時免密碼，
+其他動作照常需要密碼。授權視窗由 pkexec 顯示。
+
+安裝：
+- .deb：已經包含全部元件，安裝時不啟用任何服務。小程式在 /usr/libexec/system-device-monitor。
+- 原始碼資料夾：在資料夾裡執行（會跳出管理員密碼視窗或在終端機詢問密碼）：
+
+      /usr/bin/python3 -B install.py --system-components install
+
+  一次安裝 CPU 功耗取樣、充電上限、精準喚醒與無人授權四種元件（一鍵更新只隨 .deb 提供，原始碼資料夾
+  以 git 更新）。只安裝已提交（git HEAD）的版本；相關檔案有未提交的修改時會拒絕，授權前會先顯示要
+  安裝的提交。原始碼資料夾、.git 與上層目錄必須只有你（或 root）能寫入。已安裝 .deb 時會拒絕。
+  檔案安裝到 /usr/local/libexec/system-device-monitor、/usr/local/share/polkit-1/actions 與
+  /etc/systemd/system（名稱含 -local-）；下面各節的指令在原始碼安裝時都把 /usr/libexec 換成
+  /usr/local/libexec，單元名稱加上 -local-。git pull 之後「設定 → 管理員功能」顯示需要重新安裝時，
+  再執行一次同一個指令（CPU 功耗取樣原本開著時會自動重新啟動 socket）。
+
+狀態：「設定 → 管理員功能」顯示元件是已安裝（.deb）、已安裝（原始碼）或未安裝，以及充電上限元件的
+狀態；原始碼資料夾還沒安裝時顯示上面的指令，可按「複製」貼到終端機。版本不符時顯示
+「需要重新安裝管理員元件」：原始碼安裝重新執行上面的指令，.deb 重新安裝套件。
+
+移除：
+- 原始碼：`/usr/bin/python3 -B install.py --system-components remove`。先撤銷無人授權的規則、
+  取消排定的喚醒並停用服務，再刪除所有元件與原始碼版保留的充電上限。已安裝 .deb 時會拒絕
+  （兩者共用無人授權的規則與喚醒紀錄）：要改用套件時，先執行這個指令再安裝套件；已經兩者都裝了時，
+  先 sudo apt remove system-device-monitor、再執行這個指令，之後重新安裝套件。
+- .deb：sudo apt remove system-device-monitor 停用服務、移除所有元件，撤銷無人授權的規則、取消排定的
+  喚醒，並刪除保留的充電上限（/var/lib/system-device-monitor/charge-limit.json）；
+  sudo apt purge system-device-monitor 另外刪除一鍵更新的執行鎖，並再確認一次這些檔案都已刪除。
+
+### CPU 功耗取樣
 
 Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選用功能安裝一個很小的系統服務：
 它從不以 root 執行（systemd 臨時配發的帳號、沒有任何能力），只有 root 能讀的計數器由 systemd
 唯讀開好交給它；只回答開啟它的使用者，提供固定 1 秒視窗的平均、四捨五入到 0.1 W。
-威脅模型與每個元件的限制見 [SECURITY.md](SECURITY.md)。
+RAPL 可能被用於旁路攻擊，多人共用的電腦不建議開啟（見 [SECURITY.md](SECURITY.md#rapl-旁路)）。
 
-安裝管理員元件：
-- .deb：已包含，不需要另外安裝。安裝時不會啟用任何服務。
-- 原始碼：在原始碼資料夾執行（會跳出管理員密碼視窗或在終端機詢問密碼）：
-
-      /usr/bin/python3 -B install.py --system-components install
-
-  只安裝已提交（git HEAD）的版本；相關檔案有未提交的修改時會拒絕，授權前會先顯示要安裝的提交。
-  原始碼資料夾、.git 與上層目錄必須只有你（或 root）能寫入。已安裝 .deb 時不需要也不能安裝。
-  檔案安裝到 /usr/local/libexec/system-device-monitor、/usr/local/share/polkit-1/actions
-  與 /etc/systemd/system（名稱含 -local-）。同一個指令也會安裝充電上限的元件（見「充電上限」）。
-
-開啟與關閉：
-- 「設定 → 管理員功能」顯示元件狀態：已安裝（.deb）、已安裝（原始碼）或未安裝；
-  原始碼資料夾還沒安裝時顯示上面的指令，可按「複製」貼到終端機。
-- 開啟「CPU 功耗取樣」會跳出管理員授權視窗；授權後 socket 只允許你的帳號連線。
+- 開啟「設定 → 管理員功能 → CPU 功耗取樣」會跳出管理員授權視窗；授權後 socket 只允許你的帳號連線。
   取消授權或密碼錯誤時選項自動恢復，並在「上次的錯誤」說明原因。關閉時同樣需要授權。
 - 開啟程式時只確認元件與版本，不會要求密碼；選項開著但服務沒有為你開啟（例如元件被移除），
   會直接關閉選項並說明。
 - 開啟後只在「電源」頁顯示時連線，每個更新間隔讀一次；離開頁面就斷線，服務閒置 30 秒後自行結束。
-- 版本不符時顯示「需要重新安裝管理員元件」：原始碼安裝重新執行上面的安裝指令，.deb 重新安裝套件。
+- 不經由看板操作時（例如遠端維護），也可以直接執行：
 
-不經由看板操作時（例如遠端維護），也可以直接執行：
-
-    pkexec /usr/libexec/system-device-monitor/sdm-cpu-power enable
-    pkexec /usr/libexec/system-device-monitor/sdm-cpu-power status
-    pkexec /usr/libexec/system-device-monitor/sdm-cpu-power disable
-    systemctl status system-device-monitor-cpu-power.socket
-
-原始碼安裝把路徑換成 /usr/local/libexec/system-device-monitor/sdm-cpu-power，
-單元名稱換成 system-device-monitor-local-cpu-power.socket。
-
-移除管理員元件：
-- 原始碼：`/usr/bin/python3 -B install.py --system-components remove`（會先停用服務，
-  並刪除原始碼版保留的充電上限）。已安裝 .deb 時會拒絕（兩者共用無人授權的規則與喚醒紀錄）：
-  要從原始碼版改用套件，請先 sudo apt remove system-device-monitor、再執行這個指令，
-  之後重新安裝套件。
-- .deb：sudo apt remove system-device-monitor 會停用服務、移除所有元件，並刪除保留的充電上限
-  （/var/lib/system-device-monitor/charge-limit.json）；sudo apt purge system-device-monitor
-  另外清除 drop-in。
+      pkexec /usr/libexec/system-device-monitor/sdm-cpu-power enable
+      pkexec /usr/libexec/system-device-monitor/sdm-cpu-power status
+      pkexec /usr/libexec/system-device-monitor/sdm-cpu-power disable
+      systemctl status system-device-monitor-cpu-power.socket
 
 ## 充電夥伴
 
@@ -302,7 +340,7 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 ## 筆電電池
 
 有內建電池的電腦（筆電）會自動改用電池版面；桌機維持上面的整機耗電版面。
-**這部分目前只以合成資料驗證，尚未在真正的筆電上測試**，遇到問題請依下一節附上 --dump 輸出。
+筆電功能只以合成資料驗證（見本文件開頭），遇到問題請依「回報筆電問題」附上 --dump 輸出。
 
 資料來源：
 - 電池與變壓器：/sys/class/power_supply。系統電池＝類型 Battery、scope 不是 Device
@@ -345,7 +383,6 @@ Linux 的 CPU 功耗來自 RAPL 能量計數器，只有 root 能讀。這個選
 
 電池支援充電上限時（/sys/class/power_supply/<電池>/charge_control_end_threshold，例如 ThinkPad、
 ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上限」滑桿。
-**這部分目前只以合成資料驗證，尚未在真正的筆電上測試。**
 
 - 滑桿每一格是一個上限：80%、85%、90%、95% 與 100%（不限制）。拖動時右邊顯示選到的值，
   放開滑桿或停 0.6 秒才寫入（連續調整只寫最後一次），鍵盤的方向鍵也可以調整。
@@ -367,12 +404,10 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
   與系統的「保護電池健康」（UPower 1.90.5 以後的充電門檻）也會設定充電門檻，並在開機、喚醒或
   插拔電源時套回自己的值。偵測到時滑桿下方顯示提醒與處理方式；仍然可以調整，但值可能被改回去。
   請只用一個工具管理充電門檻。
-- 需要管理員元件：.deb 已包含；原始碼安裝執行 install.py --system-components install
-  （與 CPU 功耗取樣相同的指令；之前安裝過的請重新執行一次以加入充電上限元件）。
-  缺少元件時滑桿停用，並顯示「開啟「設定 → 管理員功能」」連結；那裡也列出充電上限元件的狀態。
+- 需要管理員元件（見[管理員元件](#管理員元件)）：缺少時滑桿停用，並顯示「開啟「設定 → 管理員功能」」
+  連結；那裡也列出充電上限元件的狀態。
 
-不經由看板操作時也可以直接執行（.deb 的路徑；原始碼安裝換成
-/usr/local/libexec/system-device-monitor/sdm-charge-limit，單元名稱含 -local-）：
+不經由看板操作時也可以直接執行（.deb 的路徑；原始碼安裝見[管理員元件](#管理員元件)）：
 
     pkexec /usr/libexec/system-device-monitor/sdm-charge-limit set BAT0 80
     pkexec /usr/libexec/system-device-monitor/sdm-charge-limit set BAT0 80 --persist on
@@ -467,7 +502,6 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
       pkexec /usr/libexec/system-device-monitor/sdm-unattended status
 
   結束碼與其他小程式相同（0、2、3、4）；sdm-wake 不會改動別的程式設定的鬧鐘。
-- 尚未在真正的筆電上驗證（只以合成資料、假的 logind 與私人匯流排測試）。
 
 ## 通知
 
@@ -477,7 +511,7 @@ ASUS、Framework 等），「電源」頁電量標題下方會出現「充電上
 | 提醒 | 何時通知 | 何時會再通知 |
 |---|---|---|
 | 電量偏低（筆電） | 正在放電且電量降到門檻以下（預設 20%，5%–50%）；接著電源但充電器功率不足、電量仍在下降時也會提醒 | 接上電源（開始充電）或電量回到門檻＋2% 以上之後 |
-| 充電完成（筆電） | 這次接上電源後看過「充電中」，且電量達到門檻（預設 100%，80%–100%）或已達充電上限 | 拔掉電源，或電量低於 min(門檻, 充電上限) − 5% 之後 |
+| 充電完成（筆電） | 這次接上電源後看過「充電中」，且電量達到門檻（預設 100%，80%–100%）或已達充電上限 | 拔掉電源，或電量低於 `min(門檻, 充電上限) − 5%` 之後 |
 | 周邊設備電量偏低 | 電量降到這台設備的門檻以下（預設 20%）；只回報電量等級的設備在等級變成低電量或極低電量時 | 電量回到門檻＋2% 以上（等級回到正常以上），或門檻改成「不通知」之後 |
 | 不斷電系統改用電池供電（緊急） | 連續兩次取樣都在用電池；內文有電量、負載瓦數與預估可用時間 | 恢復市電之後 |
 | 已恢復市電 | 送出過「改用電池供電」之後恢復市電 | — |
@@ -549,7 +583,8 @@ laptop-limit（已達上限）與 desktop（桌機）。示範模式：
 
 ## Logitech 電量與滑鼠設定
 
-Ubuntu 沒有官方 G HUB；以下是選用的 Linux 工具：
+Logitech G HUB 沒有官方 Linux 版；[Solaar](https://github.com/pwr-Solaar/Solaar) 查看電量與設定，
+[Piper](https://github.com/libratbag/piper) 管理滑鼠設定，兩者都是選用的：
 
     sudo apt install solaar piper ratbagd
 
@@ -593,6 +628,7 @@ Piper 可能辨識滑鼠，卻對作用中的設定檔或 DPI／回報率呈現�
     }
 
 重啟應用程式後生效。此檔案只留在本機，不應提交到 GitHub。
+別名只影響名稱與說明，不會讓沒有回報電量的鍵盤等設備取得電量。
 缺少或格式錯誤的覆寫會退回裝置原始名稱。
 
 ## 更新
@@ -607,8 +643,9 @@ Piper 可能辨識滑鼠，卻對作用中的設定檔或 DPI／回報率呈現�
 - .deb 安裝：按「安裝更新」後，看板在背景下載 SHA256SUMS 與它的簽章 SHA256SUMS.sig，先以內建的
   維護者公鑰驗證簽章，再下載 .deb 並比對檢查碼、確認套件名稱與版本，接著要求管理員密碼
   （每次都要），由管理員小程式再驗證一次後以 apt-get 安裝，完成後看板自動重新啟動
-  （原本在背景執行時仍在背景）。任何一步失敗都不會安裝，設定頁顯示原因；
-  「未設定簽章金鑰」表示這個版本沒有內建公鑰，只能到 GitHub 手動下載。
+  （原本在背景執行時仍在背景）。任何一步失敗都不會安裝，設定頁顯示原因。
+- 這個版本還沒有內建發布公鑰：「安裝更新」維持停用，設定頁顯示「未設定簽章金鑰：這個版本無法
+  一鍵更新，請到 GitHub 下載新版。」；檢查與通知照常運作，請依下方手動更新。
 - 原始碼資料夾：顯示可以複製的 git -C <資料夾> pull --ff-only 指令；完成後從頂端列選單「退出」
   再重新開啟看板。管理員元件有變更時（「設定 → 管理員功能」顯示需要重新安裝）再執行顯示的
   install.py --system-components install 指令。
@@ -619,33 +656,64 @@ Piper 可能辨識滑鼠，卻對作用中的設定檔或 DPI／回報率呈現�
     /usr/bin/python3 install.py
     ~/.local/bin/system-device-monitor
 
-.deb 版本從 Releases 下載 .deb、SHA256SUMS 與 SHA256SUMS.sig，確認檢查碼後以
+.deb 版本從 Releases 下載 .deb 與 SHA256SUMS（有 SHA256SUMS.sig 時一併下載），確認檢查碼後以
 sudo apt install ./新版本.deb 更新，再重啟應用程式。
-兩種方式都保留顯示項目及自動啟動設定。
-
-原始碼安裝過管理員元件時，git pull 之後若「設定 → 管理員功能」顯示需要重新安裝，
-再執行一次 /usr/bin/python3 -B install.py --system-components install；
-CPU 功耗取樣原本開著時會自動重新啟動 socket。
+兩種方式都保留設定、歷史及自動啟動設定；原始碼安裝過管理員元件時，見「管理員元件」的重新安裝。
 
 ## 移除
 
-先使用頂端列「退出」，並在設定關閉登入自啟。
+.deb 安裝請先在「設定 → 一般」關閉登入自啟（apt 不會刪除家目錄裡的自啟檔），再使用頂端列「退出」。
 
 原始碼安裝（安裝過管理員元件時先移除它；這也會取消智慧充電排定的喚醒並刪除無人授權的規則）：
 
     /usr/bin/python3 -B install.py --system-components remove
     /usr/bin/python3 install.py --uninstall
 
-這也會刪除本程式寫入 ~/.local/share/icons 的程式圖示（只刪記錄中、內容沒有被改過的檔案）。
+--uninstall 刪除啟動器、應用程式選單的項目、登入自啟，以及本程式寫入 ~/.local/share/icons 的程式圖示
+（只刪記錄中、內容沒有被改過的檔案）；原始碼資料夾本身留著。
 
-.deb 安裝（移除時一併取消智慧充電排定的喚醒、刪除無人授權的規則）：
+.deb 安裝（移除時一併停用服務、取消智慧充電排定的喚醒、刪除無人授權的規則與保留的充電上限）：
 
     sudo apt remove system-device-monitor
+    sudo apt purge system-device-monitor
 
-移除保留使用者設定及日誌，可自行刪除各 XDG 目錄下的 system-device-monitor
-子目錄。apt 不會代替使用者刪除家目錄內容：.deb 安裝時若選過其他圖示顏色，
-移除前先在「設定 → 外觀」改回薄荷綠，或自行刪除 ~/.local/share/icons/hicolor 底下的
-system-device-monitor.png。
+purge 另外刪除一鍵更新的執行鎖，並再確認一次上面的系統檔案都已刪除。apt 不會代替使用者刪除
+家目錄內容：.deb 安裝時若選過其他圖示顏色，移除前先在「設定 → 外觀」改回薄荷綠，或自行刪除
+~/.local/share/icons/hicolor 底下的 system-device-monitor.png。
+
+兩種方式都保留設定、歷史與日誌；要完全清除時，刪除下一節列出的 system-device-monitor 資料夾。
+
+## 檔案位置
+
+設定與資料遵循 XDG 路徑（下面是預設位置），只存在這台電腦：
+
+- 設定：~/.config/system-device-monitor/settings.json（舊版五個頂端列項目）與同目錄的
+  preferences.json（其他設定），以及選用的 device-aliases.json（裝置名稱覆寫）。
+- 登入自啟：~/.config/autostart/system-device-monitor.desktop。
+- 資料：~/.local/share/system-device-monitor/ 底下的 history.json（耗電與電量歷史）、
+  charging-plan.json（智慧充電的排程）、companion-photo.png（我的照片）與 app-icon.json
+  （本程式寫入的程式圖示）。
+- 狀態：~/.local/state/system-device-monitor/ 底下的 state.json（最後一頁）、pet.json
+  （桌面寵物的位置）、charging-plan.log（智慧充電的紀錄）、update-state.json（上次檢查更新的時間）
+  與 cpu-calibration.json（APU 校正是否已確認）。
+- 日誌：~/.cache/system-device-monitor/app.log。
+- 頂端列的耗電圖示：$XDG_RUNTIME_DIR/system-device-monitor/icons/（登出就清除）。
+- 換色的程式圖示：~/.local/share/icons/hicolor 底下 128x128 與 512x512 的 apps/system-device-monitor.png。
+- 系統檔案（管理員元件與它們的狀態）見 [SECURITY.md](SECURITY.md#安裝的檔案)。
+
+## 資料來源與限制
+
+- 整機耗電：已經設定好的 APC 不斷電系統（apcupsd／apcaccess）。看板只讀取狀態，不安裝或修改
+  寄信、關機門檻及 SMTP 憑證。
+- CPU：型號與核心數自動讀取；CPU 溫度支援 k10temp 的 Tctl／Tdie 與 coretemp 的 Package 溫度，
+  其他感測器列在「風扇與溫度」；主機板沒有回報風扇時會註明。
+- 顯示卡：NVIDIA 的使用率、顯示記憶體、耗電與風扇百分比來自 nvidia-smi，AMD 讀 sysfs。
+  總覽卡片顯示第一張 NVIDIA（沒有時為 AMD 獨顯），「CPU／GPU」頁列出每一張。
+- 溫度放在對應裝置名稱後（例如「裝置 · 型號 · 容量 · 溫度」），依 sysfs 的硬體路徑配對；
+  沒有 hwmon 的硬碟改用磁碟服務回報的 SMART 溫度，兩者都沒有時標示「溫度未回報」。
+- 網速摘要加總已連線的實體介面，虛擬介面另外列出。
+- 周邊設備：USB 與 BlueZ 確認已連線的藍牙設備；接收器存在不表示無線端一定開機，沒有資料時標示
+  未知或未回報。有百分比就顯示百分比，只回報等級時顯示「電量等級：正常」等文字，不換成虛構的百分比。
 
 ## 疑難排解
 

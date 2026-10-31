@@ -607,6 +607,7 @@
     "tests/test_disk_health.py",
     "tests/test_display_items.py",
     "tests/test_distribution.py",
+    "tests/test_docs.py",
     "tests/test_dump.py",
     "tests/test_ema.py",
     "tests/test_estimates.py",

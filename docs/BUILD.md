@@ -16,32 +16,33 @@ Architecture: all。建置不需要 sudo；版本由 VERSION 讀取。
 install-dependencies.sh 與 CI 也會安裝它。
 
 套件安裝：
-- /usr/bin/system-device-monitor：啟動器。
+- /usr/bin/system-device-monitor：啟動器（--version、--dump、--charging-plan-status、
+  --test-notification、--smoke-test 與 --help 的結果印在終端機，看板本身的輸出寫進 app.log）。
 - /usr/share/system-device-monitor：執行期程式（device_monitor.py 與 sdm/ 套件）、圖示與
   assets/（夥伴圖片與四種顏色的程式圖示）。
 - /usr/share/applications/system-device-monitor.desktop：桌面入口（Icon=system-device-monitor）。
 - /usr/share/icons/hicolor/128x128 與 512x512 的 apps/system-device-monitor.png：預設的薄荷綠程式圖示
   （圖示主題的快取由 dpkg 觸發器更新）。
 - /usr/share/doc/system-device-monitor：文件與授權。
-- /usr/libexec/system-device-monitor：管理員小程式 sdm-cpu-power、sdm-cpu-power-service 與
-  一鍵更新的 sdm-update（0755）。
-- /usr/share/polkit-1/actions/tw.local.system-device-monitor.policy 與 .update.policy：
-  CPU 功耗取樣與一鍵更新的 polkit 動作（0644）。
-- /usr/lib/systemd/system/system-device-monitor-cpu-power.socket 與 .service：
-  CPU 功耗取樣的 socket 與服務（0644）。安裝後預設不啟用。
+- 管理員元件：/usr/libexec/system-device-monitor 的六個小程式（sdm-cpu-power、sdm-cpu-power-service、
+  sdm-charge-limit、sdm-wake、sdm-unattended、sdm-update，0755）、/usr/share/polkit-1/actions 的
+  五個 polkit 動作檔，以及 /usr/lib/systemd/system 的 CPU 功耗取樣 socket 與服務、重新套用充電上限的
+  服務（0644，安裝後都不啟用）。每個檔案的用途、權限與原始碼安裝的對應位置見
+  [SECURITY.md](SECURITY.md#安裝的檔案)。
 
 package-files.json（格式 2）明確列出：
 - runtime：複製到 /usr/share/system-device-monitor 下相同相對路徑的執行期檔案，權限 0644。
 - system：系統檔案，各自指定權限（不得超過 0755）；目前為上述管理員小程式、
-  polkit 動作、兩個 systemd 單元與兩個尺寸的程式圖示（hicolor）。
+  polkit 動作、三個 systemd 單元與兩個尺寸的程式圖示（hicolor）。
   只能安裝到 /usr/libexec/system-device-monitor、/usr/share/system-device-monitor、
   /usr/share/polkit-1/actions、/usr/lib/systemd/system、/usr/share/applications、
   /usr/share/icons/hicolor 之下（清單在 sdm/constants.py）；套件不安裝任何 /etc 檔案。
 - maintainer：preinst、postinst、prerm、postrm 安裝前後腳本，權限 0755；
   目前為 packaging/debian/ 的 postinst、prerm、postrm（POSIX sh、set -e）：
   postinst 只重新載入 systemd，socket 原本已啟用時才重新啟動它，從不自動啟用；
-  prerm 在移除時停用並停止 socket 與服務、刪除 drop-in；postrm 在 purge 時刪除 drop-in
-  （套件不建立其他狀態目錄）。DPKG_ROOT 不是空的時不碰執行中的 systemd。
+  prerm 與 postrm 在移除時停用服務、撤銷無人授權的規則、取消排定的喚醒並刪除保留的充電上限，
+  降級到沒有智慧充電的版本（比 0.3.0~ 舊）時也撤銷規則與喚醒；細節見
+  [SECURITY.md](SECURITY.md#套件的安裝前後腳本)。DPKG_ROOT 不是空的時不碰執行中的 systemd。
 - source：公開原始碼清單，必須涵蓋所有 git 追蹤檔案。
 
 建置只複製列出的檔案，拒絕符號連結、未正規化或逃出專案的路徑，
@@ -97,6 +98,10 @@ AMD 假 /sys、電力拆解、3 分鐘平均、歷史檔與圖表分段、頁面
 充電狀態濾波、剩餘時間、電源情境與今日回顧數值；另有 --dump 隱私檢查，
 以及在 Xvfb 下實際執行示範模式、確認不寫入任何 XDG 目錄的整合測試（需要 xvfb-run）。
 測試資料為人工建立；不提交實機擷取資料。
+文件也有測試：tests/test_docs.py 檢查文件之間的連結與錨點、中文旁邊沒有半形的 `, : ; ( )`、README 依
+系統需求、安裝、管理員元件、使用、更新、移除與刻意不做的功能排列，以及「還沒有內建發布公鑰」的說明
+與 Update.PUBLIC_KEYS 一致；tests/test_version.py 確認 VERSION 是一鍵更新認得的版本格式、prerm 與
+postrm 把這個版本當成有智慧充電的版本，而且更新紀錄與安裝說明跟著 VERSION 更新。
 
 make import-check 從指定根目錄匯入 sdm/ 底下每個模組。
 CI 也對解包後的 .deb 執行同一檢查，確認套件內容完整：
@@ -123,9 +128,16 @@ usr/lib/systemd/system 後執行
     systemd-analyze security --offline=true --root=解包目錄 解包目錄/usr/lib/systemd/system/system-device-monitor-cpu-power.service
 
 CI 安裝 .deb 後另外檢查權限、pkaction 的預設授權、以 sudo 執行小程式的錯誤參數、
-開啟後服務確實以臨時帳號 sdm-cpu-power 執行、所有能力欄位都是 0，以及移除與清除後
-沒有留下任何單元或 drop-in。更新小程式只信任內建公鑰，所以 CI 只以會被拒絕的輸入測試
+開啟後服務確實以臨時帳號 sdm-cpu-power 執行、所有能力欄位都是 0，以及充電上限、喚醒與無人授權的
+小程式與規則。更新小程式只信任內建公鑰，所以 CI 只以會被拒絕的輸入測試
 （沒有簽章、檔名不對、符號連結、超過大小、不是自己的檔案）。
+移除與完全移除（purge）之後，CI 確認套件裡列出的每個檔案、小程式、polkit 動作、systemd 單元與
+wants 連結、/run、/var/lib 與 /var/cache 的狀態以及 rules.d 的規則檔都已刪除，並在 /etc、/var、/run 與
+/usr 底下套件用到的目錄找不到任何名稱含 system-device-monitor 或小程式名稱的項目（systemd 自己的
+/run/systemd、使用者的 /run/user、apt 的快取與 Docker 的資料除外）。最後從標籤 v0.1.0（GitHub 上最後一個發布的版本）
+以它自己的 scripts/build_deb.py 重新建置舊版套件、安裝、再以 apt-get 升級到這次建置的套件，確認版本、
+舊版才有的檔案已經換掉，之後再完全移除並做同樣的檢查。這個步驟不需要下載權杖，舊版的內容與發布時
+相同（由 git 標籤固定）。新的版本發布之後，把工作流程裡的 previous 改成新的標籤。
 
 GUI smoke test 需要桌面或 Xvfb、system bus 與 session bus。
 CI 使用 Ubuntu 24.04，建置並安裝 .deb 後在 Xvfb 下執行。
@@ -155,9 +167,11 @@ PUBLIC_KEYS（兩個 tuple 必須相同，測試會檢查），提交後才發�
 
 ### 每次發布
 
-先更新 VERSION 與 CHANGELOG.md（Beta 的 VERSION 寫成 0.3.0~beta.1，tag 為 v0.3.0-beta.1，
-GitHub 上標成 pre-release；正式版的 tag 為 v0.3.0），執行測試及隱私檢查，
-只提交 package-files.json 中的來源檔案。
+先更新 VERSION、CHANGELOG.md（標題寫成「## 版本（日期）」）與 README、本文件裡的套件檔名
+（Beta 的 VERSION 寫成 0.4.0~beta.1，tag 為 v0.4.0-beta.1，GitHub 上標成 pre-release；
+正式版的 tag 為 v0.4.0），執行測試及隱私檢查，只提交 package-files.json 中的來源檔案。
+還沒有發布金鑰時，完整的 make release-assets 會拒絕（見上一節）；Update.PUBLIC_KEYS 加入公鑰之後，
+README 與使用說明裡「還沒有內建發布公鑰」的說明也要拿掉（文件測試會檢查）。
 
     make test
     make privacy
@@ -221,6 +235,23 @@ dist/SHA256SUMS.sig；簽完先確認這把私鑰的公鑰在 Update.PUBLIC_KEYS
   sdm/services/system_components.py 為 install.py --system-components 的使用者端，
   sdm/data/cpu_power_client.py 為 socket 客戶端，sdm/core/cpu_power.py 與 ppt_calibration.py
   為 CPU 項目與 APU PPT 校正。威脅模型見 SECURITY.md。
+- 通知：sdm/core/alerts（筆電與不斷電系統的狀態機）、peripheral_alerts（周邊設備）、
+  alert_messages（標題、內文與圖示）；sdm/services/alert_service（頻率限制與重試）、notifier
+  （libnotify）、remote（--test-notification）；sdm/ui/alert_wiring、bell 與 settings/notifications、
+  settings/peripherals。
+- 系統監控頁：sdm/core/cpu、memory、apps、disk_health、thermal、network、monitor_history、snapshots、
+  tiers（取樣分層）；sdm/data/cgroups、detail、sensors、storage、udisks、network；sdm/ui/pages/ 的
+  四個頁面與 monitor_text、monitor_widgets、monitor_wiring。
+- 視窗、設定與頂端列：sdm/ui/main_window、navigation、settings_window、settings/（各分類）、
+  first_run；sdm/services/settings_store（唯一的寫入點）、scheduler 與 sdm/core/schedule（更新頻率與
+  省電模式）；tray、tray_text、tray_icons、tray_menu、tray_wiring 為頂端列。
+- 充電上限：sdm/core/charge_limit（滑桿的規則）、sdm/data/charge_thresholds 與 charge_conflicts（唯讀
+  讀取與衝突偵測）、sdm/services/charge_control（以 pkexec 寫入並讀回）、sdm/ui/charge_limit_text、
+  charge_limit_view、charge_limit_wiring；root 端為 helper/sdm-charge-limit 與重新套用的單元。
+- 智慧充電：sdm/core/charging_plan 與 plan_format（排程的判斷與檔案格式）、sdm/services/plan_controller
+  （狀態機）、plan_inputs、plan_store、plan_status（--charging-plan-status）、plan_demo、sleep_gate
+  （logind 的睡眠延遲）、wake_control 與 unattended_control；sdm/ui/charging_plan_* 與 settings/charging；
+  root 端為 helper/sdm-wake 與 helper/sdm-unattended。
 - 夥伴的純邏輯：sdm/core/companion（外觀與表情）、pet_messages（寵物的話，移植參考專案）、
   pet_motion（摸牠、眨眼、眼睛、愛心）、pet_geometry（大小、位置、對話框）、
   sprite_motion（動畫計時器與運動曲線）、png_chunks（PNG 區塊檢查與去除附屬資訊）。

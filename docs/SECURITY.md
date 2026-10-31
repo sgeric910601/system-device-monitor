@@ -7,6 +7,8 @@
 設定 RTC 喚醒鬧鐘的 sdm-wake（「精準喚醒」，/sys/class/rtc/rtc0/wakealarm 只有 root 能寫），
 以及只在你開啟「允許無人時自動調整」時才寫入一個 polkit 規則的 sdm-unattended。
 這份文件說明為了這些功能安裝了什麼、每個元件能做什麼，以及刻意不做的事。
+各元件的用途、安裝與移除方式見 [README](../README.md#選用的管理員元件) 與
+[使用說明](USAGE.md#管理員元件)。
 
 ## 要保護的東西與威脅
 
@@ -118,7 +120,7 @@ remove、之後重新安裝套件），不自動刪除任何東西。
   intel-rapl:0（名稱 package）與 intel-rapl:0:0（名稱 core），加上 graceful，沒有 RAPL 的電腦
   直接略過。服務依 LISTEN_FDNAMES 找出 listen、package、core 三個描述子（名稱或數量不符就結束），
   確認計數器描述子正是 /sys/class/powercap 中對應區域的 energy_uj（比對裝置與 inode）而且
-  區域名稱相符，計數上限 max_energy_range_uj（所有人可讀）直接讀取；之後只做 pread()。
+  區域名稱相符，計數上限 max_energy_range_uj（所有人可讀）直接讀取；之後只做 `pread()`。
 - 啟動時的防禦性斷言：/proc/self/status 必須顯示不是 root、CapInh／CapPrm／CapEff／CapBnd／CapAmb
   全部為 0、NoNewPrivs 為 1，否則以結束碼 4 結束；所以在 systemd 之外（root 或一般使用者）
   直接執行一律拒絕。
