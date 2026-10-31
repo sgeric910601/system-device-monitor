@@ -3,7 +3,8 @@
 電量線在桌機是不斷電系統電量，在筆電是電池電量（level 參數）。
 座標與刻度在 set_points() 算好，繪圖時只畫線與文字。
 耗電曲線依 watts_segment 斷開；電量曲線依 segment 斷開，接電與改用電池分色。
-由 UPower 補回的電量（本程式沒有記錄的時段）畫成較淡的虛線，圖表下方顯示「系統紀錄補回」說明。
+由 UPower 補上的電量（本程式沒有記錄的時段）畫成較淡的虛線，圖表下方顯示「系統紀錄補上」說明
+（今日電量回顧的「補回」指充回來的電量，這裡刻意用不同的字）。
 """
 import math
 from typing import Callable, NamedTuple
@@ -31,9 +32,9 @@ MIN_WATT_POINTS = 2              # 至少兩點才畫得出線（參考專案相
 DOT_RADIUS = 2.5                 # 前後都斷開的單獨一點畫成圓點
 LEVEL_UPS = "ups"
 LEVEL_BATTERY = "battery"
-FILLED_TEXT = "┄┄ 系統紀錄補回"
+FILLED_TEXT = "┄┄ 系統紀錄補上"
 FILLED_TOOLTIP = ("虛線是看板沒有記錄的時段（例如還沒安裝或沒在執行時），"
-                  "由系統電源服務 UPower 自己的電量紀錄補回")
+                  "由系統電源服務 UPower 自己的電量紀錄補上")
 FILLED_DASH = (4.0, 3.0)        # 補回電量的虛線：線段與間隔（px）
 FILLED_ALPHA = 0.7              # 補回電量較淡，與自己的紀錄區分
 

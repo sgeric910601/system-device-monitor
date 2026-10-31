@@ -133,5 +133,15 @@ class Wiring(unittest.TestCase):
         self.app.stop_backfill()
 
 
+class Wording(unittest.TestCase):
+    def test_note_and_tooltip_say_filled_in_not_recharged(self):
+        """今日電量回顧用「補回」表示充回來的電量；圖表的說明改用「補上」，避免混淆。"""
+        from sdm.ui.charts import FILLED_TEXT, FILLED_TOOLTIP
+        self.assertIn("系統紀錄補上", FILLED_TEXT)
+        self.assertIn("補上", FILLED_TOOLTIP)
+        for text in (FILLED_TEXT, FILLED_TOOLTIP):
+            self.assertNotIn("補回", text)
+
+
 if __name__ == "__main__":
     unittest.main()
