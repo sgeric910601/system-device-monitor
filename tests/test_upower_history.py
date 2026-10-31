@@ -181,10 +181,31 @@ class Failures(Base):
         self.fetch(bus)
         self.assertEqual(self.results, [FetchResult(missing=(SERIES_BATTERY,))])
 
-    def test_history_timeout_fails_the_whole_request(self):
+    def test_history_timeout_marks_the_series_for_a_later_retry(self):
         bus = Bus({BATTERY: (2, True)}, errors={(BATTERY, "GetHistory", None): timeout_error()})
         self.fetch(bus)
-        self.assertEqual(self.results, [FetchResult(error="timeout")])
+        self.assertEqual(self.results, [FetchResult(failed=(SERIES_BATTERY,))])
+
+    def test_one_series_timing_out_keeps_the_other(self):
+        bus = Bus({BATTERY: (2, True), UPS: (3, True)}, {UPS: POINTS},
+                  errors={(BATTERY, "GetHistory", None): timeout_error()})
+        self.fetch(bus, series=(SERIES_BATTERY, SERIES_UPS))
+        self.assertEqual(self.results, [FetchResult(points=((SERIES_UPS, POINTS),),
+                                                    failed=(SERIES_BATTERY,))])
+
+    def test_unexpected_reply_fails_at_once_instead_of_waiting_for_the_deadline(self):
+        bus = Bus({BATTERY: (2, True)})
+        original = bus.answer
+
+        def odd(call):
+            if call["method"] == "GetHistory":
+                return GLib.Variant("(i)", (5,))
+            return original(call)
+        bus.answer = odd
+        with self.assertLogs(LOGGER, "WARNING"):
+            self.fetch(bus)
+        self.assertEqual(self.results, [FetchResult(error="TypeError")])
+        self.assertEqual(self.timers.pending, {})
 
     def test_unexpected_reply_values_are_ignored(self):
         bus = Bus({BATTERY: (2, True)}, {BATTERY: POINTS})

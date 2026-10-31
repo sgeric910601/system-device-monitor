@@ -6,6 +6,8 @@
 - 只呼叫 EnumerateDevices、每個裝置的 Type（電池再讀 PowerSupply）與 GetHistory("charge")；
   絕不讀序號、型號或原生路徑。裝置的物件路徑只在這次讀取中使用，不寫進日誌、結果或檔案
   （藍牙裝置的路徑可能含有硬體位址）；日誌只記 D-Bus 錯誤名稱，不記錯誤訊息。
+- 某個系列的 GetHistory 逾時時只把它列為 failed（之後再試），其他系列照常讀；回覆內容出乎意料
+  （處理時拋出例外）時立即回報失敗並記警告，不必等到 15 秒的時限。
 - 筆電電池：類型為電池且 PowerSupply 為真的裝置剛好一個；不斷電系統：類型為不斷電系統的裝置
   剛好一個。沒有或不只一個時回報該系列 missing（多顆電池時本程式記錄的是合計的電量）。
   DisplayDevice 不提供紀錄（UPower 回覆 device does not support getting history），不使用。
@@ -34,6 +36,7 @@ NO_BUS, DEADLINE, TIMEOUT = "no system bus", "deadline", "timeout"
 class FetchResult:
     points: tuple = ()              # 每個系列一組：（系列、GetHistory 的原始點）
     missing: tuple = ()             # 找不到唯一對應裝置、或裝置不提供紀錄的系列
+    failed: tuple = ()              # 讀紀錄逾時、之後要再試的系列
     error: Optional[str] = None     # 整次失敗的原因（錯誤名稱）；成功時為 None
 
 
@@ -54,7 +57,7 @@ class HistoryRequest:
         self.cancellable = Gio.Cancellable()
         self.paths, self.index = (), 0
         self.found = {SERIES_BATTERY: [], SERIES_UPS: []}
-        self.chosen, self.missing, self.points = [], [], []
+        self.chosen, self.missing, self.points, self.timed_out = [], [], [], []
         self.finished, self.timer = False, None
 
     def start(self):
@@ -76,7 +79,11 @@ class HistoryRequest:
         except GLib.Error as error:
             on_error(error)
             return
-        on_reply(values[0])
+        try:
+            on_reply(values[0])
+        except Exception as error:      # 回覆內容出乎意料：立即結束，不等時限
+            LOG.warning("Unexpected UPower reply (%s)", type(error).__name__)
+            self.finish(FetchResult(error=type(error).__name__))
 
     # ── 找裝置 ─────────────────────────────────────────────
 
@@ -132,7 +139,8 @@ class HistoryRequest:
 
     def read_next(self):
         if not self.chosen:
-            self.finish(FetchResult(tuple(self.points), tuple(self.missing)))
+            self.finish(FetchResult(tuple(self.points), tuple(self.missing),
+                                    tuple(self.timed_out)))
             return
         series, path = self.chosen.pop(0)
         args = GLib.Variant("(suu)", (HISTORY_KIND, self.timespan, Backfill.MAX_POINTS))
@@ -145,12 +153,9 @@ class HistoryRequest:
         self.read_next()
 
     def history_failed(self, series, error):
-        """逾時代表服務太慢，整次放棄；其他錯誤（裝置不提供紀錄）只略過這個系列。"""
-        if is_timeout(error):
-            self.failed(error)
-            return
+        """逾時的系列之後再試，其他錯誤（裝置不提供紀錄）的系列列為 missing；其餘系列照常讀。"""
         LOG.debug("UPower history unavailable for %s (%s)", series, error_name(error))
-        self.missing.append(series)
+        (self.timed_out if is_timeout(error) else self.missing).append(series)
         self.read_next()
 
     # ── 結束 ───────────────────────────────────────────────

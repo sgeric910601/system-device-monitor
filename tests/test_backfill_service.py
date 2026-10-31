@@ -191,6 +191,23 @@ class Replanning(Base):
         self.assertEqual(len(self.reader.requests), 1)
 
 
+class PartialFailure(Base):
+    def test_series_that_was_read_is_kept_and_the_other_retries_later(self):
+        self.history.add(HistorySample(NOW - 3 * 3600, 80, 10.0, False, False, 100.0, True))
+        self.history.add(HistorySample(NOW, 80, 10.0, False, False, 100.0, True))
+        self.assertTrue(self.service.check())
+        self.assertEqual(self.reader.requests[0][0], (SERIES_BATTERY, SERIES_UPS))
+        self.reader.answer(FetchResult(points=((SERIES_BATTERY, ((NOW - 7200, 70.0, 2),)),),
+                                       failed=(SERIES_UPS,)))
+        self.assertEqual([s.t for s in self.history.imported.samples], [NOW - 7200])
+        self.assertEqual({span.series for span in self.history.imported.spans}, {SERIES_BATTERY})
+        self.assertEqual(self.service.failures, 1)
+        self.assertFalse(self.service.check())
+        self.mono += Backfill.RETRY_SECONDS[0]
+        self.assertTrue(self.service.check())
+        self.assertEqual(self.reader.requests[-1][0], (SERIES_UPS,))
+
+
 class Failures(Base):
     def test_failure_retries_later_and_gives_up_after_three(self):
         self.record(NOW - 3 * 3600, NOW)

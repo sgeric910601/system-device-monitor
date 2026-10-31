@@ -5,7 +5,8 @@
 - 讀到結果後只補當時要求的空白，並把這些空白記成已處理（存在歷史檔案）：每段空白只處理一次；
   這次執行讀過的空白另外記在記憶體，已處理的時段因筆數上限被丟掉時也不會馬上重讀。
 - 上一次計畫是空的、而且沒有新空白（見 needs_plan）時不重新掃全部紀錄，每分鐘的檢查幾乎不花時間。
-- 讀取失敗（UPower 沒有執行、太慢）時 5 分鐘、15 分鐘後再試，連續失敗 3 次就在這次執行放棄。
+- 讀取失敗（UPower 沒有執行、太慢）時 5 分鐘、15 分鐘後再試，連續失敗 3 次就在這次執行放棄；
+  只有部分系列逾時時，讀到的系列照常補上，逾時的系列之後再試。
 - 找不到唯一的對應裝置、或 UPower 的數值與自己最新一筆相差太多時，這次執行不再讀這個系列。
 - 只在主執行緒使用；示範模式與模擬測試不建立（見 sdm.ui.backfill_wiring）。
 日誌只記系列名稱（pct、ups_pct）、數量與錯誤名稱，不記任何裝置資訊。
@@ -57,12 +58,15 @@ class BackfillService:
         if result.error is not None:
             self.failed(result.error)
             return
-        self.failures, self.retry_at = 0, None
         for series in result.missing:
             self.skip(series, "no single matching UPower device")
         raw = dict(result.points)
         added = sum(self.apply(request, raw[request.series]) for request in plan.requests
                     if request.series in raw)
+        if result.failed:
+            self.failed("timeout for " + ", ".join(result.failed))
+        else:
+            self.failures, self.retry_at = 0, None
         if added:
             self.changed()
 
