@@ -161,6 +161,24 @@ class Readme(unittest.TestCase):
         self.assertIn("尚未在真正的筆電上測試", notice)
 
 
+class PasswordRows(unittest.TestCase):
+    """充電上限與喚醒的動作預設是 auth_admin_keep：沒有授權時要密碼，允許無人時自動調整之後才免密碼。"""
+
+    def rows(self, name, section, helper):
+        body = sections(read(name))[section]
+        return [line for line in body.splitlines() if line.startswith("|") and helper in line]
+
+    def test_charge_limit_and_wake_rows_state_both_cases(self):
+        for name, section in (("README.md", "選用的管理員元件"), ("docs/USAGE.md", "管理員元件")):
+            for helper in ("sdm-charge-limit", "sdm-wake"):
+                with self.subTest(document=name, helper=helper):
+                    rows = self.rows(name, section, helper)
+                    self.assertEqual(len(rows), 1)
+                    self.assertIn("沒有授權時要密碼（約 5 分鐘內不必重輸）", rows[0])
+                    self.assertIn("允許無人時自動調整之後免密碼", rows[0])
+                    self.assertNotIn("不需要", rows[0])
+
+
 class Usage(unittest.TestCase):
     def setUp(self):
         self.sections = sections(read("docs/USAGE.md"))
