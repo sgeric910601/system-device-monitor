@@ -5,13 +5,18 @@
   電池充放電的速率，不是本程式記錄的整機耗電。
 - 空白：保留期限（7 天）內第一筆自己的紀錄之前，以及兩筆自己的紀錄相隔超過 15 分鐘之處；
   兩端各留 60 秒不補。自己的紀錄絕不覆寫、也不重排。
-- 每段空白每個系列只處理一次：處理過（即使 UPower 在那段時間沒有紀錄）就記成 Span 存進檔案。
+- 每段空白每個系列只處理一次：處理過（即使 UPower 在那段時間沒有紀錄）就記成 Span 存進檔案；
+  同一次執行中讀過的空白另外記在記憶體（attempted），即使 Span 因筆數上限被丟掉也不會重讀。
+- 已處理的時段依結束時間排序後二分搜尋；上一次計畫是空的而且沒有新空白時不再掃全部紀錄（needs_plan）。
+- 同一系列、同一時間的補回列只留較新的一筆；載入時只留落在空白裡面的補回列。
 - UPower 的點逐一檢查型別、有限值、0–100、時間在保留期限內且不晚於現在 5 分鐘；
   丟掉「0 % 狀態不明」的邊界假點，依時間排序後同一時間只留一點，數量有上限。
 - 檔案：補回的列與處理過的空白放在 history.json 的 "imported" 欄位，只存系列名稱與數值，
   不存任何裝置路徑、型號或序號。
 """
+import bisect
 from dataclasses import dataclass, replace
+from itertools import accumulate
 import math
 
 from sdm.constants import Backfill, History
@@ -60,6 +65,23 @@ class Span:
 class Imported:
     samples: tuple = ()     # 補回的 HistorySample（imported 為 True、沒有耗電）
     spans: tuple = ()       # 處理過的空白（Span）
+
+
+@dataclass(frozen=True)
+class SpanIndex:
+    """某個系列已處理時段的查詢表：依結束時間排序，lowest[i] 是第 i 段（含）以後最早的開始時間。"""
+    ends: tuple = ()
+    lowest: tuple = ()
+
+
+@dataclass(frozen=True)
+class Checked:
+    """上一次計畫（結果是空的）時的狀態：都沒變而且沒有新空白時，不必再掃一次全部紀錄。"""
+    newest: float
+    series: tuple
+    spans: tuple
+    skipped: frozenset
+    now: float
 
 
 @dataclass(frozen=True)
@@ -163,13 +185,23 @@ def kept_series(samples):
     return tuple(series for series in SERIES if getattr(samples[-1], series) is not None)
 
 
-def handled(gap, spans, series):
-    return any(span.series == series and span.start <= gap.start and gap.end <= span.end
-               for span in spans)
+def span_index(spans, series):
+    chosen = sorted((span for span in spans if span.series == series), key=lambda span: span.end)
+    lowest = tuple(accumulate((span.start for span in reversed(chosen)), min))[::-1]
+    return SpanIndex(tuple(span.end for span in chosen), lowest)
 
 
-def plan_backfill(samples, imported, now, skipped=()):
-    """還沒處理的空白與要讀的系列；時鐘落後（最新一筆在未來）時不補。"""
+def handled(gap, index):
+    """有一段已處理的時段完整包含這個空白：結束不早於空白的段中，最早的開始不晚於空白的開始。"""
+    position = bisect.bisect_left(index.ends, gap.end)
+    return position < len(index.ends) and index.lowest[position] <= gap.start
+
+
+def plan_backfill(samples, imported, now, skipped=(), attempted=frozenset()):
+    """還沒處理的空白與要讀的系列；時鐘落後（最新一筆在未來）時不補。
+
+    attempted 是這次執行已經讀過的（系列、空白結束時間），不再重讀。
+    """
     if not samples or samples[-1].t > now + History.FUTURE_TOLERANCE_SECONDS:
         return Plan()
     gaps = own_gaps(samples, now)
@@ -177,7 +209,9 @@ def plan_backfill(samples, imported, now, skipped=()):
     for series in kept_series(samples):
         if series in skipped:
             continue
-        pending = tuple(gap for gap in gaps if not handled(gap, imported.spans, series))
+        index = span_index(imported.spans, series)
+        pending = tuple(gap for gap in gaps if not handled(gap, index)
+                        and (series, gap.end) not in attempted)
         if pending:
             requests.append(Request(series, pending))
     if not requests:
@@ -187,46 +221,127 @@ def plan_backfill(samples, imported, now, skipped=()):
     return Plan(tuple(requests), timespan)
 
 
+def checked_state(samples, imported, now, skipped):
+    return Checked(samples[-1].t if samples else None, kept_series(samples), imported.spans,
+                   frozenset(skipped), now)
+
+
+def new_gap_after(samples, newest):
+    """newest 那一筆之後的新紀錄有沒有留下空白；找不到那一筆（已修剪）時當成有。"""
+    position = bisect.bisect_left(samples, newest, key=lambda sample: sample.t)
+    if position >= len(samples) or samples[position].t != newest:
+        return True
+    later = samples[position:]
+    return any(after.t - before.t > Backfill.MIN_GAP_SECONDS
+               for before, after in zip(later, later[1:]))
+
+
+def needs_plan(checked, samples, imported, now, skipped):
+    """上一次（空的）計畫之後，有沒有可能出現新的待處理空白。
+
+    重新計畫的情況：第一次、隔了 15 分鐘以上（時鐘前後跳也算）、記錄的系列或略過的系列改變、
+    已處理的時段改變，或上次最新一筆之後的新紀錄留下空白。
+    """
+    if checked is None or checked.newest is None or not samples:
+        return True
+    if abs(now - checked.now) >= Backfill.REPLAN_SECONDS:
+        return True
+    if (kept_series(samples), frozenset(skipped)) != (checked.series, checked.skipped):
+        return True
+    if imported.spans is not checked.spans and imported.spans != checked.spans:
+        return True
+    return new_gap_after(samples, checked.newest)
+
+
 # ── 篩選與合併 ─────────────────────────────────────────
 
 
 def matches(points, samples, series):
-    """UPower 在自己最新一筆紀錄當時的電量與該筆相差不超過容許值；沒有可比較的值時視為相符。"""
-    own = [sample for sample in samples if getattr(sample, series) is not None]
-    if not own:
+    """自己最新一筆前後 30 分鐘內最接近的 UPower 點，與該筆相差不超過容許值。
+
+    沒有自己的值、或 30 分鐘內沒有 UPower 的點時視為相符：太舊的點不能代表現在的電量。
+    """
+    latest = next((sample for sample in reversed(samples)
+                   if getattr(sample, series) is not None), None)
+    if latest is None:
         return True
-    latest = own[-1]
-    earlier = [point for point in points if point.t <= latest.t]
-    if not earlier:
+    near = [point for point in points
+            if abs(point.t - latest.t) <= Backfill.MATCH_WINDOW_SECONDS]
+    if not near:
         return True
-    return abs(earlier[-1].value - getattr(latest, series)) <= Backfill.MATCH_TOLERANCE_PCT
+    closest = min(near, key=lambda point: abs(point.t - latest.t))
+    return abs(closest.value - getattr(latest, series)) <= Backfill.MATCH_TOLERANCE_PCT
 
 
-def inside(t, gaps):
+def gap_finder(gaps):
+    """回傳判斷函式：時間是否落在某個空白裡面（兩端各留 60 秒）；gaps 依時間排序、互不重疊。"""
+    starts = [gap.start for gap in gaps]
     edge = Backfill.EDGE_SECONDS
-    return any(gap.start + edge < t < gap.end - edge for gap in gaps)
+
+    def inside(t):
+        position = bisect.bisect_left(starts, t - edge) - 1
+        return position >= 0 and t < gaps[position].end - edge
+    return inside
 
 
 def accept(series, points, gaps, now):
     """空白內（兩端各留 60 秒）可用的點 → 補回的樣本；只留最新的 MAX_POINTS 筆。"""
-    samples = [point_sample(series, point, now) for point in points if inside(point.t, gaps)]
+    inside = gap_finder(gaps)
+    samples = [point_sample(series, point, now) for point in points if inside(point.t)]
     return tuple(sample for sample in samples if sample is not None)[-Backfill.MAX_POINTS:]
 
 
+def sample_series(sample):
+    return SERIES_BATTERY if sample.pct is not None else SERIES_UPS
+
+
+def unique_rows(samples):
+    """依時間排序；同一系列、同一時間只留後出現的一筆（較新的）。"""
+    latest = {}
+    for sample in samples:
+        latest[(sample.t, sample_series(sample))] = sample
+    return tuple(latest[key] for key in sorted(latest))
+
+
+def holds(span, rows):
+    """rows（依時間排序）中有這個系列、落在這段時間內的列。"""
+    position = bisect.bisect_left(rows, span.start, key=lambda row: row.t)
+    for row in rows[position:]:
+        if row.t > span.end:
+            return False
+        if sample_series(row) == span.series:
+            return True
+    return False
+
+
 def trim_imported(imported, now):
-    """修剪到保留期限並套用筆數上限（都保留最新的）。"""
+    """修剪到保留期限並套用筆數上限（都保留最新的）。
+
+    因筆數上限丟掉的列所在的已處理時段也一起丟掉，之後（下次執行）可以再補一次；
+    超過保留期限而丟掉的不必再補。
+    """
     cutoff = now - History.RETENTION_SECONDS
-    samples = trim(imported.samples, now)[-Backfill.MAX_STORED:]
-    spans = sorted((span for span in imported.spans if span.end >= cutoff),
+    current = trim(imported.samples, now)
+    excess = current[:-Backfill.MAX_STORED]
+    spans = sorted((span for span in imported.spans
+                    if span.end >= cutoff and not (excess and holds(span, excess))),
                    key=lambda span: span.end)
-    return Imported(tuple(samples), tuple(spans[-Backfill.MAX_SPANS:]))
+    return Imported(tuple(current[-Backfill.MAX_STORED:]), tuple(spans[-Backfill.MAX_SPANS:]))
 
 
 def merge_imported(imported, series, gaps, samples, now):
-    """加入補回的樣本，並把這些空白記成這個系列已處理（即使沒有任何一點）。"""
-    merged = sorted(imported.samples + tuple(samples), key=lambda sample: sample.t)
+    """加入補回的樣本（同一筆時留新讀到的），並把這些空白記成這個系列已處理（即使沒有任何一點）。"""
+    merged = unique_rows(imported.samples + tuple(samples))
     spans = imported.spans + tuple(Span(series, gap.start, gap.end) for gap in gaps)
-    return trim_imported(Imported(tuple(merged), spans), now)
+    return trim_imported(Imported(merged, spans), now)
+
+
+def keep_in_gaps(imported, samples, now):
+    """只留落在自己紀錄空白裡面（兩端各留 60 秒）的補回列；回傳（Imported、丟掉的列數）。"""
+    inside = gap_finder(own_gaps(samples, now))
+    kept = tuple(sample for sample in imported.samples if inside(sample.t))
+    dropped = len(imported.samples) - len(kept)
+    return (Imported(kept, imported.spans) if dropped else imported), dropped
 
 
 # ── 檔案欄位 ─────────────────────────────────────────
@@ -272,6 +387,5 @@ def decode_imported(raw):
         return Imported()
     if not isinstance(raw, dict) or not isinstance(raw.get("samples"), list):
         raise InvalidImported("unexpected structure")
-    samples = tuple(sorted((imported_row(row) for row in raw["samples"]),
-                           key=lambda sample: sample.t))
+    samples = unique_rows(tuple(imported_row(row) for row in raw["samples"]))
     return Imported(samples, decode_spans(raw.get("spans")))

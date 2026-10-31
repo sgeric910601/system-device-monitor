@@ -2,13 +2,16 @@
 import dataclasses
 import json
 import math
+import random
 import unittest
+from unittest.mock import patch
 
 from sdm.constants import Backfill, History
 from sdm.core.backfill import (SERIES_BATTERY, SERIES_UPS, Gap, Imported, InvalidImported, Request,
-                               Span, UpowerPoint, accept, decode_imported, imported_section,
-                               kept_series, matches, merge_imported, own_gaps, parse_points,
-                               plan_backfill, point_sample, trim_imported)
+                               Span, UpowerPoint, accept, checked_state, decode_imported, handled,
+                               imported_section, keep_in_gaps, kept_series, matches,
+                               merge_imported, needs_plan, own_gaps, parse_points, plan_backfill,
+                               point_sample, span_index, trim_imported)
 from sdm.core.history import HistorySample, decode_history, encode_history
 
 NOW = 1_800_000_000
@@ -242,17 +245,32 @@ class Accepting(unittest.TestCase):
 
 
 class Matching(unittest.TestCase):
-    def test_value_at_the_latest_own_sample_must_be_close(self):
+    """只與自己最新一筆前後 30 分鐘內的 UPower 點比較；太舊的點不能代表現在的電量。"""
+    WINDOW = Backfill.MATCH_WINDOW_SECONDS
+
+    def test_value_near_the_latest_own_sample_must_be_close(self):
         samples = desktop(NOW - 60, NOW)
         tolerance = Backfill.MATCH_TOLERANCE_PCT
-        close = (UpowerPoint(NOW - 9000, 50.0, 2), UpowerPoint(NOW - 3000, 100.0 - tolerance, 4))
-        far = (UpowerPoint(NOW - 3000, 100.0 - tolerance - 1, 4),)
+        close = (UpowerPoint(NOW - 9000, 50.0, 2), UpowerPoint(NOW - 600, 100.0 - tolerance, 4))
+        far = (UpowerPoint(NOW - 600, 100.0 - tolerance - 1, 4),)
         self.assertTrue(matches(close, samples, SERIES_UPS))
         self.assertFalse(matches(far, samples, SERIES_UPS))
 
-    def test_points_after_the_latest_own_sample_are_not_compared(self):
+    def test_points_older_than_the_window_are_not_compared(self):
+        samples = desktop(NOW)
+        self.assertTrue(matches((UpowerPoint(NOW - self.WINDOW - 1, 10.0, 2),), samples,
+                                SERIES_UPS))
+        self.assertFalse(matches((UpowerPoint(NOW - self.WINDOW, 10.0, 2),), samples,
+                                 SERIES_UPS))
+
+    def test_points_after_the_latest_own_sample_are_compared_too(self):
         samples = desktop(NOW - 600)
-        self.assertTrue(matches((UpowerPoint(NOW - 60, 10.0, 2),), samples, SERIES_UPS))
+        self.assertFalse(matches((UpowerPoint(NOW - 60, 10.0, 2),), samples, SERIES_UPS))
+
+    def test_the_closest_point_in_time_is_compared(self):
+        samples = desktop(NOW)
+        points = (UpowerPoint(NOW - 1500, 10.0, 2), UpowerPoint(NOW - 60, 99.0, 4))
+        self.assertTrue(matches(points, samples, SERIES_UPS))
 
     def test_nothing_to_compare_is_accepted(self):
         self.assertTrue(matches((), desktop(NOW), SERIES_UPS))
@@ -294,6 +312,145 @@ class Merging(unittest.TestCase):
     def test_imported_is_frozen(self):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             Imported().samples = (1,)
+
+
+class Replanning(unittest.TestCase):
+    """上一次計畫是空的，而且沒有新的空白、處理過的時段、系列與時間都沒變時，不必再算一次。"""
+
+    def setUp(self):
+        self.samples = laptop(NOW - 120, NOW - 60)
+        self.imported = Imported((), (Span(SERIES_BATTERY, CUTOFF, NOW - 120),))
+        self.checked = checked_state(self.samples, self.imported, NOW - 60, ())
+
+    def needs(self, samples=None, imported=None, now=NOW, skipped=()):
+        return needs_plan(self.checked, self.samples if samples is None else samples,
+                          self.imported if imported is None else imported, now, skipped)
+
+    def test_first_check_always_plans(self):
+        self.assertTrue(needs_plan(None, self.samples, self.imported, NOW, ()))
+
+    def test_new_row_without_a_gap_does_not_replan(self):
+        self.assertFalse(self.needs(self.samples + laptop(NOW)))
+        self.assertFalse(self.needs(self.samples + laptop(NOW - 60 + GAP)))
+
+    def test_new_row_after_a_gap_replans(self):
+        self.assertTrue(self.needs(self.samples + laptop(NOW - 60 + GAP + 1)))
+        self.assertTrue(self.needs(self.samples + laptop(NOW, NOW + 2 * GAP)))
+
+    def test_trimmed_reference_row_replans(self):
+        self.assertTrue(self.needs(laptop(NOW)))
+
+    def test_changed_ranges_series_or_skipped_replan(self):
+        self.assertTrue(self.needs(imported=Imported()))
+        self.assertTrue(self.needs(self.samples[:1] + desktop(NOW - 60)))
+        self.assertTrue(self.needs(skipped=(SERIES_BATTERY,)))
+
+    def test_clock_moving_far_enough_replans(self):
+        self.assertFalse(self.needs(now=NOW - 60 + Backfill.REPLAN_SECONDS - 1))
+        self.assertTrue(self.needs(now=NOW - 60 + Backfill.REPLAN_SECONDS))
+        self.assertTrue(self.needs(now=NOW - 60 - Backfill.REPLAN_SECONDS))
+
+
+class HandledIndex(unittest.TestCase):
+    def test_a_later_range_with_an_earlier_start_covers_the_gap(self):
+        spans = (Span(SERIES_UPS, 500, 900), Span(SERIES_UPS, 100, 1000),
+                 Span(SERIES_BATTERY, 0, 5000))
+        index = span_index(spans, SERIES_UPS)
+        self.assertTrue(handled(Gap(200, 800), index))
+        self.assertTrue(handled(Gap(100, 1000), index))
+        self.assertFalse(handled(Gap(50, 800), index))
+        self.assertFalse(handled(Gap(200, 1001), index))
+        self.assertFalse(handled(Gap(200, 800), span_index((), SERIES_UPS)))
+
+    def test_same_answers_as_checking_every_range(self):
+        rng = random.Random(20261101)
+        for case in range(300):
+            spans = []
+            for _ in range(rng.randrange(0, 40)):
+                start = rng.randrange(1, 10_000)
+                spans.append(Span(rng.choice((SERIES_BATTERY, SERIES_UPS)), start,
+                                  start + rng.randrange(1, 3000)))
+            index = span_index(tuple(spans), SERIES_UPS)
+            for _ in range(20):
+                start = rng.randrange(1, 10_000)
+                gap = Gap(start, start + rng.randrange(1, 3000))
+                expected = any(s.series == SERIES_UPS and s.start <= gap.start and
+                               gap.end <= s.end for s in spans)
+                with self.subTest(case=case, gap=gap):
+                    self.assertEqual(handled(gap, index), expected)
+
+
+class Attempted(unittest.TestCase):
+    def test_gaps_already_read_this_session_are_not_asked_again(self):
+        samples = laptop(NOW - 3 * 3600, NOW)
+        attempted = frozenset({(SERIES_BATTERY, NOW)})
+        plan = plan_backfill(samples, Imported(), NOW, (), attempted)
+        self.assertEqual(plan.requests, (Request(SERIES_BATTERY, (Gap(CUTOFF, NOW - 3 * 3600),)),))
+
+
+class Duplicates(unittest.TestCase):
+    """同一系列、同一時間只留一筆，留較新的那一筆。"""
+
+    def test_merge_keeps_the_newly_read_row(self):
+        old = Imported((imported_battery(NOW - 5000, 50), imported_ups(NOW - 5000, 90.0)), ())
+        merged = merge_imported(old, SERIES_BATTERY, (Gap(NOW - 7200, NOW - 3600),),
+                                (imported_battery(NOW - 5000, 55),), NOW)
+        self.assertEqual([(s.t, s.pct, s.ups_pct) for s in merged.samples],
+                         [(NOW - 5000, 55, None), (NOW - 5000, None, 90.0)])
+
+    def test_load_keeps_the_later_row_in_the_file(self):
+        section = {"samples": [imported_battery(NOW - 5000, 50).to_row(),
+                               imported_battery(NOW - 5000, 51).to_row(),
+                               imported_ups(NOW - 5000, 90.0).to_row()],
+                   "spans": {}}
+        loaded = decode_imported(section)
+        self.assertEqual(sorted((s.pct, s.ups_pct) for s in loaded.samples
+                                if s.pct is not None), [(51, None)])
+        self.assertEqual(len(loaded.samples), 2)
+
+
+class LoadCleanup(unittest.TestCase):
+    """載入時只留空白裡面的補回列：手改或過時的檔案不會讓兩種來源交錯。"""
+
+    def test_rows_near_or_between_own_rows_are_dropped(self):
+        own_rows = laptop(NOW - 7200, NOW - 7140, NOW - 3600, NOW)
+        times = (CUTOFF + 100, NOW - 7200 - EDGE - 1, NOW - 7200 - EDGE, NOW - 7170,
+                 NOW - 7140 + EDGE, NOW - 7140 + EDGE + 1, NOW - 3600 - EDGE - 1,
+                 NOW - 3600 + 30, NOW - 2000, NOW + 100)
+        imported = Imported(tuple(imported_battery(t) for t in times), ())
+        kept, dropped = keep_in_gaps(imported, own_rows, NOW)
+        self.assertEqual([s.t for s in kept.samples],
+                         [CUTOFF + 100, NOW - 7200 - EDGE - 1, NOW - 7140 + EDGE + 1,
+                          NOW - 3600 - EDGE - 1, NOW - 2000])
+        self.assertEqual(dropped, 5)
+
+    def test_ranges_are_kept(self):
+        imported = Imported((), (Span(SERIES_BATTERY, NOW - 7200, NOW - 3600),))
+        self.assertEqual(keep_in_gaps(imported, laptop(NOW), NOW), (imported, 0))
+
+
+class TrimmedRanges(unittest.TestCase):
+    """超過筆數上限而丟掉的補回列，所在的已處理時段也一起丟掉，之後可以再補一次。"""
+
+    def test_ranges_holding_trimmed_rows_are_dropped(self):
+        rows = (imported_battery(NOW - 9000), imported_ups(NOW - 8500),
+                imported_battery(NOW - 8000), imported_battery(NOW - 3000))
+        spans = (Span(SERIES_BATTERY, NOW - 9500, NOW - 8800),
+                 Span(SERIES_BATTERY, NOW - 8800, NOW - 7000),
+                 Span(SERIES_UPS, NOW - 9500, NOW - 7000),
+                 Span(SERIES_BATTERY, NOW - 6000, NOW - 2000))
+        with patch.object(Backfill, "MAX_STORED", 2):
+            trimmed = trim_imported(Imported(rows, spans), NOW)
+        self.assertEqual([s.t for s in trimmed.samples], [NOW - 8000, NOW - 3000])
+        # 丟掉的是 NOW - 9000 的電池列與 NOW - 8500 的不斷電系統列：只有同系列的時段跟著丟
+        self.assertEqual(trimmed.spans, (Span(SERIES_BATTERY, NOW - 8800, NOW - 7000),
+                                         Span(SERIES_BATTERY, NOW - 6000, NOW - 2000)))
+
+    def test_retention_trim_keeps_the_other_ranges(self):
+        rows = (imported_battery(CUTOFF - 10), imported_battery(NOW - 3000))
+        spans = (Span(SERIES_BATTERY, CUTOFF - 100, CUTOFF + 50),
+                 Span(SERIES_BATTERY, NOW - 6000, NOW - 2000))
+        self.assertEqual(trim_imported(Imported(rows, spans), NOW).spans, spans)
 
 
 class FileSection(unittest.TestCase):

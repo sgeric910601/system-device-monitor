@@ -383,6 +383,8 @@ class Backfill:
     MAX_SPANS = 1000                    # 已處理的空白最多記幾段，超過時保留最新的
     MAX_DEVICES = 16                    # 最多檢查幾個 UPower 裝置
     MATCH_TOLERANCE_PCT = 10            # UPower 與自己最新一筆的電量相差超過此值就不補（可能是另一台裝置）
+    MATCH_WINDOW_SECONDS = 30 * 60      # 只拿自己最新一筆前後這段時間內的 UPower 點比較，太舊的不算
+    REPLAN_SECONDS = 15 * 60            # 沒有新空白時，至少隔這麼久才重新掃一次全部紀錄
     CALL_TIMEOUT_MS = 1800              # 每個 D-Bus 呼叫的逾時（毫秒）
     DEADLINE_SECONDS = 15               # 整次讀取的時限，超過就放棄這一次
     RETRY_SECONDS = (5 * 60, 15 * 60)   # 讀取失敗後的再試間隔

@@ -1,10 +1,12 @@
 """補回空白時段的排程（sdm.services.backfill_service）：有還沒處理的空白才讀一次、只補空白、
 每段空白只處理一次、失敗時延後再試、找不到裝置或數值對不上時這次執行不再讀。"""
 import unittest
+from unittest.mock import patch
 
 from sdm.constants import Backfill, History
 from sdm.core.backfill import SERIES_BATTERY, SERIES_UPS, Gap, Span
 from sdm.core.history import HistorySample
+from sdm.services import backfill_service
 from sdm.services.backfill_service import BackfillService
 from sdm.services.history_service import HistoryService
 from sdm.services.upower_history import FetchResult
@@ -116,7 +118,7 @@ class Filling(Base):
         self.record(NOW - 3 * 3600, NOW, pct=80)
         self.service.check()
         with self.assertLogs(LOGGER, "INFO"):
-            self.reader.answer(self.battery((NOW - 7200, 30.0, 2), (NOW - 3000, 30.0, 2)))
+            self.reader.answer(self.battery((NOW - 7200, 30.0, 2), (NOW - 600, 30.0, 2)))
         self.assertEqual(self.history.imported.samples, ())
         self.assertEqual(self.history.imported.spans, ())
         self.now += 2 * 3600
@@ -131,6 +133,62 @@ class Filling(Base):
         self.assertEqual(self.history.imported.spans, ())
         self.mono += 24 * 3600
         self.assertFalse(self.service.check())
+
+
+class Replanning(Base):
+    """每記錄一筆就檢查一次，但沒有新空白時不重新掃全部紀錄。"""
+
+    def counted(self):
+        calls = []
+        original = backfill_service.plan_backfill
+
+        def counting(*args, **kwargs):
+            calls.append(True)
+            return original(*args, **kwargs)
+        patcher = patch.object(backfill_service, "plan_backfill", counting)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def test_second_check_without_a_new_gap_does_not_replan(self):
+        calls = self.counted()
+        self.record(NOW - 3 * 3600, NOW)
+        self.service.check()
+        self.reader.answer(self.battery())
+        self.now += 60
+        self.record(self.now)
+        self.assertFalse(self.service.check())
+        self.assertEqual(len(calls), 2)
+        self.now += 60
+        self.record(self.now)
+        self.assertFalse(self.service.check())
+        self.assertEqual(len(calls), 2)
+
+    def test_new_gap_or_enough_time_replans(self):
+        calls = self.counted()
+        self.record(NOW - 3 * 3600, NOW)
+        self.service.check()
+        self.reader.answer(self.battery())
+        self.service.check()
+        count = len(calls)
+        self.now += Backfill.REPLAN_SECONDS
+        self.assertFalse(self.service.check())
+        self.assertEqual(len(calls), count + 1)
+        self.now += Backfill.MIN_GAP_SECONDS + 1
+        self.record(self.now)
+        self.assertTrue(self.service.check())
+        self.assertEqual(len(calls), count + 2)
+
+    def test_gap_read_this_session_is_not_read_again_when_its_range_was_trimmed(self):
+        self.record(NOW - 3 * 3600, NOW)
+        with patch.object(Backfill, "MAX_STORED", 1):
+            self.service.check()
+            self.reader.answer(self.battery((NOW - 7200, 70.0, 2), (NOW - 3600, 75.0, 2)))
+            self.assertEqual(len(self.history.imported.samples), 1)
+            self.assertNotIn(NOW, [span.end for span in self.history.imported.spans])
+            self.now += Backfill.REPLAN_SECONDS
+            self.assertFalse(self.service.check())
+        self.assertEqual(len(self.reader.requests), 1)
 
 
 class Failures(Base):

@@ -191,14 +191,28 @@ class Imports(TempData):
         self.assertTrue(service.writable)
         self.assertEqual(self.backups(), [])
 
+    def test_imported_rows_between_own_rows_are_dropped_at_load(self):
+        own_rows = [sample(t).to_row() for t in (NOW - 7200, NOW - 7140, NOW - 60)]
+        section = {"samples": [filled(NOW - 7170).to_row(), filled(NOW - 7140 + 30).to_row(),
+                               filled(NOW - 3000).to_row()],
+                   "spans": {SERIES_UPS: [[NOW - 7140, NOW - 60]]}}
+        self.write_file(json.dumps({"format": 1, "samples": own_rows,
+                                    "imported": section}).encode())
+        with self.assertLogs(LOGGER, "WARNING") as logs:
+            service = self.service()
+        self.assertIn("2", " ".join(logs.output))
+        self.assertEqual([s.t for s in service.imported.samples], [NOW - 3000])
+        self.assertEqual(len(service.samples), 3)
+        self.assertEqual(service.imported.spans, (Span(SERIES_UPS, NOW - 7140, NOW - 60),))
+
     def test_old_imports_are_trimmed(self):
         old = NOW - History.RETENTION_SECONDS - 60
-        section = {"samples": [filled(old).to_row(), filled(NOW - 120).to_row()],
+        section = {"samples": [filled(old).to_row(), filled(NOW - 3000).to_row()],
                    "spans": {SERIES_BATTERY: [[old - 600, old]]}}
         self.write_file(json.dumps({"format": 1, "samples": [sample(NOW - 60).to_row()],
                                     "imported": section}).encode())
         service = self.service()
-        self.assertEqual([s.t for s in service.imported.samples], [NOW - 120])
+        self.assertEqual([s.t for s in service.imported.samples], [NOW - 3000])
         self.assertEqual(service.imported.spans, ())
 
     def test_file_without_imports_keeps_the_old_shape(self):

@@ -10,6 +10,7 @@
   資料（時鐘大幅往前跳），本次執行第一次發生時先另存備份再修剪。
 - 由 UPower 補回的紀錄（imported）與自己的紀錄分開保存在同一個檔案的 "imported" 欄位，
   加入時立即存檔；這個欄位無效時只捨棄它（之後會再補一次），自己的紀錄照常載入。
+  載入時只留落在自己紀錄空白裡面的補回列（手改或過時的檔案不會讓兩種來源交錯）。
 """
 import logging
 import os
@@ -19,7 +20,7 @@ import time
 from sdm import paths
 from sdm.constants import History
 from sdm.core.backfill import (Imported, InvalidImported, decode_imported, imported_section,
-                               merge_imported, trim_imported)
+                               keep_in_gaps, merge_imported, trim_imported)
 from sdm.core.history import (NewerFormat, Undecodable, chart_points, decode_rows,
                               encode_history, last_unplugged, load_document, parse_boot_time,
                               trim, valid_sample)
@@ -105,14 +106,17 @@ class HistoryService:
         self.samples = self._trim(samples, newest, now, data)
         self.imported = self._decode_imported(raw.get("imported"), now)
 
-    @staticmethod
-    def _decode_imported(raw, now):
-        """補回的欄位無效時整個捨棄（記警告），自己的紀錄不受影響。"""
+    def _decode_imported(self, raw, now):
+        """補回的欄位無效時整個捨棄（記警告），自己的紀錄不受影響；不在空白裡的補回列也丟掉。"""
         try:
-            return trim_imported(decode_imported(raw), now)
+            imported = trim_imported(decode_imported(raw), now)
         except InvalidImported:
             LOG.warning("Dropped the invalid imported history section")
             return Imported()
+        imported, dropped = keep_in_gaps(imported, self.samples, now)
+        if dropped:
+            LOG.warning("Dropped %d imported history rows next to own samples", dropped)
+        return imported
 
     def _recover_oversized(self):
         """太大的檔案不讀進記憶體：分段複製成備份後從空白開始；備份失敗就停用寫入。"""
