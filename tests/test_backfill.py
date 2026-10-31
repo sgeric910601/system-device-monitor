@@ -388,6 +388,24 @@ class Attempted(unittest.TestCase):
         self.assertEqual(plan.requests, (Request(SERIES_BATTERY, (Gap(CUTOFF, NOW - 3 * 3600),)),))
 
 
+class FullStore(unittest.TestCase):
+    """補上的列已達上限時，不再計畫比最舊一筆還早的空白，免得每次啟動都重讀再修剪同一段。"""
+
+    def test_gaps_before_the_oldest_kept_row_are_not_planned(self):
+        samples = laptop(NOW - 6 * 3600, NOW - 3 * 3600, NOW)
+        rows = (imported_battery(NOW - 2 * 3600), imported_battery(NOW - 3600))
+        with patch.object(Backfill, "MAX_STORED", 2):
+            plan = plan_backfill(samples, Imported(rows, ()), NOW)
+        self.assertEqual(plan.requests, (Request(SERIES_BATTERY, (Gap(NOW - 3 * 3600, NOW),)),))
+
+    def test_store_with_room_plans_every_gap(self):
+        samples = laptop(NOW - 6 * 3600, NOW - 3 * 3600, NOW)
+        rows = (imported_battery(NOW - 2 * 3600),)
+        with patch.object(Backfill, "MAX_STORED", 2):
+            plan = plan_backfill(samples, Imported(rows, ()), NOW)
+        self.assertEqual(len(plan.requests[0].gaps), 3)
+
+
 class Duplicates(unittest.TestCase):
     """同一系列、同一時間只留一筆，留較新的那一筆。"""
 
@@ -427,6 +445,23 @@ class LoadCleanup(unittest.TestCase):
     def test_ranges_are_kept(self):
         imported = Imported((), (Span(SERIES_BATTERY, NOW - 7200, NOW - 3600),))
         self.assertEqual(keep_in_gaps(imported, laptop(NOW), NOW), (imported, 0))
+
+    def test_ranges_no_longer_inside_a_gap_are_dropped_so_they_are_filled_again(self):
+        """自己的紀錄出現在原本的空白裡（例如紀錄被重設）時，跨過它的已處理時段要丟掉。"""
+        own_rows = laptop(NOW - 7200, NOW - 5000, NOW)
+        spans = (Span(SERIES_BATTERY, CUTOFF - 3600, NOW - 7200),    # 起點早於保留期限：仍算在空白內
+                 Span(SERIES_BATTERY, NOW - 7200, NOW),               # 跨過 NOW - 5000 的自己紀錄
+                 Span(SERIES_UPS, NOW - 5000, NOW))
+        kept, dropped = keep_in_gaps(Imported((), spans), own_rows, NOW)
+        self.assertEqual(kept.spans, (spans[0], spans[2]))
+        self.assertEqual(dropped, 0)
+        self.assertEqual(plan_backfill(own_rows, kept, NOW).requests,
+                         (Request(SERIES_BATTERY, (Gap(NOW - 7200, NOW - 5000),
+                                                   Gap(NOW - 5000, NOW))),))
+
+    def test_without_own_rows_no_range_is_kept(self):
+        imported = Imported((), (Span(SERIES_BATTERY, NOW - 7200, NOW - 3600),))
+        self.assertEqual(keep_in_gaps(imported, (), NOW)[0].spans, ())
 
 
 class TrimmedRanges(unittest.TestCase):

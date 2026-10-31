@@ -8,7 +8,9 @@
 - 每段空白每個系列只處理一次：處理過（即使 UPower 在那段時間沒有紀錄）就記成 Span 存進檔案；
   同一次執行中讀過的空白另外記在記憶體（attempted），即使 Span 因筆數上限被丟掉也不會重讀。
 - 已處理的時段依結束時間排序後二分搜尋；上一次計畫是空的而且沒有新空白時不再掃全部紀錄（needs_plan）。
-- 同一系列、同一時間的補回列只留較新的一筆；載入時只留落在空白裡面的補回列。
+- 同一系列、同一時間的補回列只留較新的一筆；載入時只留落在空白裡面的補回列，已處理的時段
+  也只留仍完整落在某個空白裡的（自己的紀錄出現在原本的空白裡時，那段要重新補）。
+- 補回的列已達上限時，不再計畫比最舊一筆還早的空白（否則每次啟動都重讀、再修剪同一段）。
 - UPower 的點逐一檢查型別、有限值、0–100、時間在保留期限內且不晚於現在 5 分鐘；
   丟掉「0 % 狀態不明」的邊界假點，依時間排序後同一時間只留一點，數量有上限。
 - 檔案：補回的列與處理過的空白放在 history.json 的 "imported" 欄位，只存系列名稱與數值，
@@ -204,7 +206,9 @@ def plan_backfill(samples, imported, now, skipped=(), attempted=frozenset()):
     """
     if not samples or samples[-1].t > now + History.FUTURE_TOLERANCE_SECONDS:
         return Plan()
-    gaps = own_gaps(samples, now)
+    full = len(imported.samples) >= Backfill.MAX_STORED
+    oldest = imported.samples[0].t if full else None
+    gaps = tuple(gap for gap in own_gaps(samples, now) if oldest is None or gap.end > oldest)
     requests = []
     for series in kept_series(samples):
         if series in skipped:
@@ -336,12 +340,28 @@ def merge_imported(imported, series, gaps, samples, now):
     return trim_imported(Imported(merged, spans), now)
 
 
+def span_finder(gaps, cutoff):
+    """回傳判斷函式：已處理的時段（起點早於保留期限的部分不算）是否仍完整落在某個空白裡。"""
+    starts = [gap.start for gap in gaps]
+
+    def covered(span):
+        start = max(span.start, cutoff)
+        position = bisect.bisect_right(starts, start) - 1
+        return position >= 0 and span.end <= gaps[position].end
+    return covered
+
+
 def keep_in_gaps(imported, samples, now):
-    """只留落在自己紀錄空白裡面（兩端各留 60 秒）的補回列；回傳（Imported、丟掉的列數）。"""
-    inside = gap_finder(own_gaps(samples, now))
+    """只留落在自己紀錄空白裡面（兩端各留 60 秒）的補回列，以及仍完整落在某個空白裡的
+    已處理時段；回傳（Imported、丟掉的列數）。"""
+    gaps = own_gaps(samples, now)
+    inside, covered = gap_finder(gaps), span_finder(gaps, now - History.RETENTION_SECONDS)
     kept = tuple(sample for sample in imported.samples if inside(sample.t))
+    spans = tuple(span for span in imported.spans if covered(span))
     dropped = len(imported.samples) - len(kept)
-    return (Imported(kept, imported.spans) if dropped else imported), dropped
+    if not dropped and len(spans) == len(imported.spans):
+        return imported, 0
+    return Imported(kept, spans), dropped
 
 
 # ── 檔案欄位 ─────────────────────────────────────────
