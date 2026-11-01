@@ -63,7 +63,7 @@ against GitHub.
 SHA256SUMS，在下載目錄執行：
 
     sha256sum --ignore-missing -c SHA256SUMS
-    sudo apt install ./system-device-monitor_0.3.0_all.deb
+    sudo apt install ./system-device-monitor_0.3.1_all.deb
 
 在應用程式選單搜尋「系統與裝置監看」，或執行 system-device-monitor。套件已經包含管理員元件，
 但安裝時不啟用任何服務，也不寫入任何人的家目錄。
@@ -89,7 +89,7 @@ install.py 寫入 ~/.local/bin 的啟動器、應用程式選單的項目與登�
 
       /usr/bin/python3 -B install.py --system-components remove
       /usr/bin/python3 install.py --uninstall
-      sudo apt install ./system-device-monitor_0.3.0_all.deb
+      sudo apt install ./system-device-monitor_0.3.1_all.deb
 
   順序不能顛倒：套件已安裝時，原始碼版的 --system-components 會拒絕執行。--uninstall 會刪除
   登入自啟，換好之後在「設定 → 一般」重新開啟。

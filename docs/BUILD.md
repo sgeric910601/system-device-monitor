@@ -10,7 +10,7 @@ Ubuntu 24.04，使用系統 Python。此專案沒有 pip 執行期依賴。
     make privacy
     make deb
 
-dist/system-device-monitor_0.3.0_all.deb 為純 Python／SVG／PNG，
+dist/system-device-monitor_0.3.1_all.deb 為純 Python／SVG／PNG，
 Architecture: all。建置不需要 sudo；版本由 VERSION 讀取。
 相依套件含 gir1.2-notify-0.7（桌面通知函式庫）與 openssl（驗證一鍵更新的 Ed25519 簽章）；
 install-dependencies.sh 與 CI 也會安裝它。
