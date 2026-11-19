@@ -51,11 +51,14 @@ against GitHub.
 - 選用（Ubuntu 桌面版通常已經安裝前四個）：upower 與 power-profiles-daemon（筆電的系統預估與
   電源模式）、bluez（藍牙設備）、udisks2（磁碟健康度）、apcupsd（APC 不斷電系統）、NVIDIA 驅動附的
   nvidia-smi、solaar（Logitech 分段電量），以及管理員元件用來詢問密碼的 pkexec。
-- Fedora 43（GNOME 或 KDE Plasma，實驗性，只支援「原始碼資料夾」安裝）：使用系統的 Python 3.14
-  （/usr/bin/python3）。dnf 套件為 python3-gobject、python3-cairo、gtk3、libgudev、
-  libayatana-appindicator-gtk3、libnotify、librsvg2、util-linux，由 ./install-dependencies.sh 安裝。
+- Fedora 43（實驗性，只支援「原始碼資料夾」安裝）：使用系統的 Python 3.14（/usr/bin/python3）。
+  dnf 套件為 python3-gobject、python3-cairo、gtk3、libgudev、libayatana-appindicator-gtk3、
+  libnotify、librsvg2、util-linux，由 ./install-dependencies.sh 安裝。目前只在 KDE Plasma 上跑過
+  單元測試與 --dump；圖形介面、管理員元件、桌面寵物與 GNOME 都還沒在 Fedora 上測試。
   KDE Plasma 的系統匣原生支援 StatusNotifier，不需要額外擴充功能；GNOME 需要
-  gnome-shell-extension-appindicator（腳本偵測到 GNOME 時會一併安裝）。
+  gnome-shell-extension-appindicator（腳本偵測到 GNOME 時會一併安裝），裝好後先登出再登入，再執行
+  `gnome-extensions enable "$(gnome-extensions list | grep appindicatorsupport)"`，否則看不到頂端列。
+  Fedora 43 的 GNOME 只有 Wayland 工作階段，桌面寵物會改成一般的小視窗。
 - 桌面寵物需要 X11 工作階段（「Ubuntu on Xorg」）；其他功能在 Wayland 也能使用。
 
 ## 安裝
@@ -90,8 +93,8 @@ install.py 寫入 ~/.local/bin 的啟動器、應用程式選單的項目與登�
 
 Fedora 沒有 .deb，請使用上面的「原始碼資料夾」方式：`./install-dependencies.sh` 會偵測到 dnf 並安裝
 對應的套件，之後步驟相同。Fedora 上只有原始碼安裝：「設定 → 更新」的一鍵安裝只支援 .deb，
-需要更新時請在原始碼資料夾執行 `git pull` 後重新執行 `install.py`。Fedora 的支援為實驗性，
-遇到問題請附上 `system-device-monitor --dump` 的輸出。
+需要更新時依下方「[更新](#更新)」的原始碼資料夾步驟。Fedora 的支援為實驗性（測過的範圍見
+「系統需求」），遇到問題請附上 `system-device-monitor --dump` 的輸出。
 
 ### 在兩種方式之間切換
 

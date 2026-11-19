@@ -111,7 +111,8 @@ def main():
     server.emit("NotificationClosed", (1, 2), "(uu)")
     spin(lambda: key not in notifier.live)
     app, _, icon, summary, body, actions, hints, _ = server.calls[0]
-    # libnotify 0.8.x（Fedora）把主題圖示名稱放在 image-path 提示，app_icon 欄位留空。
+    # 較新的 libnotify（例如 Fedora 43 的版本）把主題圖示名稱放在 image-path 提示、app_icon 欄位留空；
+    # Ubuntu 24.04 的 0.8.3 仍放在 app_icon。
     icon = icon or hints.get("image-path", "")
     print(json.dumps(dict(
         before=before, after=after, sent=sent, app=app, icon=icon, summary=summary, body=body,
