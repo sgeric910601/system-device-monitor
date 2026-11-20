@@ -21,7 +21,7 @@ def current_cadence(store, context):
 
 def build(controls, context):
     store, page = controls.store, box(spacing=16)
-    page.pack_start(card("啟動", controls.switch(AUTOSTART, "登入 Ubuntu 桌面後自動啟動"),
+    page.pack_start(card("啟動", controls.switch(AUTOSTART, "登入桌面後自動啟動"),
                          wrapped(KEEP_RUNNING, "muted")), False, False, 0)
     page.pack_start(card(
         "監控範圍", controls.radios("system_monitors", text.scope_choices(context.laptop)),
